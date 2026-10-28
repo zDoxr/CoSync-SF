@@ -39,6 +39,10 @@ namespace cosync::plugin
     std::filesystem::path ConfigPath();
     std::wstring LogFileName();
 
+    // <plugin dir>/versionlib-<major>-<minor>-<build>-0.bin, the file
+    // CommonLibSF's REL::IDDB loads (commonlib-shared src/REL/IDDB.cpp).
+    std::filesystem::path AddressLibraryPath(std::uint32_t packedRuntime);
+
     std::filesystem::path ThisModuleDirectory();
     std::filesystem::path LogDirectory();  // Documents\My Games\Starfield\SFSE\Logs
 }

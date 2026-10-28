@@ -37,7 +37,8 @@ Last updated: 2026-10-27. Each finding is tagged:
 - Provides reverse-engineered engine types: `RE::PlayerCharacter::GetSingleton()`, `RE::TESObjectREFR::GetPosition()/GetAngle()`, `RE::Actor`, plus Address Library ID tables (`IDs.h`). [verified: headers]
 - **License: GPL-3.0-or-later** with a Modding Exception and a GPL-3.0 Linking Exception. If CoSync-SF links CommonLibSF and distributes binaries, **the plugin's source must be distributed under GPL-3.0-compatible terms**; Starfield itself and SFSE are exempt. [verified: [README](https://github.com/libxse/commonlibsf#license), [EXCEPTIONS](https://github.com/libxse/commonlibsf/blob/main/EXCEPTIONS)]
   - ✅ **Decided (2026-10-27, project owner):** CommonLibSF may be used. The repository stays **private until the project is complete**. GPL obligations apply only when binaries are distributed, so they are deferred until release; at that point the plugin's source must be published under GPL-compatible terms.
-- Build-system implication: CommonLibSF is xmake-first; CoSync-SF is CMake + vcpkg. Options are (a) build the plugin with xmake and keep the rest in CMake, (b) consume CommonLibSF as a prebuilt static lib, or (c) check whether a CMake/vcpkg port exists at integration time. [unverified which is cleanest]
+- Build system: CommonLibSF is xmake-first, but its only required dependency is spdlog (std::format + wchar). CoSync-SF builds it with CMake from pinned commits (`cmake/CommonLibSF.cmake`), mirroring upstream sources, forced PCH and flags. [verified: builds with MSVC 14.51]
+- Runtime requirement: any plugin declaring Address Library use is refused by SFSE when `Data/SFSE/Plugins/versionlib-<ver>-0.bin` is missing. CommonLibSF also `REX::FAIL`s on first ID use without it. [verified: sfse PluginManager.cpp, commonlib-shared REL/IDDB.cpp]
 
 ## 4. Address Library
 

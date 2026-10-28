@@ -9,7 +9,14 @@
       "name": "gamenetworkingsockets",
       "default-features": false
     },
-    "gtest"
+    "gtest",
+    {
+      "name": "spdlog",
+      "default-features": false,
+      "features": [
+        "wchar"
+      ]
+    }
   ],
   "vcpkg-configuration": {
     "overlay-ports": [

@@ -20,8 +20,9 @@ Nothing is 🎮 yet.
 - [x] ✅ LAN discovery protocol (tested over loopback unicast)
 - [x] ✅ Network worker thread with bounded game-thread queues (tested host + client on separate threads)
 - [x] ✅ `cosync-server` standalone session server and `cosync-testclient`
-- [x] 🟡 SFSE plugin DLL builds with exported version data for 1.16.244; **not yet loaded in game**
-- [ ] ⛔ Load the plugin in Starfield 1.16.244 under SFSE 0.2.21. Blocked: the game was still installing on the dev machine during this pass.
+- [x] 🟡 SFSE plugin DLL builds; exported version data verified (Address Library v2, 1.14.70+ layout, `{0x01100F40}`); **not yet loaded in game**
+- [ ] ⛔ Load the plugin in Starfield 1.16.244 under SFSE 0.2.21. Blocked: SFSE and the Address Library are Nexus-only downloads (need the owner's login). `scripts/install-sfse.ps1` is ready.
+- [x] 🟡 Two-instance launcher (`scripts/launch-instances.ps1`), windowed via StarfieldPrefs.ini. Whether Starfield allows a second copy is **untested**.
 - [ ] ⬜ LAN test across two physical machines (broadcast discovery and firewall behaviour)
 
 ## Milestone 2 — First in-game sync: see the other player's position (next)
@@ -29,8 +30,8 @@ Nothing is 🎮 yet.
 Goal: two real Starfield clients show each other's position in the plugin log, then as a placeholder in the world.
 
 1. ✅ **Licensing decision**: CommonLibSF approved (2026-10-27). The repo stays private until complete. See RESEARCH §3.
-2. ⬜ Integrate CommonLibSF (xmake vs. CMake decision) and verify the Address Library for 1.16.244.
-3. ⬜ On the main thread, read `PlayerCharacter::GetSingleton()` position/angle plus parent cell/worldspace → `SubmitLocalTransform` at 20 Hz.
+2. ✅ CommonLibSF integrated via CMake (`cmake/CommonLibSF.cmake`, pinned commits, mirrors upstream xmake flags). The Address Library file name (`versionlib-1-16-244-0.bin`) is checked at load. 🟡 The DB itself is not yet installed.
+3. 🟡 On the main thread, read `PlayerCharacter::GetSingleton()` position/angle plus parent cell → `SubmitLocalTransform` at 20 Hz (`GameState.cpp`, `GameBridge::SampleLocalPlayer`). Implemented; not yet run in game.
 4. ⬜ Define a stable `locationId` mapping (plugin file + local FormID → session-scoped id table), sent reliably.
 5. ⬜ In-game test: two PCs (or two accounts) connect; each log shows the other's live coordinates.
 6. ⬜ Spawn a placeholder reference/actor for each remote player and move it every frame (interpolated). Needs RE: spawning API, disabling AI, and safe teardown on cell unload.

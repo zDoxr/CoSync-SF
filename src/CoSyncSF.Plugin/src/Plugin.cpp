@@ -1,9 +1,9 @@
-// CoSync-SF SFSE plugin entry point.
+// CoSync-SF SFSE plugin entry point (CommonLibSF).
 //
-// Milestone 1 scope: load under SFSE, read CoSyncSF.ini, start the network
-// worker after game data has loaded, and pump session events on the main
-// thread via an SFSE permanent task. No game addresses, hooks or engine
-// structures are used, which is what the version data below declares.
+// Load: read config, register for SFSE messages and a per-frame main-thread
+// task. After game data has loaded, start the network worker. Engine access
+// (reading the local player) happens only in GameBridge::Tick on the main
+// thread, and only when the Address Library database is installed.
 
 #include "GameBridge.h"
 #include "PluginConfig.h"
@@ -12,9 +12,7 @@
 #include "cosync/shared/GameRuntime.h"
 #include "cosync/shared/Log.h"
 
-#include <Windows.h>
-
-#include <sfse/PluginAPI.h>
+#include <SFSE/SFSE.h>
 
 #include <chrono>
 #include <fstream>
@@ -22,11 +20,15 @@
 
 using namespace cosync;
 
+static_assert(SFSE::RUNTIME_SF_1_16_244.pack() == game::kTargetRuntime,
+              "CommonLibSF and CoSync-SF disagree on the target runtime packing");
+
 namespace
 {
-    PluginHandle g_handle = kPluginHandle_Invalid;
-    SFSEMessagingInterface* g_messaging = nullptr;
-    SFSETaskInterface* g_tasks = nullptr;
+    // SFSE message ids beyond the four CommonLibSF names (sfse/PluginAPI.h).
+    constexpr std::uint32_t kMessage_PreLoadGame = 6;
+    constexpr std::uint32_t kMessage_PostLoadGame = 7;
+
     std::uint32_t g_runtimeVersion = 0;
     plugin::Config g_config;
 
@@ -36,14 +38,6 @@ namespace
     net::NetworkWorker* g_worker = nullptr;
 
     std::ofstream g_logFile;
-
-    class MainThreadTask final : public SFSETaskInterface::ITaskDelegate
-    {
-    public:
-        void Run() override { plugin::GameBridge::Get().Tick(); }
-        void Destroy() override {}  // static lifetime
-    };
-    MainThreadTask g_mainThreadTask;
 
     void OpenLog()
     {
@@ -61,10 +55,11 @@ namespace
 
     void StartNetworking()
     {
-        if (g_worker || g_config.mode == plugin::Mode::Off) {
-            if (g_config.mode == plugin::Mode::Off) {
-                log::Info("networking disabled (Mode=off)");
-            }
+        if (g_config.mode == plugin::Mode::Off) {
+            log::Info("networking disabled (Mode=off)");
+            return;
+        }
+        if (g_worker) {
             return;
         }
 
@@ -72,7 +67,7 @@ namespace
         wc.client.playerName = g_config.playerName;
         wc.client.password = g_config.password;
         wc.client.gameRuntime = g_runtimeVersion;
-        wc.client.clientBuild = std::format("CoSyncSF.dll/{}", "0.1.0");
+        wc.client.clientBuild = "CoSyncSF.dll/0.2.0";
 
         if (g_config.mode == plugin::Mode::Host) {
             wc.mode = net::WorkerMode::Host;
@@ -85,7 +80,7 @@ namespace
         } else {
             const auto endpoint = net::Endpoint::Parse(g_config.address, 37015);
             if (!endpoint) {
-                log::Error("invalid Address '{}' in CoSyncSF.ini; networking not started", g_config.address);
+                log::Error("invalid Address '{}' in config; networking not started", g_config.address);
                 return;
             }
             wc.mode = net::WorkerMode::Client;
@@ -103,21 +98,21 @@ namespace
         log::Info("networking started in {} mode", g_config.mode == plugin::Mode::Host ? "host" : "client");
     }
 
-    void OnSfseMessage(SFSEMessagingInterface::Message* msg)
+    void OnSfseMessage(SFSE::MessagingInterface::Message* msg)
     {
         if (!msg) return;
         switch (msg->type) {
-        case SFSEMessagingInterface::kMessage_PostLoad:
+        case SFSE::MessagingInterface::kPostLoad:
             log::Debug("SFSE PostLoad");
             break;
-        case SFSEMessagingInterface::kMessage_PostDataLoad:
+        case SFSE::MessagingInterface::kPostDataLoad:
             log::Info("game data loaded");
             StartNetworking();
             break;
-        case SFSEMessagingInterface::kMessage_PreLoadGame:
+        case kMessage_PreLoadGame:
             log::Info("save game loading");
             break;
-        case SFSEMessagingInterface::kMessage_PostLoadGame:
+        case kMessage_PostLoadGame:
             log::Info("save game loaded");
             break;
         default:
@@ -126,59 +121,69 @@ namespace
     }
 }
 
-extern "C"
+SFSE_PLUGIN_VERSION = []() noexcept {
+    SFSE::PluginVersionData v{};
+    v.PluginVersion({ 0, 2, 0, 0 });
+    v.PluginName("CoSyncSF");
+    v.AuthorName("CoSync-SF");
+    v.UsesAddressLibrary(true);
+    v.IsLayoutDependent(true);
+    v.CompatibleVersions({ SFSE::RUNTIME_SF_1_16_244 });
+    return v;
+}();
+
+SFSE_PLUGIN_LOAD(const SFSE::LoadInterface* a_sfse)
 {
-    __declspec(dllexport) SFSEPluginVersionData SFSEPlugin_Version = {
-        SFSEPluginVersionData::kVersion,
-        1,  // plugin version
-        "CoSyncSF",
-        "CoSync-SF",
-        0,  // no address independence claimed: we use no game addresses, so we pin the runtime list instead
-        SFSEPluginVersionData::kStructureIndependence_NoStructs,
-        { game::kTargetRuntime, 0 },
-        0,  // any SFSE version
-        0,
-        0,
-    };
+    // CoSync keeps its own log; no CommonLibSF hooks or trampoline are used.
+    SFSE::Init(a_sfse, { .log = false, .hook = false });
 
-    __declspec(dllexport) bool SFSEPlugin_Load(const SFSEInterface* sfse)
-    {
-        OpenLog();
-        g_runtimeVersion = sfse->runtimeVersion;
-        log::Info("CoSyncSF 0.1.0 loading (Starfield {}, SFSE {:08x}, protocol {}.{})",
-                  game::FormatRuntimeVersion(g_runtimeVersion), sfse->sfseVersion, proto::kProtocolMajor,
-                  proto::kProtocolMinor);
-        if (g_runtimeVersion != game::kTargetRuntime) {
-            log::Warn("built for Starfield {}, running {}", game::FormatRuntimeVersion(game::kTargetRuntime),
-                      game::FormatRuntimeVersion(g_runtimeVersion));
-        }
-
-        std::string warnings;
-        const auto iniPath = plugin::ConfigPath();
-        if (!std::filesystem::exists(iniPath)) {
-            log::Warn("config file not found: {} (using defaults: networking off)", iniPath.string());
-        }
-        g_config = plugin::LoadConfig(iniPath, warnings);
-        log::Info("config: {}", iniPath.string());
-        log::SetMinLevel(g_config.logLevel);
-        if (!warnings.empty()) {
-            log::Warn("CoSyncSF.ini: {}", warnings);
-        }
-
-        g_handle = sfse->GetPluginHandle();
-        g_messaging = static_cast<SFSEMessagingInterface*>(sfse->QueryInterface(kInterface_Messaging));
-        g_tasks = static_cast<SFSETaskInterface*>(sfse->QueryInterface(kInterface_Task));
-        if (!g_messaging || !g_tasks) {
-            log::Error("required SFSE interfaces unavailable (messaging={}, task={})", g_messaging != nullptr,
-                       g_tasks != nullptr);
-            return false;
-        }
-        if (!g_messaging->RegisterListener(g_handle, "SFSE", OnSfseMessage)) {
-            log::Error("could not register for SFSE messages");
-            return false;
-        }
-        g_tasks->AddTaskPermanent(&g_mainThreadTask);
-        log::Info("loaded; waiting for game data");
-        return true;
+    OpenLog();
+    g_runtimeVersion = a_sfse->RuntimeVersion().pack();
+    log::Info("CoSyncSF 0.2.0 loading (Starfield {}, SFSE {:08x}, protocol {}.{})",
+              game::FormatRuntimeVersion(g_runtimeVersion), SFSE::GetSFSEVersion(), proto::kProtocolMajor,
+              proto::kProtocolMinor);
+    if (g_runtimeVersion != game::kTargetRuntime) {
+        log::Warn("built for Starfield {}, running {}", game::FormatRuntimeVersion(game::kTargetRuntime),
+                  game::FormatRuntimeVersion(g_runtimeVersion));
     }
+
+    std::string warnings;
+    const auto iniPath = plugin::ConfigPath();
+    if (!std::filesystem::exists(iniPath)) {
+        log::Warn("config file not found: {} (using defaults: networking off)", iniPath.string());
+    }
+    g_config = plugin::LoadConfig(iniPath, warnings);
+    log::SetMinLevel(g_config.logLevel);
+    log::Info("config: {}", iniPath.string());
+    if (!warnings.empty()) {
+        log::Warn("config: {}", warnings);
+    }
+
+    // CommonLibSF terminates the game if an Address Library ID is used without
+    // the database, so check first and degrade to network-only if it is missing.
+    const auto addressLibrary = plugin::AddressLibraryPath(g_runtimeVersion);
+    const bool haveAddressLibrary = std::filesystem::exists(addressLibrary);
+    if (haveAddressLibrary) {
+        log::Info("Address Library found: {}", addressLibrary.filename().string());
+    } else {
+        log::Error("Address Library not found ({}); player position sync disabled. "
+                   "Install 'Address Library for SFSE Plugins' for this game version.",
+                   addressLibrary.string());
+    }
+    plugin::GameBridge::Get().EnableLocalPlayerReads(haveAddressLibrary);
+
+    const auto* messaging = SFSE::GetMessagingInterface();
+    const auto* tasks = SFSE::GetTaskInterface();
+    if (!messaging || !tasks) {
+        log::Error("required SFSE interfaces unavailable (messaging={}, task={})", messaging != nullptr,
+                   tasks != nullptr);
+        return false;
+    }
+    if (!messaging->RegisterListener(OnSfseMessage)) {
+        log::Error("could not register for SFSE messages");
+        return false;
+    }
+    tasks->AddPermanentTask([] { plugin::GameBridge::Get().Tick(); });
+    log::Info("loaded; waiting for game data");
+    return true;
 }

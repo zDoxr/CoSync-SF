@@ -18,9 +18,9 @@ Two to eight players join one session, over LAN by direct address or discovery, 
 | LAN discovery (UDP query/response) | Implemented, tested over loopback unicast |
 | `cosync-server` (standalone session server) | Implemented. It does **not** simulate Starfield. |
 | `cosync-testclient` (headless protocol client) | Implemented |
-| SFSE plugin (`CoSyncSF.dll`, Starfield 1.16.244) | Builds; starts networking after data load and logs session events. **Not yet tested in game.** |
+| SFSE plugin (`CoSyncSF.dll`, Starfield 1.16.244, CommonLibSF) | Builds. Starts networking after data load, reads the local player's cell/position/rotation at 20 Hz on the main thread, sends it, and logs remote players' positions. **Not yet tested in game.** |
 | Steam networking, NAT traversal | Researched, not implemented |
-| Player/NPC/world synchronization | Not started (next milestone) |
+| Player/NPC/world synchronization | Position exchange implemented (log only, untested in game); no visible remote characters yet |
 
 ## Architecture
 
@@ -40,7 +40,11 @@ CoSyncSF.Server ──┘   CoSyncSF.Client (test client)
 - Windows 10/11 x64
 - Visual Studio 2022 or newer (or Build Tools) with the **Desktop development with C++** workload. This includes MSVC, CMake, Ninja and vcpkg.
 - Internet access on the first configure (vcpkg dependencies and SFSE's `PluginAPI.h`)
-- To run the plugin: Starfield **1.16.244** (Steam), [SFSE 0.2.21](https://github.com/ianpatt/sfse)
+- To run the plugin: Starfield **1.16.244** (Steam), plus two downloads from Nexus Mods (log in with your browser):
+  - SFSE 0.2.21: [Nexus mod 106](https://www.nexusmods.com/starfield/mods/106)
+  - Address Library for SFSE Plugins (must contain `versionlib-1-16-244-0.bin`): [Nexus mod 3256](https://www.nexusmods.com/starfield/mods/3256)
+
+  Install both with `./scripts/install-sfse.ps1 -SfseArchive <sfse.7z> -AddressLibraryArchive <addresslib.zip>`. The script verifies code signatures and game-version matches before copying.
 
 ## Build and test
 
@@ -77,12 +81,21 @@ From another PC, replace `127.0.0.1` with the server's LAN IP and allow UDP 3701
 
 ## Run the plugin (experimental)
 
-1. Install SFSE 0.2.21 for Starfield 1.16.244.
-2. Copy `build/release/stage/Data` into the Starfield install folder.
+1. Install SFSE and the Address Library (see Prerequisites).
+2. `./scripts/deploy-plugin.ps1` (copies `CoSyncSF.dll` into `Data/SFSE/Plugins`).
 3. Edit `Data/SFSE/Plugins/CoSyncSF.ini`. Set `Mode=host` on one PC, or `Mode=client` with `Address=<host-ip>:37015`, and give each player a unique `Name`.
 4. Launch through `sfse_loader.exe`. Check `Documents/My Games/Starfield/SFSE/Logs/CoSyncSF.log`.
 
-At this milestone the plugin only connects and logs session events. It does not read or change game state.
+The plugin reads the player's position, but it never changes game state.
+
+### Two instances on one PC
+
+```powershell
+./scripts/launch-instances.ps1          # via SFSE: instance 1 hosts, instance 2 joins 127.0.0.1
+./scripts/launch-instances.ps1 -NoSfse  # vanilla, to check that two windows work
+./scripts/launch-instances.ps1 -RestoreDisplay
+```
+Start the game once normally first, so Starfield creates `StarfieldPrefs.ini`. Its first launch auto-detects settings and runs fullscreen. Each instance logs to `Documents/My Games/Starfield/SFSE/Logs/CoSyncSF-p<n>.log`. Both instances share one save folder, so don't save in both at the same time.
 
 ## Known limitations
 

@@ -24,6 +24,7 @@ add_subdirectory(src/CoSyncSF.Server)
 add_subdirectory(src/CoSyncSF.Client)
 
 if(COSYNC_BUILD_PLUGIN)
+    include(cmake/CommonLibSF.cmake)
     add_subdirectory(src/CoSyncSF.Plugin)
 endif()
 

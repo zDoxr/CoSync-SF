@@ -1,5 +1,6 @@
 #include "PluginConfig.h"
 
+#include "cosync/shared/GameRuntime.h"
 #include "cosync/shared/Protocol.h"
 
 #include <Windows.h>
@@ -137,6 +138,13 @@ namespace cosync::plugin
             path.resize(path.size() * 2);
         }
         return std::filesystem::path(path).parent_path();
+    }
+
+    std::filesystem::path AddressLibraryPath(std::uint32_t packedRuntime)
+    {
+        const auto name = std::format(L"versionlib-{}-{}-{}-0.bin", game::RuntimeMajor(packedRuntime),
+                                      game::RuntimeMinor(packedRuntime), game::RuntimeBuild(packedRuntime));
+        return ThisModuleDirectory() / name;
     }
 
     std::filesystem::path LogDirectory()

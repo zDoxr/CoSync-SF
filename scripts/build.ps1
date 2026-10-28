@@ -10,7 +10,8 @@ param(
     [ValidateSet('debug', 'release')]
     [string]$Preset = 'release',
     [switch]$NoTest,
-    [switch]$ConfigureOnly
+    [switch]$ConfigureOnly,
+    [string]$Target   # build only this CMake target (implies -NoTest)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -46,10 +47,14 @@ try {
     if ($LASTEXITCODE) { throw "configure failed ($LASTEXITCODE)" }
     if ($ConfigureOnly) { return }
 
-    cmake --build --preset $Preset
+    if ($Target) {
+        cmake --build --preset $Preset --target $Target
+    } else {
+        cmake --build --preset $Preset
+    }
     if ($LASTEXITCODE) { throw "build failed ($LASTEXITCODE)" }
 
-    if (-not $NoTest) {
+    if (-not $NoTest -and -not $Target) {
         ctest --preset $Preset
         if ($LASTEXITCODE) { throw "tests failed ($LASTEXITCODE)" }
     }

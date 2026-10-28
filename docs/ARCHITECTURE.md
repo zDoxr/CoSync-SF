@@ -93,7 +93,7 @@ Server, per player: Active ──drop/timeout──► Reserved (resumeWindow, d
 ```
 
 Rules:
-1. **Engine objects are touched only on the main thread**, inside `GameBridge::Tick()`.
+1. **Engine objects are touched only on the main thread**, inside `GameBridge::Tick()`. All CommonLibSF/engine code is in `src/CoSyncSF.Plugin/src/GameState.cpp`, and that file is never called when the Address Library is missing.
 2. **Network objects are touched only on the network thread.** The game thread never blocks on I/O.
 3. All cross-thread channels are bounded: the event queue has a fixed capacity and sets an overflow flag (with resync from roster), and the transform mailboxes are O(players).
 4. GNS callbacks only queue plain-data copies for their owning transport.
