@@ -7,6 +7,7 @@
 #include <ShlObj.h>
 
 #include <charconv>
+#include <cwctype>
 #include <format>
 
 namespace cosync::plugin
@@ -89,6 +90,36 @@ namespace cosync::plugin
         else if (level == "error") c.logLevel = log::Level::Error;
         else if (level != "info") warn(std::format("unknown LogLevel '{}'", level));
         return c;
+    }
+
+    namespace
+    {
+        std::wstring GetEnv(const wchar_t* name)
+        {
+            const DWORD n = GetEnvironmentVariableW(name, nullptr, 0);
+            if (n == 0) return {};
+            std::wstring value(n, wchar_t{});
+            const DWORD written = GetEnvironmentVariableW(name, value.data(), n);
+            value.resize(written);
+            return value;
+        }
+    }
+
+    std::filesystem::path ConfigPath()
+    {
+        if (auto custom = GetEnv(L"COSYNC_INI"); !custom.empty()) {
+            return std::filesystem::path(custom);
+        }
+        return ThisModuleDirectory() / L"CoSyncSF.ini";
+    }
+
+    std::wstring LogFileName()
+    {
+        auto label = GetEnv(L"COSYNC_INSTANCE");
+        // Keep it a safe file-name fragment.
+        std::erase_if(label, [](wchar_t c) { return !(iswalnum(c) || c == L'-' || c == L'_'); });
+        if (label.size() > 32) label.resize(32);
+        return label.empty() ? L"CoSyncSF.log" : L"CoSyncSF-" + label + L".log";
     }
 
     std::filesystem::path ThisModuleDirectory()

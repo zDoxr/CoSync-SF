@@ -32,6 +32,13 @@ namespace cosync::plugin
     // reported in `warnings` and also keep their defaults.
     Config LoadConfig(const std::filesystem::path& iniPath, std::string& warnings);
 
+    // Per-process overrides so several game instances on one PC can share one
+    // Data folder (see scripts/launch-instances.ps1):
+    //   COSYNC_INI      - full path of the config file to use instead of the default
+    //   COSYNC_INSTANCE - short label appended to the log file name (CoSyncSF-<label>.log)
+    std::filesystem::path ConfigPath();
+    std::wstring LogFileName();
+
     std::filesystem::path ThisModuleDirectory();
     std::filesystem::path LogDirectory();  // Documents\My Games\Starfield\SFSE\Logs
 }

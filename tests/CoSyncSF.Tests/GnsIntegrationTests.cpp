@@ -179,3 +179,13 @@ TEST(GnsIntegration, OversizeMessageIsRefusedByTransport)
     }));
     EXPECT_FALSE(std::ranges::any_of(sev, [](auto& e) { return e.type == TransportEventType::Message; }));
 }
+
+TEST(GnsIntegration, SecondListenerOnSamePortIsRefused)
+{
+    constexpr std::uint16_t kPort = 47823;
+    GnsTransport first, second;
+    std::string error;
+    ASSERT_TRUE(first.Listen(kPort, error)) << error;
+    EXPECT_FALSE(second.Listen(kPort, error));
+    EXPECT_NE(error.find("already in use"), std::string::npos) << error;
+}

@@ -50,7 +50,7 @@ namespace
         std::error_code ec;
         const auto dir = plugin::LogDirectory();
         std::filesystem::create_directories(dir, ec);
-        g_logFile.open(dir / L"CoSyncSF.log", std::ios::out | std::ios::trunc);
+        g_logFile.open(dir / plugin::LogFileName(), std::ios::out | std::ios::trunc);
         log::SetSink([](log::Level level, std::string_view message) {
             if (!g_logFile) return;
             const auto now = std::chrono::floor<std::chrono::milliseconds>(std::chrono::system_clock::now());
@@ -154,8 +154,12 @@ extern "C"
         }
 
         std::string warnings;
-        const auto iniPath = plugin::ThisModuleDirectory() / L"CoSyncSF.ini";
+        const auto iniPath = plugin::ConfigPath();
+        if (!std::filesystem::exists(iniPath)) {
+            log::Warn("config file not found: {} (using defaults: networking off)", iniPath.string());
+        }
         g_config = plugin::LoadConfig(iniPath, warnings);
+        log::Info("config: {}", iniPath.string());
         log::SetMinLevel(g_config.logLevel);
         if (!warnings.empty()) {
             log::Warn("CoSyncSF.ini: {}", warnings);

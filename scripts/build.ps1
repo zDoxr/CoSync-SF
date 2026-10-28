@@ -23,8 +23,11 @@ $vs = & $vswhere -latest -prerelease -products * -requires Microsoft.VisualStudi
 if (-not $vs) { throw 'No Visual Studio installation with the MSVC x64 toolset was found.' }
 
 # Import the x64 developer environment (cl, link, Windows SDK) into this process.
+# vcvars64.bat itself invokes vswhere.exe, so put it on PATH, and keep the batch
+# file's stderr inside cmd (PowerShell 5.1 treats native stderr as an error).
+$env:PATH = "$(Split-Path -Parent $vswhere);$env:PATH"
 $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
-cmd /c "`"$vcvars`" >nul && set" | ForEach-Object {
+cmd /c "`"$vcvars`" >nul 2>&1 && set" | ForEach-Object {
     if ($_ -match '^([^=]+)=(.*)$') { Set-Item -Path "env:$($Matches[1])" -Value $Matches[2] }
 }
 
@@ -32,6 +35,10 @@ cmd /c "`"$vcvars`" >nul && set" | ForEach-Object {
 if (-not $env:VCPKG_ROOT) { $env:VCPKG_ROOT = Join-Path $vs 'VC\vcpkg' }
 Write-Host "Visual Studio : $vs"
 Write-Host "VCPKG_ROOT    : $env:VCPKG_ROOT"
+
+# Native tools write warnings to stderr; Windows PowerShell 5.1 would turn those
+# into terminating errors under 'Stop'. Failures are detected via $LASTEXITCODE.
+$ErrorActionPreference = 'Continue'
 
 Push-Location $root
 try {

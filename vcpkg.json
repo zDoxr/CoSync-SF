@@ -10,5 +10,10 @@
       "default-features": false
     },
     "gtest"
-  ]
+  ],
+  "vcpkg-configuration": {
+    "overlay-ports": [
+      "./vcpkg-overlays"
+    ]
+  }
 }

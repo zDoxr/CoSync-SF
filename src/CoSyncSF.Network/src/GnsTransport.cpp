@@ -2,6 +2,9 @@
 
 #include "cosync/shared/Log.h"
 
+#include <WinSock2.h>
+#include <WS2tcpip.h>
+
 #include <steam/isteamnetworkingutils.h>
 #include <steam/steamnetworkingsockets.h>
 
@@ -85,6 +88,51 @@ namespace cosync::net
         }
 
         HSteamNetConnection ToHandle(ConnectionId id) { return static_cast<HSteamNetConnection>(id); }
+
+        // GNS binds its UDP socket in a way that lets a second listener (in this
+        // or another process) bind the same port without error, silently
+        // splitting traffic. Probe with exclusive binds first so a port that is
+        // already in use is reported as an error. (Small race window remains.)
+        bool UdpPortInUse(std::uint16_t port)
+        {
+            WSADATA wsa{};
+            if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+                return false;  // cannot probe; let GNS decide
+            }
+            bool inUse = false;
+            for (const int family : { AF_INET6, AF_INET }) {
+                const SOCKET s = ::socket(family, SOCK_DGRAM, IPPROTO_UDP);
+                if (s == INVALID_SOCKET) {
+                    continue;
+                }
+                BOOL exclusive = TRUE;
+                setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&exclusive), sizeof exclusive);
+                int rc = 0;
+                if (family == AF_INET6) {
+                    DWORD v6only = 0;  // dual-stack, like GNS
+                    setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char*>(&v6only), sizeof v6only);
+                    sockaddr_in6 addr{};
+                    addr.sin6_family = AF_INET6;
+                    addr.sin6_port = htons(port);
+                    addr.sin6_addr = in6addr_any;
+                    rc = ::bind(s, reinterpret_cast<const sockaddr*>(&addr), sizeof addr);
+                } else {
+                    sockaddr_in addr{};
+                    addr.sin_family = AF_INET;
+                    addr.sin_port = htons(port);
+                    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+                    rc = ::bind(s, reinterpret_cast<const sockaddr*>(&addr), sizeof addr);
+                }
+                const int err = rc == 0 ? 0 : WSAGetLastError();
+                closesocket(s);
+                if (err == WSAEADDRINUSE || err == WSAEACCES) {
+                    inUse = true;
+                    break;
+                }
+            }
+            WSACleanup();
+            return inUse;
+        }
     }
 
     GnsTransport::GnsTransport(GnsOptions options) : _options(options)
@@ -123,6 +171,10 @@ namespace cosync::net
         }
         if (_listenSocket != k_HSteamListenSocket_Invalid) {
             error = "already listening";
+            return false;
+        }
+        if (UdpPortInUse(port)) {
+            error = std::format("UDP port {} is already in use (another host or server is running)", port);
             return false;
         }
         SteamNetworkingIPAddr addr;
