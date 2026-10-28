@@ -34,6 +34,7 @@ param(
     [int]$StartupTimeoutSeconds = 180,
     [int]$DelaySeconds = 10,
     [switch]$WindowedOnly,
+    [switch]$Avatars,                # experimental: spawn stand-ins for remote players
     [switch]$RestoreDisplay
 )
 
@@ -185,6 +186,8 @@ function Write-InstanceConfig([int]$n) {
         "Name=Player$n"
         '[Security]'
         'Password='
+        '[Experimental]'
+        "RemoteAvatars=$(if ($Avatars) { 1 } else { 0 })"
         '[Debug]'
         'LogLevel=debug'
     ) | Set-Content -LiteralPath $ini -Encoding ASCII

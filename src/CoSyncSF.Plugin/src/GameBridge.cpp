@@ -1,5 +1,6 @@
 #include "GameBridge.h"
 
+#include "Avatars.h"
 #include "GameState.h"
 
 #include "cosync/net/Util.h"
@@ -13,6 +14,9 @@ namespace cosync::plugin
         constexpr auto kSampleInterval = std::chrono::milliseconds(50);  // 20 Hz
         constexpr auto kLocalLogInterval = std::chrono::seconds(5);
         constexpr auto kSummaryInterval = std::chrono::seconds(5);
+        constexpr auto kAvatarMoveInterval = std::chrono::milliseconds(100);  // Papyrus calls; 10 Hz
+        constexpr auto kAvatarRetryInterval = std::chrono::seconds(5);
+        constexpr std::uint32_t kAvatarMaxAttempts = 3;
     }
 
     GameBridge& GameBridge::Get()
@@ -43,17 +47,17 @@ namespace cosync::plugin
                     if constexpr (std::is_same_v<T, ce::StateChanged>) {
                         log::Info("[game] session state: {} ({})", net::ToString(e.state), e.detail);
                         if (e.state == net::ClientState::Disconnected) {
-                            _remotes.clear();  // avatar despawn point
+                            RemoveAllRemotes();
                         }
                     } else if constexpr (std::is_same_v<T, ce::Welcomed>) {
                         log::Info("[game] joined '{}' as player {}", e.welcome.serverName, e.welcome.playerId);
                     } else if constexpr (std::is_same_v<T, ce::Rejected>) {
                         log::Warn("[game] session refused: {} ({})", proto::ToString(e.reject.reason), e.reject.detail);
                     } else if constexpr (std::is_same_v<T, ce::PeerJoined>) {
-                        _remotes[e.player.playerId].name = e.player.name;  // avatar spawn point
+                        _remotes[e.player.playerId].name = e.player.name;
                         log::Info("[game] player {} '{}' joined", e.player.playerId, e.player.name);
                     } else if constexpr (std::is_same_v<T, ce::PeerLeft>) {
-                        _remotes.erase(e.playerId);  // avatar despawn point
+                        RemoveRemote(e.playerId);
                         log::Info("[game] player {} left ({})", e.playerId, proto::ToString(e.reason));
                     }
                 },
@@ -114,9 +118,104 @@ namespace cosync::plugin
         const auto nowMs = net::SteadyNowMs();
         for (auto& [id, remote] : _remotes) {
             remote.pose = remote.interpolator.Sample(nowMs);
-            // Avatar update point: once spawning is verified in game, move this
-            // player's proxy reference to remote.pose here (main thread).
+            if (_avatarsEnabled) {
+                UpdateAvatar(id, remote);
+            }
         }
+        ReapOrphans();
+    }
+
+    void GameBridge::UpdateAvatar(PlayerId id, RemotePlayer& remote)
+    {
+        auto& avatar = remote.avatar;
+        const auto now = std::chrono::steady_clock::now();
+
+        // Spawn result published by the VM thread?
+        if (avatar.pending) {
+            const auto result = avatar.pending->load();
+            if (result != 0) {
+                avatar.pending.reset();
+                if (result == avatars::kSpawnFailed) {
+                    log::Warn("[avatar] player {} '{}': PlaceAtMe returned no reference", id, remote.name);
+                } else {
+                    avatar.refId = result;
+                    const bool frozen = avatars::Freeze(avatar.refId);
+                    log::Info("[avatar] player {} '{}': spawned ref {:08X} (AI {})", id, remote.name, avatar.refId,
+                              frozen ? "disable requested" : "NOT disabled");
+                }
+            }
+        }
+
+        const bool visibleHere = _inWorld && remote.pose && !remote.pose->stale && _localLocationId != 0 &&
+                                 remote.pose->locationId == _localLocationId;
+        if (!visibleHere) {
+            ReleaseAvatar(id, avatar, "not in your cell");
+            return;
+        }
+
+        if (avatar.refId == 0 && !avatar.pending && avatar.attempts < kAvatarMaxAttempts && now >= avatar.nextAttempt) {
+            ++avatar.attempts;
+            avatar.nextAttempt = now + kAvatarRetryInterval;
+            auto slot = std::make_shared<std::atomic<std::uint32_t>>(0);
+            std::string error;
+            if (avatars::RequestSpawn(slot, error)) {
+                avatar.pending = std::move(slot);
+                log::Info("[avatar] player {} '{}': spawn requested (attempt {}/{})", id, remote.name, avatar.attempts,
+                          kAvatarMaxAttempts);
+            } else {
+                log::Warn("[avatar] player {} '{}': spawn not dispatched: {}", id, remote.name, error);
+            }
+        }
+
+        if (avatar.refId != 0 && now >= avatar.nextMove) {
+            avatar.nextMove = now + kAvatarMoveInterval;
+            if (!avatars::Move(avatar.refId, remote.pose->position, remote.pose->rotation)) {
+                log::Warn("[avatar] player {} '{}': ref {:08X} no longer exists", id, remote.name, avatar.refId);
+                avatar.refId = 0;
+            }
+        }
+    }
+
+    void GameBridge::ReleaseAvatar(PlayerId id, Avatar& avatar, const char* why)
+    {
+        if (avatar.pending) {
+            _orphans.push_back(std::move(avatar.pending));
+        }
+        if (avatar.refId != 0) {
+            log::Info("[avatar] player {}: despawn ref {:08X} ({})", id, avatar.refId, why);
+            avatars::Despawn(avatar.refId);
+            avatar.refId = 0;
+        }
+        avatar.attempts = 0;  // allow a fresh spawn next time they share a cell
+    }
+
+    void GameBridge::RemoveRemote(PlayerId id)
+    {
+        if (auto it = _remotes.find(id); it != _remotes.end()) {
+            ReleaseAvatar(id, it->second.avatar, "player left");
+            _remotes.erase(it);
+        }
+    }
+
+    void GameBridge::RemoveAllRemotes()
+    {
+        for (auto& [id, remote] : _remotes) {
+            ReleaseAvatar(id, remote.avatar, "session ended");
+        }
+        _remotes.clear();
+    }
+
+    void GameBridge::ReapOrphans()
+    {
+        std::erase_if(_orphans, [](const std::shared_ptr<std::atomic<std::uint32_t>>& slot) {
+            const auto result = slot->load();
+            if (result == 0) return false;  // still in flight
+            if (result != avatars::kSpawnFailed) {
+                log::Info("[avatar] despawn late-arriving ref {:08X}", result);
+                avatars::Despawn(result);
+            }
+            return true;
+        });
     }
 
     void GameBridge::LogSummary(net::NetworkWorker& worker)
@@ -145,8 +244,12 @@ namespace cosync::plugin
 
     void GameBridge::RebuildFromRoster(net::NetworkWorker& worker)
     {
+        const auto roster = worker.Roster();
+        for (auto& [id, remote] : _remotes) {
+            if (!roster.contains(id)) ReleaseAvatar(id, remote.avatar, "player left");
+        }
         std::map<PlayerId, RemotePlayer> next;
-        for (const auto& [id, name] : worker.Roster()) {
+        for (const auto& [id, name] : roster) {
             if (auto it = _remotes.find(id); it != _remotes.end()) {
                 next.emplace(id, std::move(it->second));
             } else {

@@ -26,6 +26,7 @@ namespace cosync::plugin
         std::string playerName = "Player";
         std::string password;
         log::Level logLevel = log::Level::Info;
+        bool remoteAvatars = false;  // [Experimental] RemoteAvatars
     };
 
     // Reads the INI; missing keys keep their defaults, invalid values are

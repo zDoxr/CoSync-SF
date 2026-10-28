@@ -85,6 +85,8 @@ namespace cosync::plugin
             c.password.resize(proto::kMaxPasswordBytes);
         }
 
+        c.remoteAvatars = ReadString(iniPath, L"Experimental", L"RemoteAvatars", "0") == "1";
+
         const auto level = ReadString(iniPath, L"Debug", L"LogLevel", "info");
         if (level == "debug") c.logLevel = log::Level::Debug;
         else if (level == "warn") c.logLevel = log::Level::Warn;

@@ -182,6 +182,8 @@ SFSE_PLUGIN_LOAD(const SFSE::LoadInterface* a_sfse)
                    addressLibrary.string());
     }
     plugin::GameBridge::Get().EnableLocalPlayerReads(haveAddressLibrary);
+    plugin::GameBridge::Get().EnableAvatars(haveAddressLibrary && g_config.remoteAvatars);
+    log::Info("remote avatars: {}", haveAddressLibrary && g_config.remoteAvatars ? "ON (experimental)" : "off");
 
     const auto* messaging = SFSE::GetMessagingInterface();
     const auto* tasks = SFSE::GetTaskInterface();

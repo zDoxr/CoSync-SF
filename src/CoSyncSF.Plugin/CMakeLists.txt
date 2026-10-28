@@ -1,5 +1,6 @@
 # SFSE plugin DLL (CoSyncSF.dll), built on CommonLibSF (see cmake/CommonLibSF.cmake).
 add_library(cosync_plugin SHARED
+    src/Avatars.cpp
     src/GameBridge.cpp
     src/GameState.cpp
     src/MultiInstance.cpp
