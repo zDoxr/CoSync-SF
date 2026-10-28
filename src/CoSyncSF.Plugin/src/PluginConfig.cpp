@@ -1,0 +1,124 @@
+#include "PluginConfig.h"
+
+#include "cosync/shared/Protocol.h"
+
+#include <Windows.h>
+#include <KnownFolders.h>
+#include <ShlObj.h>
+
+#include <charconv>
+#include <format>
+
+namespace cosync::plugin
+{
+    namespace
+    {
+        std::string ToUtf8(std::wstring_view w)
+        {
+            if (w.empty()) return {};
+            const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+            std::string out(static_cast<std::size_t>(n), '\0');
+            WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), out.data(), n, nullptr, nullptr);
+            return out;
+        }
+
+        std::string ReadString(const std::filesystem::path& ini, const wchar_t* section, const wchar_t* key, const std::string& fallback)
+        {
+            wchar_t buf[512]{};
+            constexpr wchar_t kMissing[] = L"\x1F__missing__";
+            GetPrivateProfileStringW(section, key, kMissing, buf, static_cast<DWORD>(std::size(buf)), ini.c_str());
+            if (std::wstring_view(buf) == kMissing) {
+                return fallback;
+            }
+            return ToUtf8(buf);
+        }
+
+        bool ParsePort(const std::string& s, std::uint16_t& out, bool allowZero)
+        {
+            unsigned v = 0;
+            auto [p, ec] = std::from_chars(s.data(), s.data() + s.size(), v);
+            if (ec != std::errc{} || p != s.data() + s.size() || v > 65535 || (!allowZero && v == 0)) return false;
+            out = static_cast<std::uint16_t>(v);
+            return true;
+        }
+    }
+
+    Config LoadConfig(const std::filesystem::path& iniPath, std::string& warnings)
+    {
+        Config c;
+        auto warn = [&](std::string msg) { warnings += msg + "\n"; };
+
+        const auto mode = ReadString(iniPath, L"Network", L"Mode", "off");
+        if (mode == "host") c.mode = Mode::Host;
+        else if (mode == "client") c.mode = Mode::Client;
+        else if (mode != "off") warn(std::format("unknown Mode '{}', using off", mode));
+
+        c.address = ReadString(iniPath, L"Network", L"Address", c.address);
+        if (const auto v = ReadString(iniPath, L"Network", L"Port", "37015"); !ParsePort(v, c.port, false)) {
+            warn(std::format("invalid Port '{}'", v));
+        }
+        if (const auto v = ReadString(iniPath, L"Network", L"DiscoveryPort", "37016"); !ParsePort(v, c.discoveryPort, true)) {
+            warn(std::format("invalid DiscoveryPort '{}'", v));
+        }
+        c.serverName = ReadString(iniPath, L"Network", L"ServerName", c.serverName);
+        if (c.serverName.empty() || !proto::IsValidText(c.serverName, proto::kMaxServerNameBytes)) {
+            warn("invalid ServerName, using default");
+            c.serverName = Config{}.serverName;
+        }
+        {
+            std::uint16_t maxPlayers = 0;
+            const auto v = ReadString(iniPath, L"Network", L"MaxPlayers", "8");
+            if (ParsePort(v, maxPlayers, false) && maxPlayers <= proto::kMaxPlayersLimit) c.maxPlayers = maxPlayers;
+            else warn(std::format("invalid MaxPlayers '{}'", v));
+        }
+
+        c.playerName = ReadString(iniPath, L"Player", L"Name", c.playerName);
+        if (!proto::IsValidPlayerName(c.playerName)) {
+            warn(std::format("invalid player Name '{}', using 'Player'", c.playerName));
+            c.playerName = "Player";
+        }
+        c.password = ReadString(iniPath, L"Security", L"Password", "");
+        if (c.password.size() > proto::kMaxPasswordBytes) {
+            warn("Password longer than 64 bytes; truncated");
+            c.password.resize(proto::kMaxPasswordBytes);
+        }
+
+        const auto level = ReadString(iniPath, L"Debug", L"LogLevel", "info");
+        if (level == "debug") c.logLevel = log::Level::Debug;
+        else if (level == "warn") c.logLevel = log::Level::Warn;
+        else if (level == "error") c.logLevel = log::Level::Error;
+        else if (level != "info") warn(std::format("unknown LogLevel '{}'", level));
+        return c;
+    }
+
+    std::filesystem::path ThisModuleDirectory()
+    {
+        HMODULE module = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(&ThisModuleDirectory), &module);
+        std::wstring path(MAX_PATH, L'\0');
+        for (;;) {
+            const DWORD n = GetModuleFileNameW(module, path.data(), static_cast<DWORD>(path.size()));
+            if (n < path.size()) {
+                path.resize(n);
+                break;
+            }
+            path.resize(path.size() * 2);
+        }
+        return std::filesystem::path(path).parent_path();
+    }
+
+    std::filesystem::path LogDirectory()
+    {
+        PWSTR docs = nullptr;
+        std::filesystem::path dir;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, KF_FLAG_DEFAULT, nullptr, &docs))) {
+            dir = std::filesystem::path(docs) / L"My Games" / L"Starfield" / L"SFSE" / L"Logs";
+        }
+        CoTaskMemFree(docs);
+        if (dir.empty()) {
+            dir = ThisModuleDirectory();
+        }
+        return dir;
+    }
+}

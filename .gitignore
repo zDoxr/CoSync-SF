@@ -1,0 +1,19 @@
+# Build output and package manager trees
+/build/
+/out/
+/vcpkg_installed/
+CMakeUserPresets.json
+
+# IDE state
+/.vs/
+/.vscode/
+/.idea/
+*.user
+
+# Local runtime config, logs and secrets
+*.log
+/local/
+.env
+*.pem
+*.key
+steam_appid.txt
