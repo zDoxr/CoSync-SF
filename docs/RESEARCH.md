@@ -113,7 +113,12 @@ Sending positions is the smallest part. Each system needs engine access on the *
 - **Creating a reference:** there is **no** C++ `PlaceObjectAtMe` / `PlaceAtMe` binding. The only route found is the Papyrus VM: `GameVM::GetSingleton()->GetVM()->DispatchMethodCall(handle, "ObjectReference", "PlaceAtMe", args, callback)`. [verified: headers]
 - **Risk on that route:** CommonLibSF declares the engine's `BSTThreadScrapFunction<F>` as `std::function<F>`. Nothing in CommonLibSF calls the dispatch functions, so whether that layout matches the engine's is unproven. A mismatch would crash inside the VM. [unverified]
 - **Console:** `RE::Script` exposes the console command table but no compile-and-run entry point, so `player.placeatme` cannot be issued from C++ without more RE. [verified: headers]
-- **Decision:** proxy spawning will be implemented only alongside an in-game test loop. The engine-independent parts are done: interpolation, stable location ids, and spawn/move/despawn points in `GameBridge`.
+- **Result (in game, 2026-10-27):** dispatching through `IVirtualMachine::DispatchMethodCall` works (the `std::function` alias is ABI-compatible in practice).
+  - `PlaceAtMe(Form, ...)` with an `ActorBase` object fails: Papyrus.0.log reports "Cannot call ObjectReference..PlaceAtMe: Type mismatch for argument 1", and the call returns None.
+  - `PlaceActorAtMe(actorbase, Int, location, Bool, Bool, Bool, Float[], Bool)` returns a new actor (FormID `FFxxxxxx`).
+  - Papyrus `SetPosition`, `SetAngle` and `EnableAI` work on it, with no errors logged.
+  - The VM is frozen during save loads (`VirtualMachine::freezeState`), and calls dispatched then are dropped without a reply.
+  - Placing the player's base NPC (`00000007`) yields a mostly invisible actor (only a faint head), because the player's appearance lives on the PlayerCharacter instance, not the base.
 
 ### 8.2 Stable location identity
 

@@ -40,7 +40,11 @@ Goal: two real Starfield clients show each other's position in the plugin log, t
    - About 19.5 updates/s each way, 32–34 ms rtt, 0 dropped events.
    - Same-location vs. elsewhere detection followed cell changes.
    - A `stale` pose was held while the other copy was on a loading screen.
-6. ⬜ Spawn a placeholder reference/actor for each remote player and move it every frame. Interpolated pose ✅ (`TransformInterpolator`); spawn/despawn/move points are marked in `GameBridge`. Spawning needs an in-game test loop (RESEARCH §8.1).
+6. 🎮 Remote-player avatars, partly working (2026-10-27): `PlaceActorAtMe` spawns an actor per remote player in the same cell. It is moved to the interpolated pose via Papyrus `SetPosition`/`SetAngle` (10 Hz) and despawned when the player leaves the cell.
+   - `PlaceAtMe(Form, ...)` was rejected ("Type mismatch for argument 1"); `PlaceActorAtMe(actorbase, ...)` works.
+   - Spawning must wait for the Papyrus VM to thaw after a load.
+   - Cloning the player's base NPC `00000007` rendered only a faint floating head (it has no body or outfit of its own). Now a nearby NPC's base is used; the player base is only a fallback. ⬜ Copy the remote player's actual appearance.
+   - ⬜ Walking/running animation (the avatar currently slides).
 
 ## Phase A — Connectivity
 - [x] ✅ Host/join workflow (protocol level), LAN direct IP

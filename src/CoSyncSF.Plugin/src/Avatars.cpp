@@ -137,7 +137,8 @@ namespace cosync::plugin::avatars
             if (!cell) return nullptr;
             RE::TESNPC* found = nullptr;
             cell->ForEachReference([&](const RE::NiPointer<RE::TESObjectREFR>& ref) {
-                if (ref && ref.get() != player && ref->Is(RE::FormType::kACHR)) {
+                // Skip the player and runtime-created actors (FFxxxxxx), e.g. our own avatars.
+                if (ref && ref.get() != player && (ref->GetFormID() >> 24) != 0xFF && ref->Is(RE::FormType::kACHR)) {
                     auto* actor = static_cast<RE::Actor*>(ref.get());
                     if (!actor->IsDead()) {
                         if (auto* npc = NpcBaseOf(actor)) {
@@ -163,14 +164,21 @@ namespace cosync::plugin::avatars
         }
         // Base forms are read at runtime rather than assumed.
         RE::TESNPC* npc = nullptr;
-        if (which == SpawnBase::PlayerBase) {
-            npc = NpcBaseOf(player);
-            detail = npc ? std::format("player base NPC {:08X}", npc->GetFormID()) : "player base NPC";
-        } else {
+        if (which == SpawnBase::NearbyNpc) {
+            // Preferred: an NPC base carries its own body, face and outfit. The
+            // player's base (00000007) does not; its clone rendered as a lone faint
+            // head in game (2026-10-27).
             std::uint32_t source = 0;
             npc = NearbyNpcBase(player, source);
-            detail = npc ? std::format("base NPC {:08X} of nearby actor {:08X}", npc->GetFormID(), source)
-                         : "nearby NPC base";
+            if (npc) {
+                detail = std::format("base NPC {:08X} of nearby actor {:08X}", npc->GetFormID(), source);
+            } else {
+                which = SpawnBase::PlayerBase;  // nobody nearby: fall back
+            }
+        }
+        if (which == SpawnBase::PlayerBase) {
+            npc = NpcBaseOf(player);
+            detail = npc ? std::format("player base NPC {:08X} (fallback)", npc->GetFormID()) : "player base NPC";
         }
         if (!npc) {
             error = std::format("no usable {}", detail);

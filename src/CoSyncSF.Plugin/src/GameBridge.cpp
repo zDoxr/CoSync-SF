@@ -193,8 +193,8 @@ namespace cosync::plugin
             ++avatar.attempts;
             // Back off: 5 s, 10 s, ... capped at 30 s.
             avatar.nextAttempt = now + std::min(kAvatarRetryInterval * avatar.attempts, std::chrono::seconds(30));
-            // Alternate base forms so a refusal specific to one of them is visible.
-            const auto which = (avatar.attempts % 2 == 1) ? avatars::SpawnBase::PlayerBase : avatars::SpawnBase::NearbyNpc;
+            // A nearby NPC's base renders fully; RequestSpawn falls back to the player base.
+            const auto which = avatars::SpawnBase::NearbyNpc;
             auto slot = std::make_shared<std::atomic<std::uint32_t>>(0);
             std::string error;
             std::string detail;
