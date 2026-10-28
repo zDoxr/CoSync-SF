@@ -12,7 +12,8 @@
 // CommonLibSF exposes no native reference-creation function, so placement
 // goes through Papyrus. Signatures were read from the game's compiled scripts
 // (Starfield - Misc.ba2, scripts/objectreference.pex and actor.pex, 1.16.244):
-//   ObjectReference PlaceAtMe(Form, Int, Bool, Bool, Bool, Float[], alias, Bool)
+//   ObjectReference PlaceAtMe(Form, Int, Bool, Bool, Bool, Float[], alias, Bool)  (rejected: see Avatars.cpp)
+//   actor PlaceActorAtMe(actorbase, Int, location, Bool, Bool, Bool, Float[], Bool)  (used)
 //   None SetPosition(Float, Float, Float)      None SetAngle(Float, Float, Float)  (degrees)
 //   None EnableAI(Bool abEnable, Bool abPauseVoice)
 //   None Disable(Bool abFadeOut)               None Delete()
@@ -23,7 +24,7 @@ namespace cosync::plugin::avatars
 {
     // Spawn results that are not a FormID (diagnostic detail for logs).
     inline constexpr std::uint32_t kSpawnCanceled = 0xFFFFFFF0;      // VM cancelled the call
-    inline constexpr std::uint32_t kSpawnReturnedNone = 0xFFFFFFF1;  // PlaceAtMe returned None
+    inline constexpr std::uint32_t kSpawnReturnedNone = 0xFFFFFFF1;  // placement returned None
     inline constexpr std::uint32_t kSpawnWrongType = 0xFFFFFFF2;     // result was not an object
     inline constexpr std::uint32_t kSpawnUnpackFailed = 0xFFFFFFF3;  // object, but no reference behind it
     [[nodiscard]] constexpr bool IsSpawnError(std::uint32_t v) noexcept { return v >= kSpawnCanceled; }

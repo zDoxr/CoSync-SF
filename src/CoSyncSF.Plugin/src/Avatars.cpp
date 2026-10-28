@@ -178,7 +178,7 @@ namespace cosync::plugin::avatars
         }
 
         // Verify the form converts to a script object before handing it to the VM;
-        // a failed conversion would silently become None inside PlaceAtMe.
+        // a failed conversion would silently become None inside the placement call.
         {
             Variable probe;
             RE::BSScript::PackVariable(probe, npc);
@@ -186,8 +186,8 @@ namespace cosync::plugin::avatars
                 error = std::format("{} could not be converted to a script object", detail);
                 return false;
             }
-            // PlaceAtMe's first parameter is `Form`; record what the form actually packed as.
-            log::Info("[avatar] PlaceAtMe arg 1 packs as [{}] (vm type id {}, form type {}); self is [{}]",
+            // Record what the base form actually packs as (script type chain).
+            log::Info("[avatar] base form packs as [{}] (vm type id {}, form type {}); self is [{}]",
                       TypeChain(RE::BSScript::get<RE::BSScript::Object>(probe)),
                       RE::BSScript::GetVMTypeID<RE::TESNPC>(), static_cast<int>(npc->GetFormType()),
                       TypeChain(ScriptObjectFor(static_cast<RE::Actor*>(player))));
@@ -199,18 +199,22 @@ namespace cosync::plugin::avatars
             return false;
         }
 
-        // PlaceAtMe(Form akFormToPlace, Int aiCount, Bool abForcePersist, Bool abInitiallyDisabled,
-        //           Bool abDeleteWhenAble, Float[] akOffsetValues, alias akAliasToFill, Bool abSnapOffsetToNavmesh)
+        // PlaceAtMe(Form, ...) was rejected by the VM with "Type mismatch for
+        // argument 1" although an ActorBase object was passed (2026-10-27), so use
+        // the actor-specific native, whose first parameter is exactly actorbase:
+        // PlaceActorAtMe(actorbase akActorToPlace, Int aiLevelMod, location akEncLoc,
+        //                Bool abForcePersist, Bool abInitiallyDisabled, Bool abDeleteWhenAble,
+        //                Float[] akOffsetValues, Bool abSnapOffsetToNavmesh)
         const bool dispatched = Dispatch(
-            self, "PlaceAtMe",
+            self, "PlaceActorAtMe",
             [npc](RE::BSScrapArray<Variable>& a) {
                 Push(a, npc);
-                Push(a, static_cast<std::int32_t>(1));
+                Push(a, static_cast<std::int32_t>(0));  // aiLevelMod
+                PushNone(a);     // akEncLoc
                 Push(a, false);  // abForcePersist
                 Push(a, false);  // abInitiallyDisabled
                 Push(a, true);   // abDeleteWhenAble
                 PushNone(a);     // akOffsetValues
-                PushNone(a);     // akAliasToFill
                 Push(a, true);   // abSnapOffsetToNavmesh
 
                 // Diagnostic: the raw Papyrus type of each argument actually sent
@@ -223,7 +227,7 @@ namespace cosync::plugin::avatars
                         types += std::format("[{}]", TypeChain(RE::BSScript::get<RE::BSScript::Object>(a[i])));
                     }
                 }
-                log::Info("[avatar] PlaceAtMe args sent: {}", types);
+                log::Info("[avatar] PlaceActorAtMe args sent: {}", types);
             },
             [result](const Variable& v) {
                 std::uint32_t id = kSpawnWrongType;
@@ -242,7 +246,7 @@ namespace cosync::plugin::avatars
             },
             [result] { result->store(kSpawnCanceled); });
         if (!dispatched) {
-            error = "VM refused PlaceAtMe dispatch";
+            error = "VM refused PlaceActorAtMe dispatch";
         }
         return dispatched;
     }
@@ -260,7 +264,7 @@ namespace cosync::plugin::avatars
     {
         switch (v) {
         case kSpawnCanceled: return "VM cancelled the call";
-        case kSpawnReturnedNone: return "PlaceAtMe returned None";
+        case kSpawnReturnedNone: return "PlaceActorAtMe returned None";
         case kSpawnWrongType: return "result was not an object";
         case kSpawnUnpackFailed: return "object result had no reference behind it";
         default: return "unknown";
