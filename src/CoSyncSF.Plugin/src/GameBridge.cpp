@@ -21,7 +21,7 @@ namespace cosync::plugin
         constexpr auto kAvatarSpawnTimeout = std::chrono::seconds(10);  // e.g. VM frozen during a load
         constexpr std::uint32_t kAvatarLoggedAttempts = 6;              // keep retrying, but quietly
         constexpr auto kVmSettleTime = std::chrono::seconds(2);           // VM must be running this long first
-        constexpr std::uint32_t kTemplateMaxTries = 8;                    // FindRandomActor may return the player
+        constexpr std::uint32_t kTemplateMaxTries = 16;  // FindRandomActor may return the player or leveled NPCs
     }
 
     GameBridge& GameBridge::Get()
@@ -157,12 +157,13 @@ namespace cosync::plugin
 
     bool GameBridge::TemplateDecided() const noexcept
     {
-        return _templateActor != 0 || _templateTries >= kTemplateMaxTries;
+        return _templateBase != 0 || _templateTries >= kTemplateMaxTries;
     }
 
     void GameBridge::UpdateTemplate()
     {
-        // Pick one nearby NPC (not the player) whose base all avatars will use.
+        // Find one nearby NPC (not the player) and its data-file base, which all
+        // avatars then copy. Two VM queries: FindRandomActor, then GetBaseObject.
         if (TemplateDecided() || !_vmSettled || !_inWorld) {
             return;
         }
@@ -174,11 +175,25 @@ namespace cosync::plugin
                 return;
             }
             _templateQuery.reset();
-            if (!avatars::IsSpawnError(result) && result != avatars::PlayerRefId()) {
-                _templateActor = result;
-                log::Info("[avatar] template actor {:08X} chosen (try {})", result, _templateTries);
-            } else if (_templateTries >= kTemplateMaxTries) {
-                log::Warn("[avatar] no nearby NPC found after {} tries; avatars will use the player base",
+            if (_templateActor == 0) {
+                // Phase 1 answered: a random nearby actor.
+                if (!avatars::IsSpawnError(result) && result != avatars::PlayerRefId()) {
+                    _templateActor = result;
+                    _nextTemplateTry = {};  // ask for its base right away
+                }
+            } else {
+                // Phase 2 answered: that actor's base as scripts see it.
+                if (avatars::IsPlaceableBase(result)) {
+                    _templateBase = result;
+                    log::Info("[avatar] template: actor {:08X}, base NPC {:08X} (try {})", _templateActor, result,
+                              _templateTries);
+                } else {
+                    log::Info("[avatar] actor {:08X} skipped: base {:08X} not placeable", _templateActor, result);
+                    _templateActor = 0;
+                }
+            }
+            if (_templateBase == 0 && _templateTries >= kTemplateMaxTries) {
+                log::Warn("[avatar] no placeable NPC base found after {} tries; avatars will use the player base",
                           _templateTries);
             }
             return;
@@ -186,15 +201,22 @@ namespace cosync::plugin
         if (now < _nextTemplateTry) {
             return;
         }
-        ++_templateTries;
-        _nextTemplateTry = now + std::chrono::seconds(2);
         auto slot = std::make_shared<std::atomic<std::uint32_t>>(0);
         std::string error;
-        if (avatars::RequestTemplateActor(slot, error)) {
+        bool dispatched = false;
+        if (_templateActor == 0) {
+            ++_templateTries;
+            _nextTemplateTry = now + std::chrono::seconds(2);
+            dispatched = avatars::RequestTemplateActor(slot, error);
+        } else {
+            dispatched = avatars::RequestBaseObject(_templateActor, slot, error);
+            if (!dispatched) _templateActor = 0;
+        }
+        if (dispatched) {
             _templateQuery = std::move(slot);
             _templateQueriedAt = now;
         } else {
-            log::Warn("[avatar] template search not dispatched: {}", error);
+            log::Warn("[avatar] template query not dispatched: {}", error);
         }
     }
 
@@ -242,7 +264,7 @@ namespace cosync::plugin
             auto slot = std::make_shared<std::atomic<std::uint32_t>>(0);
             std::string error;
             std::string detail;
-            if (avatars::RequestSpawn(_templateActor, slot, error, detail)) {
+            if (avatars::RequestSpawn(_templateBase, slot, error, detail)) {
                 avatar.pending = std::move(slot);
                 avatar.requestedAt = now;
                 avatar.baseDetail = detail;

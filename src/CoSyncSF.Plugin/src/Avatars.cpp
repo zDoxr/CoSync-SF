@@ -155,6 +155,45 @@ namespace cosync::plugin::avatars
         return player ? player->GetFormID() : 0;
     }
 
+    bool IsPlaceableBase(std::uint32_t baseId)
+    {
+        if (baseId == 0 || (baseId >> 24) == 0xFF) {
+            return false;
+        }
+        const auto* form = RE::TESForm::LookupByID(baseId);
+        return form && form->Is(RE::FormType::kNPC_);
+    }
+
+    bool RequestBaseObject(std::uint32_t actorId, std::shared_ptr<std::atomic<std::uint32_t>> result,
+                           std::string& error)
+    {
+        auto* actor = LookupActor(actorId);
+        if (!actor) {
+            error = std::format("actor {:08X} not found", actorId);
+            return false;
+        }
+        // Form GetBaseObject() native (signature from the game's objectreference.pex).
+        const bool dispatched = Dispatch(
+            ScriptObjectFor(actor), "GetBaseObject", [](RE::BSScrapArray<Variable>&) {},
+            [result](const Variable& v) {
+                std::uint32_t id = kSpawnReturnedNone;
+                if (v.is<RE::BSScript::Object>() && RE::BSScript::get<RE::BSScript::Object>(v)) {
+                    // Only an NPC_ base is usable; other forms fail to unpack as TESNPC.
+                    if (auto* npc = RE::BSScript::UnpackVariable<RE::TESNPC>(v)) {
+                        id = npc->GetFormID();
+                    } else {
+                        id = kSpawnWrongType;
+                    }
+                }
+                result->store(id);
+            },
+            [result] { result->store(kSpawnCanceled); });
+        if (!dispatched) {
+            error = "VM refused GetBaseObject dispatch";
+        }
+        return dispatched;
+    }
+
     bool RequestTemplateActor(std::shared_ptr<std::atomic<std::uint32_t>> result, std::string& error)
     {
         auto* player = RE::PlayerCharacter::GetSingleton();
@@ -192,7 +231,7 @@ namespace cosync::plugin::avatars
         return dispatched;
     }
 
-    bool RequestSpawn(std::uint32_t templateActorId, std::shared_ptr<std::atomic<std::uint32_t>> result,
+    bool RequestSpawn(std::uint32_t baseNpcId, std::shared_ptr<std::atomic<std::uint32_t>> result,
                       std::string& error, std::string& detail)
     {
         auto* player = RE::PlayerCharacter::GetSingleton();
@@ -204,11 +243,9 @@ namespace cosync::plugin::avatars
         // body, face and outfit. The player's base (00000007) does not; its clone
         // rendered as a lone faint head in game (2026-10-27).
         RE::TESNPC* npc = nullptr;
-        if (templateActorId != 0) {
-            npc = NpcBaseOf(LookupActor(templateActorId));
-            if (npc) {
-                detail = std::format("base NPC {:08X} of nearby actor {:08X}", npc->GetFormID(), templateActorId);
-            }
+        if (IsPlaceableBase(baseNpcId)) {
+            npc = static_cast<RE::TESNPC*>(RE::TESForm::LookupByID(baseNpcId));
+            detail = std::format("base NPC {:08X} of a nearby actor", baseNpcId);
         }
         if (!npc) {
             npc = NpcBaseOf(player);

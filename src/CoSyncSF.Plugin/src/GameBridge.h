@@ -71,8 +71,9 @@ namespace cosync::plugin
         bool _vmReady = false;
         bool _vmSettled = false;
         std::chrono::steady_clock::time_point _vmReadySince{};
-        // Nearby NPC whose base the avatars copy (0 = not found yet / player base).
+        // Nearby NPC whose data-file base the avatars copy (0 = not found yet / player base).
         std::uint32_t _templateActor = 0;
+        std::uint32_t _templateBase = 0;
         std::uint32_t _templateTries = 0;
         std::shared_ptr<std::atomic<std::uint32_t>> _templateQuery;
         std::chrono::steady_clock::time_point _templateQueriedAt{};

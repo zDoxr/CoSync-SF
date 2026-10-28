@@ -40,12 +40,21 @@ namespace cosync::plugin::avatars
     // or another kSpawn* error. It may be the player itself; callers retry.
     bool RequestTemplateActor(std::shared_ptr<std::atomic<std::uint32_t>> result, std::string& error);
 
-    // Places an actor with the base NPC of `templateActorId` (0, or a non-NPC,
-    // falls back to the player's base) at the local player. When the VM finishes,
-    // *result is set to the new reference's FormID or a kSpawn* error code.
-    // Returns false and sets `error` if it could not be dispatched; `detail`
-    // describes the base used (for logs).
-    bool RequestSpawn(std::uint32_t templateActorId, std::shared_ptr<std::atomic<std::uint32_t>> result,
+    // Asks the VM for an actor's base as scripts see it (ObjectReference.GetBaseObject).
+    // In memory, loaded NPCs carry bases generated at runtime (FFxxxxxx), and
+    // PlaceActorAtMe returns None for those (2026-10-27). *result receives the
+    // base's FormID if it is an NPC_, else a kSpawn* error.
+    bool RequestBaseObject(std::uint32_t actorId, std::shared_ptr<std::atomic<std::uint32_t>> result,
+                           std::string& error);
+
+    // True if `baseId` is an NPC_ defined in a data file (not generated at runtime).
+    [[nodiscard]] bool IsPlaceableBase(std::uint32_t baseId);
+
+    // Places an actor of base NPC `baseNpcId` (0, or not placeable, falls back to
+    // the player's base) at the local player. When the VM finishes, *result is
+    // set to the new reference's FormID or a kSpawn* error code. Returns false
+    // and sets `error` if it could not be dispatched; `detail` describes the base.
+    bool RequestSpawn(std::uint32_t baseNpcId, std::shared_ptr<std::atomic<std::uint32_t>> result,
                       std::string& error, std::string& detail);
 
     // True if the Papyrus VM is running normally. During a save load the VM is
