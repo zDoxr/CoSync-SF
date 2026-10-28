@@ -200,7 +200,7 @@ for ($n = 1; $n -le $Count; $n++) {
     $before = @(Get-Process Starfield -ErrorAction SilentlyContinue | ForEach-Object Id)
 
     $saved = @{}
-    foreach ($k in 'COSYNC_INI', 'COSYNC_INSTANCE', 'SteamAppId', 'SteamGameId') {
+    foreach ($k in 'COSYNC_INI', 'COSYNC_INSTANCE', 'COSYNC_MULTI_INSTANCE', 'SteamAppId', 'SteamGameId') {
         $saved[$k] = [Environment]::GetEnvironmentVariable($k, 'Process')
     }
     try {
@@ -209,6 +209,9 @@ for ($n = 1; $n -le $Count; $n++) {
             $env:COSYNC_INSTANCE = "p$n"
         }
         if ($useSfse) {
+            # Starfield exits if a "Starfield" window already exists; the CoSync
+            # plugin bypasses that check only when this is set (MultiInstance.cpp).
+            $env:COSYNC_MULTI_INSTANCE = '1'
             Start-Process -FilePath $loader -WorkingDirectory $GameDir | Out-Null
         } else {
             # Same environment sfse_loader sets, so Steam does not relaunch the game.
@@ -237,7 +240,10 @@ for ($n = 1; $n -le $Count; $n++) {
     # A game that only allows one copy usually exits right after starting.
     Start-Sleep -Seconds 5
     if ($proc.HasExited) {
-        $hint = if ($n -gt 1) { '; Starfield may be refusing a second copy while one is running' } else { '' }
+        $hint = if ($n -gt 1) {
+            if ($useSfse) { '; check CoSyncSF-p' + $n + '.log for the multi-instance line' }
+            else { '; Starfield refuses a second copy (FindWindowA single-instance check); use SFSE mode' }
+        } else { '' }
         throw "instance ${n} (pid $($proc.Id)) exited right after starting (code $($proc.ExitCode))$hint"
     }
 

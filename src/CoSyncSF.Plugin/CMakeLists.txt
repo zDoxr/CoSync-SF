@@ -2,6 +2,7 @@
 add_library(cosync_plugin SHARED
     src/GameBridge.cpp
     src/GameState.cpp
+    src/MultiInstance.cpp
     src/Plugin.cpp
     src/PluginConfig.cpp
 )

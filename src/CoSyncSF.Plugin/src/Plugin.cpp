@@ -7,6 +7,7 @@
 
 #include "GameBridge.h"
 #include "GameState.h"
+#include "MultiInstance.h"
 #include "PluginConfig.h"
 
 #include "cosync/net/NetworkWorker.h"
@@ -147,6 +148,14 @@ SFSE_PLUGIN_LOAD(const SFSE::LoadInterface* a_sfse)
     if (g_runtimeVersion != game::kTargetRuntime) {
         log::Warn("built for Starfield {}, running {}", game::FormatRuntimeVersion(game::kTargetRuntime),
                   game::FormatRuntimeVersion(g_runtimeVersion));
+    }
+
+    // Must happen during Load: the game's single-instance check runs later in startup.
+    std::string multiInstance;
+    if (plugin::InstallMultiInstancePatchIfRequested(multiInstance)) {
+        log::Warn("{}", multiInstance);
+    } else {
+        log::Info("{}", multiInstance);
     }
 
     std::string warnings;

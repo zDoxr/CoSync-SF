@@ -119,6 +119,15 @@ Sending positions is the smallest part. Each system needs engine access on the *
 
 Starfield FormIDs encode the defining plugin in their high bits: full `0x00–0xFC`, medium `0xFD`+index byte, small `0xFE`+12-bit index, runtime `0xFF`. CoSync resolves the index through `TESDataHandler::compiledFileCollection` (`files` / `mediumFiles` / `smallFiles`; the handler pointer comes with SFSE's `PostDataLoad` message). It then sends `FNV-1a(lowercase(plugin file name), local id)`, so players with different load orders agree on cell identity. The medium-master bit layout is [unverified] in game; check the `local location:` log line.
 
+### 8.3 Running two copies on one PC
+
+Starfield.exe 1.16.244 enforces one running copy. [verified by static analysis of the binary]
+- During startup it calls `FindWindowA("Starfield", NULL)` (call site `0x14189923C`).
+- If a window is found, it calls `SetForegroundWindow` on it and returns false, ending startup.
+- Its two `CreateMutexA` calls are unnamed (`NULL` name), so they are not instance guards.
+
+For local testing, the plugin can redirect the game's `USER32!FindWindowA` import entry, located by walking the PE import table at runtime with no hardcoded offsets. The replacement returns "not found" for that one query. It is enabled only by `COSYNC_MULTI_INSTANCE=1`, which `launch-instances.ps1` sets. Observed: the second copy loaded SFSE and CoSyncSF, then exited before data load.
+
 ## 9. Existing multiplayer efforts
 
 - **Starfield Together** (from members of the Skyrim Together team) was abandoned in Dec 2023. The developer reported having ported roughly 70% of Skyrim Together's code, and said the code was released as open source. [reported: [Starfield Portal](https://starfieldportal.com/article/skyrim-together-modders-cease-work-on-starfield-together), [PC Gamer](https://www.pcgamer.com/creator-behind-hugely-popular-skyrim-co-op-mod-gives-up-on-the-starfield-version-of-it-because-drum-roll-please-this-game-is-fing-trash)]. The repository location could not be found during this pass. **Do not reuse its code without first verifying its license** (Skyrim Together Reborn is GPL-3.0).

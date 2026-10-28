@@ -21,8 +21,8 @@ Nothing is 🎮 yet.
 - [x] ✅ Network worker thread with bounded game-thread queues (tested host + client on separate threads)
 - [x] ✅ `cosync-server` standalone session server and `cosync-testclient`
 - [x] 🟡 SFSE plugin DLL builds; exported version data verified (Address Library v2, 1.14.70+ layout, `{0x01100F40}`); **not yet loaded in game**
-- [ ] ⛔ Load the plugin in Starfield 1.16.244 under SFSE 0.2.21. Blocked: SFSE and the Address Library are Nexus-only downloads (need the owner's login). `scripts/install-sfse.ps1` is ready.
-- [x] 🟡 Two-instance launcher (`scripts/launch-instances.ps1`), windowed via StarfieldPrefs.ini. Whether Starfield allows a second copy is **untested**.
+- [x] 🎮 Plugin loads in Starfield 1.16.244 under SFSE 0.2.21 with the Address Library; in-game host started and its local client joined (2026-10-27).
+- [x] 🟡 Two-instance launcher (`scripts/launch-instances.ps1`), windowed via StarfieldPrefs.ini. Starfield's single-instance guard (`FindWindowA("Starfield")` then `SetForegroundWindow`, then exit) is found and bypassed by an opt-in IAT patch (`MultiInstance.cpp`, `COSYNC_MULTI_INSTANCE=1`). Second copy not yet confirmed running.
 - [ ] ⬜ LAN test across two physical machines (broadcast discovery and firewall behaviour)
 
 ## Milestone 2 — First in-game sync: see the other player's position (next)
