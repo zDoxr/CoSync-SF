@@ -216,6 +216,15 @@ namespace cosync::plugin::avatars
         return dispatched;
     }
 
+    bool VmReady()
+    {
+        const auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+        if (!vm) {
+            return false;
+        }
+        return vm->freezeState == RE::BSScript::Internal::VirtualMachine::FreezeState::kNotFrozen && !vm->overstressed;
+    }
+
     const char* DescribeSpawnError(std::uint32_t v) noexcept
     {
         switch (v) {

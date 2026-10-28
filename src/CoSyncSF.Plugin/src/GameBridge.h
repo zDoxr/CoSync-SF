@@ -60,11 +60,15 @@ namespace cosync::plugin
         void RemoveRemote(PlayerId id);
         void RemoveAllRemotes();
         void ReapOrphans();
+        void UpdateVmState();
 
         std::atomic<net::NetworkWorker*> _worker{ nullptr };
         bool _readLocalPlayer = false;
         bool _inWorld = false;
         bool _avatarsEnabled = false;
+        bool _vmReady = false;
+        bool _vmSettled = false;
+        std::chrono::steady_clock::time_point _vmReadySince{};
         // Spawns that were still in flight when their avatar was released.
         std::vector<std::shared_ptr<std::atomic<std::uint32_t>>> _orphans;
         std::uint32_t _localLocationId = 0;

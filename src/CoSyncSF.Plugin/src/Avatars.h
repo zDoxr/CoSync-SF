@@ -41,6 +41,12 @@ namespace cosync::plugin::avatars
     bool RequestSpawn(SpawnBase which, std::shared_ptr<std::atomic<std::uint32_t>> result, std::string& error,
                       std::string& detail);
 
+    // True if the Papyrus VM is running normally. During a save load the VM is
+    // frozen (Papyrus.0.log: "VM is freezing" ... "VM is thawing") and calls
+    // dispatched then are dropped without a reply (observed 2026-10-27).
+    // Reads BSScript::Internal::VirtualMachine::freezeState and ::overstressed.
+    [[nodiscard]] bool VmReady();
+
     // Stops the avatar's AI so the game does not steer it. False if the ref is gone.
     bool Freeze(std::uint32_t refId);
 

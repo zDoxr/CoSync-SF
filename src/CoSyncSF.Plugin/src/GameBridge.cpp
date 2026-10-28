@@ -20,6 +20,7 @@ namespace cosync::plugin
         constexpr auto kAvatarRetryInterval = std::chrono::seconds(5);
         constexpr auto kAvatarSpawnTimeout = std::chrono::seconds(10);  // e.g. VM frozen during a load
         constexpr std::uint32_t kAvatarLoggedAttempts = 6;              // keep retrying, but quietly
+        constexpr auto kVmSettleTime = std::chrono::seconds(2);           // VM must be running this long first
     }
 
     GameBridge& GameBridge::Get()
@@ -119,6 +120,9 @@ namespace cosync::plugin
 
         // Same clock domain as RemoteSample::receivedMs (stamped on the network thread).
         const auto nowMs = net::SteadyNowMs();
+        if (_avatarsEnabled) {
+            UpdateVmState();
+        }
         for (auto& [id, remote] : _remotes) {
             remote.pose = remote.interpolator.Sample(nowMs);
             if (_avatarsEnabled) {
@@ -126,6 +130,27 @@ namespace cosync::plugin
             }
         }
         ReapOrphans();
+    }
+
+    void GameBridge::UpdateVmState()
+    {
+        const bool ready = avatars::VmReady();
+        const auto now = std::chrono::steady_clock::now();
+        if (ready && !_vmReady) {
+            _vmReadySince = now;
+            log::Info("[avatar] Papyrus VM running");
+        } else if (!ready && _vmReady) {
+            log::Info("[avatar] Papyrus VM frozen (loading); spawns paused");
+            // Calls sent before the freeze are dropped by it: stop waiting for them.
+            for (auto& [id, remote] : _remotes) {
+                if (remote.avatar.pending) {
+                    _orphans.push_back(std::move(remote.avatar.pending));
+                    remote.avatar.nextAttempt = {};
+                }
+            }
+        }
+        _vmReady = ready;
+        _vmSettled = ready && now - _vmReadySince >= kVmSettleTime;
     }
 
     void GameBridge::UpdateAvatar(PlayerId id, RemotePlayer& remote)
@@ -164,7 +189,7 @@ namespace cosync::plugin
             return;
         }
 
-        if (avatar.refId == 0 && !avatar.pending && now >= avatar.nextAttempt) {
+        if (avatar.refId == 0 && !avatar.pending && _vmSettled && now >= avatar.nextAttempt) {
             ++avatar.attempts;
             // Back off: 5 s, 10 s, ... capped at 30 s.
             avatar.nextAttempt = now + std::min(kAvatarRetryInterval * avatar.attempts, std::chrono::seconds(30));
