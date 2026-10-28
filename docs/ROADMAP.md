@@ -28,7 +28,7 @@ Nothing is 🎮 yet.
 
 Goal: two real Starfield clients show each other's position in the plugin log, then as a placeholder in the world.
 
-1. ⬜ **Licensing decision**: link CommonLibSF (GPL-3.0+ with modding exception) or not. See RESEARCH §3.
+1. ✅ **Licensing decision**: CommonLibSF approved (2026-10-27). The repo stays private until complete. See RESEARCH §3.
 2. ⬜ Integrate CommonLibSF (xmake vs. CMake decision) and verify the Address Library for 1.16.244.
 3. ⬜ On the main thread, read `PlayerCharacter::GetSingleton()` position/angle plus parent cell/worldspace → `SubmitLocalTransform` at 20 Hz.
 4. ⬜ Define a stable `locationId` mapping (plugin file + local FormID → session-scoped id table), sent reliably.

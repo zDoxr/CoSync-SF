@@ -36,7 +36,7 @@ Last updated: 2026-10-27. Each finding is tagged:
 - Repo: [libxse/commonlibsf](https://github.com/libxse/commonlibsf). Active (push 2026-10-06). Build: **xmake 3.0+**, C++23, MSVC or clang-cl. [verified: README]
 - Provides reverse-engineered engine types: `RE::PlayerCharacter::GetSingleton()`, `RE::TESObjectREFR::GetPosition()/GetAngle()`, `RE::Actor`, plus Address Library ID tables (`IDs.h`). [verified: headers]
 - **License: GPL-3.0-or-later** with a Modding Exception and a GPL-3.0 Linking Exception. If CoSync-SF links CommonLibSF and distributes binaries, **the plugin's source must be distributed under GPL-3.0-compatible terms**; Starfield itself and SFSE are exempt. [verified: [README](https://github.com/libxse/commonlibsf#license), [EXCEPTIONS](https://github.com/libxse/commonlibsf/blob/main/EXCEPTIONS)]
-  - ⚠ **Decision needed from the project owner** before milestone 2 links it: accept GPL for the plugin (the server/network libraries can stay separately licensed if they don't link CommonLibSF), or avoid CommonLibSF and maintain our own minimal RE layer (more work, more risk).
+  - ✅ **Decided (2026-10-27, project owner):** CommonLibSF may be used. The repository stays **private until the project is complete**. GPL obligations apply only when binaries are distributed, so they are deferred until release; at that point the plugin's source must be published under GPL-compatible terms.
 - Build-system implication: CommonLibSF is xmake-first; CoSync-SF is CMake + vcpkg. Options are (a) build the plugin with xmake and keep the rest in CMake, (b) consume CommonLibSF as a prebuilt static lib, or (c) check whether a CMake/vcpkg port exists at integration time. [unverified which is cleanest]
 
 ## 4. Address Library
@@ -120,6 +120,6 @@ Sending positions is the smallest part. Each system needs engine access on the *
 | protobuf (+ abseil, utf8_range) | GNS internals | BSD-3 / Apache-2.0 / MIT | Yes (static) |
 | SFSE `PluginAPI.h` | Plugin ABI | MIT (that file only) | Header only |
 | GoogleTest | Tests | BSD-3-Clause | No |
-| CommonLibSF (future) | Engine RE | GPL-3.0+ with exceptions | **Decision pending** |
+| CommonLibSF (milestone 2) | Engine RE | GPL-3.0+ with exceptions | Approved; plugin source goes GPL-compatible at release |
 
 See `THIRD_PARTY_NOTICES.md`. The CoSync-SF project licence itself is **not yet chosen** and is the owner's decision.

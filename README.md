@@ -101,4 +101,4 @@ At this milestone the plugin only connects and logs session events. It does not 
 
 ## License
 
-Not yet chosen by the project owner. Third-party components keep their own licences; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Private project. Nothing is published or distributed until the project is complete. The project licence will be chosen at release. The SFSE plugin will link CommonLibSF (GPL-3.0+), so its source must be released under GPL-compatible terms when binaries are distributed. Third-party components keep their own licences; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
