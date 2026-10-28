@@ -99,13 +99,25 @@ Sending positions is the smallest part. Each system needs engine access on the *
 | System | Engine surface (CommonLibSF names) | Status |
 |---|---|---|
 | Local transform | `PlayerCharacter::GetSingleton()`, `TESObjectREFR::GetPosition/GetAngle`, parent cell / worldspace | Read API exists in CommonLibSF [verified headers]; not called yet |
-| Remote player proxy | Spawn an actor (PlaceAtMe-style), disable its AI/packages, set position each frame, drive animation graph variables | [unverified] needs RE and in-game testing |
+| Remote player proxy | Spawn an actor (PlaceAtMe-style), disable its AI/packages, set position each frame, drive animation graph variables | [unverified] needs in-game testing; see §8.1 |
 | Animation | Behaviour graph variables / animation events | [unverified] |
 | Location identity | FormIDs depend on load order; need (plugin filename, local FormID) pairs, plus planet/system context | Protocol carries an opaque `locationId` for now |
 | Loading screens / cell transitions | Main thread stalls; remote updates must be coalesced (we use a latest-value mailbox) | Network side done; game side [unverified] |
 | Spaceflight, landing, ship interiors | Separate world spaces and ship-as-reference semantics | Research |
 | Inventory, combat, NPC AI, quests | Need hooks, ownership/authority model and validation | Research |
 | Save games | Each client has its own save; shared progression needs a separate persistence model | Research |
+
+### 8.1 Spawning remote-player proxies: what CommonLibSF offers (commit 9d090c4c)
+
+- **Moving an existing actor:** `RE::Actor::SetPosition(const NiPoint3&, bool updateCharController)` is a declared virtual (vtable slot 0x137). `RE::ProcessLists::EnableAI(bool)` exists (global AI toggle, too coarse for per-actor use). [verified: headers]
+- **Creating a reference:** there is **no** C++ `PlaceObjectAtMe` / `PlaceAtMe` binding. The only route found is the Papyrus VM: `GameVM::GetSingleton()->GetVM()->DispatchMethodCall(handle, "ObjectReference", "PlaceAtMe", args, callback)`. [verified: headers]
+- **Risk on that route:** CommonLibSF declares the engine's `BSTThreadScrapFunction<F>` as `std::function<F>`. Nothing in CommonLibSF calls the dispatch functions, so whether that layout matches the engine's is unproven. A mismatch would crash inside the VM. [unverified]
+- **Console:** `RE::Script` exposes the console command table but no compile-and-run entry point, so `player.placeatme` cannot be issued from C++ without more RE. [verified: headers]
+- **Decision:** proxy spawning will be implemented only alongside an in-game test loop. The engine-independent parts are done: interpolation, stable location ids, and spawn/move/despawn points in `GameBridge`.
+
+### 8.2 Stable location identity
+
+Starfield FormIDs encode the defining plugin in their high bits: full `0x00–0xFC`, medium `0xFD`+index byte, small `0xFE`+12-bit index, runtime `0xFF`. CoSync resolves the index through `TESDataHandler::compiledFileCollection` (`files` / `mediumFiles` / `smallFiles`; the handler pointer comes with SFSE's `PostDataLoad` message). It then sends `FNV-1a(lowercase(plugin file name), local id)`, so players with different load orders agree on cell identity. The medium-master bit layout is [unverified] in game; check the `local location:` log line.
 
 ## 9. Existing multiplayer efforts
 

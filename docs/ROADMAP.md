@@ -32,9 +32,9 @@ Goal: two real Starfield clients show each other's position in the plugin log, t
 1. ✅ **Licensing decision**: CommonLibSF approved (2026-10-27). The repo stays private until complete. See RESEARCH §3.
 2. ✅ CommonLibSF integrated via CMake (`cmake/CommonLibSF.cmake`, pinned commits, mirrors upstream xmake flags). The Address Library file name (`versionlib-1-16-244-0.bin`) is checked at load. 🟡 The DB itself is not yet installed.
 3. 🟡 On the main thread, read `PlayerCharacter::GetSingleton()` position/angle plus parent cell → `SubmitLocalTransform` at 20 Hz (`GameState.cpp`, `GameBridge::SampleLocalPlayer`). Implemented; not yet run in game.
-4. ⬜ Define a stable `locationId` mapping (plugin file + local FormID → session-scoped id table), sent reliably.
+4. 🟡 Stable `locationId`: FNV-1a of (plugin file name, local FormID) resolved via `TESDataHandler::compiledFileCollection` (`forms::` unit-tested; engine lookup not yet run in game).
 5. ⬜ In-game test: two PCs (or two accounts) connect; each log shows the other's live coordinates.
-6. ⬜ Spawn a placeholder reference/actor for each remote player and move it every frame (interpolated). Needs RE: spawning API, disabling AI, and safe teardown on cell unload.
+6. ⬜ Spawn a placeholder reference/actor for each remote player and move it every frame. Interpolated pose ✅ (`TransformInterpolator`); spawn/despawn/move points are marked in `GameBridge`. Spawning needs an in-game test loop (RESEARCH §8.1).
 
 ## Phase A — Connectivity
 - [x] ✅ Host/join workflow (protocol level), LAN direct IP
@@ -45,7 +45,7 @@ Goal: two real Starfield clients show each other's position in the plugin log, t
 
 ## Phase B — Player synchronization
 - [ ] ⬜ Remote player proxies: spawn/despawn lifecycle tied to PlayerJoined/Left and cell loads
-- [ ] ⬜ Interpolation buffer (100–150 ms), extrapolation cap, and packet-loss handling (protocol side is already unreliable + sequenced)
+- [x] ✅ Interpolation buffer (100 ms delay, 250 ms extrapolation cap, teleport/location snap, shortest-arc angles), receive-timestamped on the network thread, drop-oldest when the game thread stalls
 - [ ] ⬜ Animation state replication (graph variables / events)
 - [ ] ⬜ Respawn and disconnect cleanup
 

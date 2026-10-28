@@ -3,7 +3,6 @@
 #include <cstddef>
 #include <deque>
 #include <mutex>
-#include <unordered_map>
 #include <vector>
 
 namespace cosync
@@ -25,6 +24,20 @@ namespace cosync
             }
             _items.push_back(std::move(value));
             return true;
+        }
+
+        // Always stores `value`, discarding the oldest item if full. Returns false
+        // if something was discarded. For data where newer supersedes older.
+        bool PushDropOldest(T value)
+        {
+            std::scoped_lock lock(_mutex);
+            bool kept = true;
+            if (_items.size() >= _capacity) {
+                _items.pop_front();
+                kept = false;
+            }
+            _items.push_back(std::move(value));
+            return kept;
         }
 
         // Moves up to `max` items into `out`; returns how many were moved.
@@ -58,47 +71,5 @@ namespace cosync
         mutable std::mutex _mutex;
         std::deque<T> _items;
         std::size_t _capacity;
-    };
-
-    // Keeps only the newest value per key. Used for state where intermediate
-    // values are worthless (e.g. remote transforms while the game thread is
-    // stalled on a loading screen); memory is bounded by the number of keys.
-    template <class Key, class Value>
-    class LatestValueMailbox
-    {
-    public:
-        void Put(const Key& key, Value value)
-        {
-            std::scoped_lock lock(_mutex);
-            _values.insert_or_assign(key, std::move(value));
-        }
-
-        void Erase(const Key& key)
-        {
-            std::scoped_lock lock(_mutex);
-            _values.erase(key);
-        }
-
-        void TakeAll(std::vector<Value>& out)
-        {
-            std::unordered_map<Key, Value> taken;
-            {
-                std::scoped_lock lock(_mutex);
-                taken.swap(_values);
-            }
-            for (auto& [k, v] : taken) {
-                out.push_back(std::move(v));
-            }
-        }
-
-        void Clear()
-        {
-            std::scoped_lock lock(_mutex);
-            _values.clear();
-        }
-
-    private:
-        std::mutex _mutex;
-        std::unordered_map<Key, Value> _values;
     };
 }

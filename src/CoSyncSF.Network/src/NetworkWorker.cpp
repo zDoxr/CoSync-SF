@@ -10,7 +10,7 @@
 namespace cosync::net
 {
     NetworkWorker::NetworkWorker(WorkerConfig config) :
-        _config(std::move(config)), _events(_config.eventQueueCapacity)
+        _config(std::move(config)), _events(_config.eventQueueCapacity), _remoteTransforms(_config.transformQueueCapacity)
     {}
 
     NetworkWorker::~NetworkWorker() { Stop(); }
@@ -47,7 +47,10 @@ namespace cosync::net
         return _events.Drain(out, max);
     }
 
-    void NetworkWorker::TakeRemoteTransforms(std::vector<proto::PlayerTransform>& out) { _remoteTransforms.TakeAll(out); }
+    void NetworkWorker::TakeRemoteTransforms(std::vector<RemoteSample>& out)
+    {
+        _remoteTransforms.Drain(out, _remoteTransforms.Capacity());
+    }
 
     void NetworkWorker::SubmitLocalTransform(std::uint32_t locationId, const Vec3& position, const Vec3& rotation)
     {
@@ -138,11 +141,10 @@ namespace cosync::net
             client.Update(events);
             for (auto& ev : events) {
                 if (auto* t = std::get_if<client_event::RemoteTransform>(&ev)) {
-                    _remoteTransforms.Put(t->transform.playerId, t->transform);
+                    const auto& m = t->transform;
+                    _remoteTransforms.PushDropOldest(
+                        { m.playerId, { SteadyNowMs(), m.sequence, m.locationId, m.position, m.rotation } });
                     continue;
-                }
-                if (auto* left = std::get_if<client_event::PeerLeft>(&ev)) {
-                    _remoteTransforms.Erase(left->playerId);
                 }
                 if (!_events.TryPush(std::move(ev))) {
                     ++dropped;

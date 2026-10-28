@@ -6,6 +6,7 @@
 // thread, and only when the Address Library database is installed.
 
 #include "GameBridge.h"
+#include "GameState.h"
 #include "PluginConfig.h"
 
 #include "cosync/net/NetworkWorker.h"
@@ -107,6 +108,7 @@ namespace
             break;
         case SFSE::MessagingInterface::kPostDataLoad:
             log::Info("game data loaded");
+            plugin::SetDataHandler(msg->data);  // TESDataHandler*, per SFSE PluginAPI.h
             StartNetworking();
             break;
         case kMessage_PreLoadGame:

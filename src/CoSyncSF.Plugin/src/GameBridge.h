@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cosync/net/NetworkWorker.h"
+#include "cosync/shared/Interpolation.h"
 
 #include <atomic>
 #include <chrono>
@@ -13,7 +14,8 @@ namespace cosync::plugin
     // Game-thread side of the plugin. Tick() runs once per frame on Starfield's
     // main thread (SFSE permanent task) and is the ONLY caller of engine code
     // (GameState.cpp). It samples the local player's transform for the network
-    // thread and consumes session events and remote transforms.
+    // thread, consumes session events, and keeps an interpolated pose for every
+    // remote player.
     class GameBridge
     {
     public:
@@ -29,22 +31,26 @@ namespace cosync::plugin
         struct RemotePlayer
         {
             std::string name;
-            proto::PlayerTransform lastTransform;
-            std::uint64_t transformsReceived = 0;
+            TransformInterpolator interpolator;
+            std::optional<InterpolatedPose> pose;  // this frame's render pose
+            std::uint64_t samplesReceived = 0;
         };
 
         void RebuildFromRoster(net::NetworkWorker& worker);
         void SampleLocalPlayer(net::NetworkWorker& worker);
+        void UpdateRemotePlayers(net::NetworkWorker& worker);
+        void LogSummary(net::NetworkWorker& worker);
 
         std::atomic<net::NetworkWorker*> _worker{ nullptr };
-        std::uint64_t _frame = 0;
         bool _readLocalPlayer = false;
+        bool _inWorld = false;
+        std::uint32_t _localLocationId = 0;
+        std::string _localLocationName;
         std::chrono::steady_clock::time_point _nextSample{};
         std::chrono::steady_clock::time_point _nextLocalLog{};
         std::chrono::steady_clock::time_point _nextSummary{};
-        bool _inWorld = false;
         std::vector<net::ClientEvent> _events;
-        std::vector<proto::PlayerTransform> _transforms;
+        std::vector<net::RemoteSample> _samples;
         std::map<PlayerId, RemotePlayer> _remotes;
     };
 }

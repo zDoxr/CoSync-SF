@@ -1,7 +1,9 @@
 # Protocol definitions, serialization and shared types. No platform or
 # transport dependencies so it can be used by plugin, server and tests alike.
 add_library(cosync_shared STATIC
+    src/FormKey.cpp
     src/GameRuntime.cpp
+    src/Interpolation.cpp
     src/Log.cpp
     src/Protocol.cpp
 )

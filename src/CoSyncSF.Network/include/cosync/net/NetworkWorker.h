@@ -3,6 +3,7 @@
 #include "cosync/net/SessionClient.h"
 #include "cosync/net/SessionServer.h"
 #include "cosync/shared/Concurrency.h"
+#include "cosync/shared/Interpolation.h"
 
 #include <atomic>
 #include <future>
@@ -31,6 +32,14 @@ namespace cosync::net
         ClientConfig client;
         std::uint32_t tickHz = 60;
         std::size_t eventQueueCapacity = 1024;
+        std::size_t transformQueueCapacity = 2048;  // oldest dropped first when full
+    };
+
+    // A remote transform with the local monotonic time it was received.
+    struct RemoteSample
+    {
+        PlayerId player = kInvalidPlayerId;
+        TimedTransform transform;
     };
 
     struct WorkerStatus
@@ -64,8 +73,9 @@ namespace cosync::net
 
         // Session/roster events in order. Transforms are delivered separately.
         std::size_t DrainEvents(std::vector<ClientEvent>& out, std::size_t max);
-        // Newest transform per remote player since the last call.
-        void TakeRemoteTransforms(std::vector<proto::PlayerTransform>& out);
+        // Every remote transform received since the last call, oldest first
+        // (bounded; if the game thread stalls, the oldest samples are dropped).
+        void TakeRemoteTransforms(std::vector<RemoteSample>& out);
         // Latest local transform; the network thread sends at most one per tick.
         void SubmitLocalTransform(std::uint32_t locationId, const Vec3& position, const Vec3& rotation);
         // True once if events were dropped because the game thread fell behind;
@@ -92,7 +102,7 @@ namespace cosync::net
         std::atomic<bool> _overflow{ false };
 
         BoundedQueue<ClientEvent> _events;
-        LatestValueMailbox<PlayerId, proto::PlayerTransform> _remoteTransforms;
+        BoundedQueue<RemoteSample> _remoteTransforms;
 
         std::mutex _localMutex;
         std::optional<LocalTransform> _localTransform;

@@ -42,22 +42,14 @@ TEST(BoundedQueue, ConcurrentProducersNeverExceedCapacity)
     EXPECT_EQ(q.Size(), 1000u);
 }
 
-TEST(LatestValueMailbox, KeepsNewestPerKey)
+TEST(BoundedQueue, PushDropOldestKeepsNewest)
 {
-    LatestValueMailbox<int, std::string> box;
-    box.Put(1, "a1");
-    box.Put(2, "b1");
-    box.Put(1, "a2");
-    std::vector<std::string> out;
-    box.TakeAll(out);
-    std::ranges::sort(out);
-    EXPECT_EQ(out, (std::vector<std::string>{ "a2", "b1" }));
-    out.clear();
-    box.TakeAll(out);
-    EXPECT_TRUE(out.empty());
-
-    box.Put(3, "c");
-    box.Erase(3);
-    box.TakeAll(out);
-    EXPECT_TRUE(out.empty());
+    BoundedQueue<int> q(3);
+    EXPECT_TRUE(q.PushDropOldest(1));
+    EXPECT_TRUE(q.PushDropOldest(2));
+    EXPECT_TRUE(q.PushDropOldest(3));
+    EXPECT_FALSE(q.PushDropOldest(4));  // 1 discarded
+    std::vector<int> out;
+    q.Drain(out, 10);
+    EXPECT_EQ(out, (std::vector<int>{ 2, 3, 4 }));
 }

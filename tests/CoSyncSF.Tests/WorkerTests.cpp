@@ -56,14 +56,15 @@ TEST(NetworkWorker, HostAndClientSyncAcrossThreads)
     EXPECT_EQ(guest.Roster().begin()->second, "Host");
 
     // "Game thread" submits a transform on the guest; host's game thread reads it.
-    std::vector<proto::PlayerTransform> received;
+    std::vector<RemoteSample> received;
     ASSERT_TRUE(WaitFor([&] {
         guest.SubmitLocalTransform(42, { 1, 2, 3 }, { 0, 0, 0 });
         host.TakeRemoteTransforms(received);
         return !received.empty();
     }));
-    EXPECT_EQ(received.back().locationId, 42u);
-    EXPECT_EQ(received.back().playerId, guest.Status().localPlayer);
+    EXPECT_EQ(received.back().transform.locationId, 42u);
+    EXPECT_EQ(received.back().player, guest.Status().localPlayer);
+    EXPECT_GT(received.back().transform.receivedMs, 0u);
 
     // Ordered session events were queued for the game thread.
     std::vector<ClientEvent> events;
