@@ -24,7 +24,7 @@ Nothing is 🎮 yet.
 - [x] 🎮 Plugin loads in Starfield 1.16.244 under SFSE 0.2.21 with the Address Library; in-game host started and its local client joined (2026-10-27).
 - [x] 🟡 Two-instance launcher (`scripts/launch-instances.ps1`), windowed via StarfieldPrefs.ini. Starfield's single-instance guard (`FindWindowA("Starfield")` then `SetForegroundWindow`, then exit) is bypassed by an opt-in IAT patch (`MultiInstance.cpp`, `COSYNC_MULTI_INSTANCE=1`).
 - [x] 🎮 **Two Starfield copies on one PC, connected** (2026-10-27): copy 1 hosts, copy 2 joined as player 2, and each sees the other in its roster (rtt 16–33 ms). Steam did not block the second process on the same account; no Steam emulator was needed, unlike the FO4 project.
-- [ ] 🟡 Unfocused copy pauses its game thread (network thread keeps running). Launcher now sets `[General] bAlwaysActive=1`; not yet verified.
+- [x] 🎮 Unfocused copy kept running with `[General] bAlwaysActive=1` (set by the launcher); verified 2026-10-27.
 - [ ] ⬜ LAN test across two physical machines (broadcast discovery and firewall behaviour)
 
 ## Milestone 2 — First in-game sync: see the other player's position (next)
@@ -33,9 +33,13 @@ Goal: two real Starfield clients show each other's position in the plugin log, t
 
 1. ✅ **Licensing decision**: CommonLibSF approved (2026-10-27). The repo stays private until complete. See RESEARCH §3.
 2. ✅ CommonLibSF integrated via CMake (`cmake/CommonLibSF.cmake`, pinned commits, mirrors upstream xmake flags). The Address Library file name (`versionlib-1-16-244-0.bin`) is checked at load. 🟡 The DB itself is not yet installed.
-3. 🟡 On the main thread, read `PlayerCharacter::GetSingleton()` position/angle plus parent cell → `SubmitLocalTransform` at 20 Hz (`GameState.cpp`, `GameBridge::SampleLocalPlayer`). Implemented; not yet run in game.
-4. 🟡 Stable `locationId`: FNV-1a of (plugin file name, local FormID) resolved via `TESDataHandler::compiledFileCollection` (`forms::` unit-tested; engine lookup not yet run in game).
-5. ⬜ In-game test: two PCs (or two accounts) connect; each log shows the other's live coordinates.
+3. 🎮 Local player position/angle plus parent cell read on the main thread at 20 Hz and sent (`GameState.cpp`, `GameBridge::SampleLocalPlayer`). **Verified in game 2026-10-27.**
+4. 🎮 Stable `locationId` via `TESDataHandler::compiledFileCollection`. Verified in game for full-master forms (`Starfield.esm:000125B6`, cell changes detected). Medium/small masters still untested.
+5. 🎮 **In-game test passed (2026-10-27), two copies on one PC:**
+   - Each log shows the other's live coordinates, matching that player's own reported position exactly when stationary.
+   - About 19.5 updates/s each way, 32–34 ms rtt, 0 dropped events.
+   - Same-location vs. elsewhere detection followed cell changes.
+   - A `stale` pose was held while the other copy was on a loading screen.
 6. ⬜ Spawn a placeholder reference/actor for each remote player and move it every frame. Interpolated pose ✅ (`TransformInterpolator`); spawn/despawn/move points are marked in `GameBridge`. Spawning needs an in-game test loop (RESEARCH §8.1).
 
 ## Phase A — Connectivity

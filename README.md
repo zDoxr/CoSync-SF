@@ -18,9 +18,9 @@ Two to eight players join one session, over LAN by direct address or discovery, 
 | LAN discovery (UDP query/response) | Implemented, tested over loopback unicast |
 | `cosync-server` (standalone session server) | Implemented. It does **not** simulate Starfield. |
 | `cosync-testclient` (headless protocol client) | Implemented |
-| SFSE plugin (`CoSyncSF.dll`, Starfield 1.16.244, CommonLibSF) | Builds. Starts networking after data load, reads the local player's cell/position/rotation at 20 Hz on the main thread, sends it, and logs remote players' positions. **Not yet tested in game.** |
+| SFSE plugin (`CoSyncSF.dll`, Starfield 1.16.244, CommonLibSF) | **Runs in game.** Hosts or joins after data load, reads the local player's cell/position/rotation at 20 Hz on the main thread, sends it, and logs remote players' interpolated positions |
 | Steam networking, NAT traversal | Researched, not implemented |
-| Player/NPC/world synchronization | Position exchange implemented (log only, untested in game); no visible remote characters yet |
+| Player/NPC/world synchronization | **Position exchange verified in game** (two copies on one PC, ~20 Hz, same-cell detection). Results appear in the logs only; no visible remote characters yet |
 
 ## Architecture
 
