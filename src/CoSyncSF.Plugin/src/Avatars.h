@@ -30,17 +30,23 @@ namespace cosync::plugin::avatars
     [[nodiscard]] constexpr bool IsSpawnError(std::uint32_t v) noexcept { return v >= kSpawnCanceled; }
     [[nodiscard]] const char* DescribeSpawnError(std::uint32_t v) noexcept;
 
-    enum class SpawnBase
-    {
-        PlayerBase,  // the local player's own base NPC
-        NearbyNpc,   // the base NPC of a living, non-player actor in the player's cell
-    };
-    // Places a copy of the chosen base NPC at the local player. When the VM
-    // finishes, *result is set to the new reference's FormID or to one of the
-    // kSpawn* error codes. Returns false and sets `error` if the call could not
-    // be dispatched; `detail` describes the base form used (for logs).
-    bool RequestSpawn(SpawnBase which, std::shared_ptr<std::atomic<std::uint32_t>> result, std::string& error,
-                      std::string& detail);
+    // Radius for picking a template actor near the player (engine units).
+    inline constexpr float kTemplateSearchRadius = 4096.0f;
+
+    [[nodiscard]] std::uint32_t PlayerRefId();
+
+    // Asks the VM for a random actor near the local player (Game.FindRandomActor).
+    // *result receives that actor's FormID, kSpawnReturnedNone if there is none,
+    // or another kSpawn* error. It may be the player itself; callers retry.
+    bool RequestTemplateActor(std::shared_ptr<std::atomic<std::uint32_t>> result, std::string& error);
+
+    // Places an actor with the base NPC of `templateActorId` (0, or a non-NPC,
+    // falls back to the player's base) at the local player. When the VM finishes,
+    // *result is set to the new reference's FormID or a kSpawn* error code.
+    // Returns false and sets `error` if it could not be dispatched; `detail`
+    // describes the base used (for logs).
+    bool RequestSpawn(std::uint32_t templateActorId, std::shared_ptr<std::atomic<std::uint32_t>> result,
+                      std::string& error, std::string& detail);
 
     // True if the Papyrus VM is running normally. During a save load the VM is
     // frozen (Papyrus.0.log: "VM is freezing" ... "VM is thawing") and calls

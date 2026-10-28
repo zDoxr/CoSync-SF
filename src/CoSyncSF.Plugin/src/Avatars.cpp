@@ -125,58 +125,92 @@ namespace cosync::plugin::avatars
         RE::TESNPC* NpcBaseOf(RE::TESObjectREFR* ref)
         {
             if (!ref) return nullptr;
+            // TESObjectREFR::data.objectReference; read correctly for the player (00000007).
             auto base = ref->GetBaseObject();
             if (!base || !base->Is(RE::FormType::kNPC_)) return nullptr;
             return static_cast<RE::TESNPC*>(base.get());
         }
 
-        // First living actor in the player's cell that is not the player.
-        RE::TESNPC* NearbyNpcBase(RE::PlayerCharacter* player, std::uint32_t& refId)
+        bool DispatchStatic(const char* object, const char* function, ArgsFn args,
+                            std::function<void(const Variable&)> onResult, std::function<void()> onCancel)
         {
-            const auto* cell = player->parentCell;
-            if (!cell) return nullptr;
-            RE::TESNPC* found = nullptr;
-            cell->ForEachReference([&](const RE::NiPointer<RE::TESObjectREFR>& ref) {
-                // Skip the player and runtime-created actors (FFxxxxxx), e.g. our own avatars.
-                if (ref && ref.get() != player && (ref->GetFormID() >> 24) != 0xFF && ref->Is(RE::FormType::kACHR)) {
-                    auto* actor = static_cast<RE::Actor*>(ref.get());
-                    if (!actor->IsDead()) {
-                        if (auto* npc = NpcBaseOf(actor)) {
-                            found = npc;
-                            refId = actor->GetFormID();
-                            return RE::BSContainer::ForEachResult::kStop;
-                        }
-                    }
-                }
-                return RE::BSContainer::ForEachResult::kContinue;
-            });
-            return found;
+            auto* vm = VM();
+            if (!vm) {
+                return false;
+            }
+            RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
+            callback.reset(new Callback(std::move(onResult), std::move(onCancel)));
+            const RE::BSTThreadScrapFunction<bool(RE::BSScrapArray<Variable>&)> packer =
+                [args = std::move(args)](RE::BSScrapArray<Variable>& a) {
+                    args(a);
+                    return true;
+                };
+            return vm->DispatchStaticCall(object, function, packer, callback, 0);
         }
     }
 
-    bool RequestSpawn(SpawnBase which, std::shared_ptr<std::atomic<std::uint32_t>> result, std::string& error,
-                      std::string& detail)
+    std::uint32_t PlayerRefId()
+    {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        return player ? player->GetFormID() : 0;
+    }
+
+    bool RequestTemplateActor(std::shared_ptr<std::atomic<std::uint32_t>> result, std::string& error)
     {
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player) {
             error = "no player";
             return false;
         }
-        // Base forms are read at runtime rather than assumed.
+        const auto pos = player->GetPosition();
+        // Game.FindRandomActor(Float afX, Float afY, Float afZ, Float afRadius), global native
+        // (signature from the game's game.pex). Replaces walking TESObjectCELL::references,
+        // whose layout is not verified for 1.16.244 and which crashed the game (2026-10-27).
+        const bool dispatched = DispatchStatic(
+            "Game", "FindRandomActor",
+            [pos](RE::BSScrapArray<Variable>& a) {
+                Push(a, pos.x);
+                Push(a, pos.y);
+                Push(a, pos.z);
+                Push(a, kTemplateSearchRadius);
+            },
+            [result](const Variable& v) {
+                std::uint32_t id = kSpawnReturnedNone;
+                if (v.is<RE::BSScript::Object>() && RE::BSScript::get<RE::BSScript::Object>(v)) {
+                    if (auto* actor = RE::BSScript::UnpackVariable<RE::Actor>(v)) {
+                        id = actor->GetFormID();
+                    } else {
+                        id = kSpawnUnpackFailed;
+                    }
+                }
+                result->store(id);
+            },
+            [result] { result->store(kSpawnCanceled); });
+        if (!dispatched) {
+            error = "VM refused Game.FindRandomActor dispatch";
+        }
+        return dispatched;
+    }
+
+    bool RequestSpawn(std::uint32_t templateActorId, std::shared_ptr<std::atomic<std::uint32_t>> result,
+                      std::string& error, std::string& detail)
+    {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) {
+            error = "no player";
+            return false;
+        }
+        // Preferred: the base of a real NPC near the player, which carries its own
+        // body, face and outfit. The player's base (00000007) does not; its clone
+        // rendered as a lone faint head in game (2026-10-27).
         RE::TESNPC* npc = nullptr;
-        if (which == SpawnBase::NearbyNpc) {
-            // Preferred: an NPC base carries its own body, face and outfit. The
-            // player's base (00000007) does not; its clone rendered as a lone faint
-            // head in game (2026-10-27).
-            std::uint32_t source = 0;
-            npc = NearbyNpcBase(player, source);
+        if (templateActorId != 0) {
+            npc = NpcBaseOf(LookupActor(templateActorId));
             if (npc) {
-                detail = std::format("base NPC {:08X} of nearby actor {:08X}", npc->GetFormID(), source);
-            } else {
-                which = SpawnBase::PlayerBase;  // nobody nearby: fall back
+                detail = std::format("base NPC {:08X} of nearby actor {:08X}", npc->GetFormID(), templateActorId);
             }
         }
-        if (which == SpawnBase::PlayerBase) {
+        if (!npc) {
             npc = NpcBaseOf(player);
             detail = npc ? std::format("player base NPC {:08X} (fallback)", npc->GetFormID()) : "player base NPC";
         }

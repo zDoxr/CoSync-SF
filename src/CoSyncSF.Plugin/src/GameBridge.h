@@ -61,6 +61,8 @@ namespace cosync::plugin
         void RemoveAllRemotes();
         void ReapOrphans();
         void UpdateVmState();
+        void UpdateTemplate();
+        [[nodiscard]] bool TemplateDecided() const noexcept;
 
         std::atomic<net::NetworkWorker*> _worker{ nullptr };
         bool _readLocalPlayer = false;
@@ -69,6 +71,12 @@ namespace cosync::plugin
         bool _vmReady = false;
         bool _vmSettled = false;
         std::chrono::steady_clock::time_point _vmReadySince{};
+        // Nearby NPC whose base the avatars copy (0 = not found yet / player base).
+        std::uint32_t _templateActor = 0;
+        std::uint32_t _templateTries = 0;
+        std::shared_ptr<std::atomic<std::uint32_t>> _templateQuery;
+        std::chrono::steady_clock::time_point _templateQueriedAt{};
+        std::chrono::steady_clock::time_point _nextTemplateTry{};
         // Spawns that were still in flight when their avatar was released.
         std::vector<std::shared_ptr<std::atomic<std::uint32_t>>> _orphans;
         std::uint32_t _localLocationId = 0;

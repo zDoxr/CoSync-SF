@@ -21,6 +21,7 @@ namespace cosync::plugin
         constexpr auto kAvatarSpawnTimeout = std::chrono::seconds(10);  // e.g. VM frozen during a load
         constexpr std::uint32_t kAvatarLoggedAttempts = 6;              // keep retrying, but quietly
         constexpr auto kVmSettleTime = std::chrono::seconds(2);           // VM must be running this long first
+        constexpr std::uint32_t kTemplateMaxTries = 8;                    // FindRandomActor may return the player
     }
 
     GameBridge& GameBridge::Get()
@@ -122,6 +123,7 @@ namespace cosync::plugin
         const auto nowMs = net::SteadyNowMs();
         if (_avatarsEnabled) {
             UpdateVmState();
+            UpdateTemplate();
         }
         for (auto& [id, remote] : _remotes) {
             remote.pose = remote.interpolator.Sample(nowMs);
@@ -151,6 +153,49 @@ namespace cosync::plugin
         }
         _vmReady = ready;
         _vmSettled = ready && now - _vmReadySince >= kVmSettleTime;
+    }
+
+    bool GameBridge::TemplateDecided() const noexcept
+    {
+        return _templateActor != 0 || _templateTries >= kTemplateMaxTries;
+    }
+
+    void GameBridge::UpdateTemplate()
+    {
+        // Pick one nearby NPC (not the player) whose base all avatars will use.
+        if (TemplateDecided() || !_vmSettled || !_inWorld) {
+            return;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (_templateQuery) {
+            const auto result = _templateQuery->load();
+            if (result == 0) {
+                if (now - _templateQueriedAt > kAvatarSpawnTimeout) _templateQuery.reset();  // dropped; retry
+                return;
+            }
+            _templateQuery.reset();
+            if (!avatars::IsSpawnError(result) && result != avatars::PlayerRefId()) {
+                _templateActor = result;
+                log::Info("[avatar] template actor {:08X} chosen (try {})", result, _templateTries);
+            } else if (_templateTries >= kTemplateMaxTries) {
+                log::Warn("[avatar] no nearby NPC found after {} tries; avatars will use the player base",
+                          _templateTries);
+            }
+            return;
+        }
+        if (now < _nextTemplateTry) {
+            return;
+        }
+        ++_templateTries;
+        _nextTemplateTry = now + std::chrono::seconds(2);
+        auto slot = std::make_shared<std::atomic<std::uint32_t>>(0);
+        std::string error;
+        if (avatars::RequestTemplateActor(slot, error)) {
+            _templateQuery = std::move(slot);
+            _templateQueriedAt = now;
+        } else {
+            log::Warn("[avatar] template search not dispatched: {}", error);
+        }
     }
 
     void GameBridge::UpdateAvatar(PlayerId id, RemotePlayer& remote)
@@ -189,16 +234,15 @@ namespace cosync::plugin
             return;
         }
 
-        if (avatar.refId == 0 && !avatar.pending && _vmSettled && now >= avatar.nextAttempt) {
+        if (avatar.refId == 0 && !avatar.pending && _vmSettled && TemplateDecided() && now >= avatar.nextAttempt) {
             ++avatar.attempts;
             // Back off: 5 s, 10 s, ... capped at 30 s.
             avatar.nextAttempt = now + std::min(kAvatarRetryInterval * avatar.attempts, std::chrono::seconds(30));
             // A nearby NPC's base renders fully; RequestSpawn falls back to the player base.
-            const auto which = avatars::SpawnBase::NearbyNpc;
             auto slot = std::make_shared<std::atomic<std::uint32_t>>(0);
             std::string error;
             std::string detail;
-            if (avatars::RequestSpawn(which, slot, error, detail)) {
+            if (avatars::RequestSpawn(_templateActor, slot, error, detail)) {
                 avatar.pending = std::move(slot);
                 avatar.requestedAt = now;
                 avatar.baseDetail = detail;
