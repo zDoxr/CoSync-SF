@@ -22,7 +22,9 @@ Nothing is 🎮 yet.
 - [x] ✅ `cosync-server` standalone session server and `cosync-testclient`
 - [x] 🟡 SFSE plugin DLL builds; exported version data verified (Address Library v2, 1.14.70+ layout, `{0x01100F40}`); **not yet loaded in game**
 - [x] 🎮 Plugin loads in Starfield 1.16.244 under SFSE 0.2.21 with the Address Library; in-game host started and its local client joined (2026-10-27).
-- [x] 🟡 Two-instance launcher (`scripts/launch-instances.ps1`), windowed via StarfieldPrefs.ini. Starfield's single-instance guard (`FindWindowA("Starfield")` then `SetForegroundWindow`, then exit) is found and bypassed by an opt-in IAT patch (`MultiInstance.cpp`, `COSYNC_MULTI_INSTANCE=1`). Second copy not yet confirmed running.
+- [x] 🟡 Two-instance launcher (`scripts/launch-instances.ps1`), windowed via StarfieldPrefs.ini. Starfield's single-instance guard (`FindWindowA("Starfield")` then `SetForegroundWindow`, then exit) is bypassed by an opt-in IAT patch (`MultiInstance.cpp`, `COSYNC_MULTI_INSTANCE=1`).
+- [x] 🎮 **Two Starfield copies on one PC, connected** (2026-10-27): copy 1 hosts, copy 2 joined as player 2, and each sees the other in its roster (rtt 16–33 ms). Steam did not block the second process on the same account; no Steam emulator was needed, unlike the FO4 project.
+- [ ] 🟡 Unfocused copy pauses its game thread (network thread keeps running). Launcher now sets `[General] bAlwaysActive=1`; not yet verified.
 - [ ] ⬜ LAN test across two physical machines (broadcast discovery and firewall behaviour)
 
 ## Milestone 2 — First in-game sync: see the other player's position (next)

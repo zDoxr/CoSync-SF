@@ -145,7 +145,10 @@ foreach ($name in $iniFiles) {
     Set-IniValue $path 'Display' 'bBorderless' '0'
     Set-IniValue $path 'Display' 'iSize W' "$Width"
     Set-IniValue $path 'Display' 'iSize H' "$Height"
-    Write-Host "windowed ${Width}x${Height} -> $path"
+    # Bethesda games pause their main loop when the window loses focus; with two
+    # copies only the focused one would tick (observed 2026-10-27). Keep both running.
+    Set-IniValue $path 'General' 'bAlwaysActive' '1'
+    Write-Host "windowed ${Width}x${Height}, always active -> $path"
 }
 if ($WindowedOnly) { return }
 

@@ -126,7 +126,11 @@ Starfield.exe 1.16.244 enforces one running copy. [verified by static analysis o
 - If a window is found, it calls `SetForegroundWindow` on it and returns false, ending startup.
 - Its two `CreateMutexA` calls are unnamed (`NULL` name), so they are not instance guards.
 
-For local testing, the plugin can redirect the game's `USER32!FindWindowA` import entry, located by walking the PE import table at runtime with no hardcoded offsets. The replacement returns "not found" for that one query. It is enabled only by `COSYNC_MULTI_INSTANCE=1`, which `launch-instances.ps1` sets. Observed: the second copy loaded SFSE and CoSyncSF, then exited before data load.
+For local testing, the plugin can redirect the game's `USER32!FindWindowA` import entry, located by walking the PE import table at runtime with no hardcoded offsets. The replacement returns "not found" for that one query. It is enabled only by `COSYNC_MULTI_INSTANCE=1`, which `launch-instances.ps1` sets. Observed before the patch: the second copy loaded SFSE and CoSyncSF, then exited before data load. With the patch, both copies run and connect. Steam accepted the second process on the same account, so no `SteamAPI_RestartAppIfNecessary` hook or emulator was needed. The FO4 project needed gbe_fork for this; see `CWO-CoSync/CoSyncMultiInstance`.
+
+Unfocused windows: Bethesda's main loop pauses when the window loses focus, so the unfocused copy's game thread (and CoSync's per-frame task) stops. `bAlwaysActive=1` under `[General]` is the standard engine switch for this. [unverified for Starfield]
+
+Shared saves: both copies write to the same `Documents\My Games\Starfield\Saves`. The FO4 project hit save-collision crashes from this and redirected the second copy to `Saves_P2`. Not yet needed here; avoid saving in both copies at once.
 
 ## 9. Existing multiplayer efforts
 
