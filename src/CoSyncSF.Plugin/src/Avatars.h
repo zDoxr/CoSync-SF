@@ -21,11 +21,25 @@
 // and is published through the atomic.
 namespace cosync::plugin::avatars
 {
-    // Places a copy of the local player's base NPC at the local player. When the
-    // VM finishes, *result is set to the new reference's FormID (or to
-    // kSpawnFailed). Returns false and sets `error` if the call could not be dispatched.
-    inline constexpr std::uint32_t kSpawnFailed = 0xFFFFFFFF;
-    bool RequestSpawn(std::shared_ptr<std::atomic<std::uint32_t>> result, std::string& error);
+    // Spawn results that are not a FormID (diagnostic detail for logs).
+    inline constexpr std::uint32_t kSpawnCanceled = 0xFFFFFFF0;      // VM cancelled the call
+    inline constexpr std::uint32_t kSpawnReturnedNone = 0xFFFFFFF1;  // PlaceAtMe returned None
+    inline constexpr std::uint32_t kSpawnWrongType = 0xFFFFFFF2;     // result was not an object
+    inline constexpr std::uint32_t kSpawnUnpackFailed = 0xFFFFFFF3;  // object, but no reference behind it
+    [[nodiscard]] constexpr bool IsSpawnError(std::uint32_t v) noexcept { return v >= kSpawnCanceled; }
+    [[nodiscard]] const char* DescribeSpawnError(std::uint32_t v) noexcept;
+
+    enum class SpawnBase
+    {
+        PlayerBase,  // the local player's own base NPC
+        NearbyNpc,   // the base NPC of a living, non-player actor in the player's cell
+    };
+    // Places a copy of the chosen base NPC at the local player. When the VM
+    // finishes, *result is set to the new reference's FormID or to one of the
+    // kSpawn* error codes. Returns false and sets `error` if the call could not
+    // be dispatched; `detail` describes the base form used (for logs).
+    bool RequestSpawn(SpawnBase which, std::shared_ptr<std::atomic<std::uint32_t>> result, std::string& error,
+                      std::string& detail);
 
     // Stops the avatar's AI so the game does not steer it. False if the ref is gone.
     bool Freeze(std::uint32_t refId);

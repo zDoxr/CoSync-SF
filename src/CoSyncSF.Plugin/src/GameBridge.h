@@ -38,6 +38,8 @@ namespace cosync::plugin
             std::uint32_t attempts = 0;
             std::chrono::steady_clock::time_point nextAttempt{};
             std::chrono::steady_clock::time_point nextMove{};
+            std::chrono::steady_clock::time_point requestedAt{};
+            std::string baseDetail;
         };
 
         struct RemotePlayer

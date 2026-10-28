@@ -149,6 +149,11 @@ foreach ($name in $iniFiles) {
     # Bethesda games pause their main loop when the window loses focus; with two
     # copies only the focused one would tick (observed 2026-10-27). Keep both running.
     Set-IniValue $path 'General' 'bAlwaysActive' '1'
+    if ($Avatars) {
+        # Papyrus log (Documents\My Games\Starfield\Logs\Script) records VM call errors.
+        Set-IniValue $path 'Papyrus' 'bEnableLogging' '1'
+        Set-IniValue $path 'Papyrus' 'bEnableTrace' '1'
+    }
     Write-Host "windowed ${Width}x${Height}, always active -> $path"
 }
 if ($WindowedOnly) { return }

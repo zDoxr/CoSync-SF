@@ -9,6 +9,7 @@
 
 #include <RE/Starfield.h>
 
+#include <format>
 #include <functional>
 #include <numbers>
 
@@ -23,11 +24,13 @@ namespace cosync::plugin::avatars
         class Callback final : public RE::BSScript::IStackCallbackFunctor
         {
         public:
-            explicit Callback(std::function<void(const Variable&)> fn) : _fn(std::move(fn)) {}
+            explicit Callback(std::function<void(const Variable&)> fn, std::function<void()> onCancel = {}) :
+                _fn(std::move(fn)), _onCancel(std::move(onCancel))
+            {}
             void CallQueued() override {}
             void CallCanceled() override
             {
-                if (_fn) _fn(Variable{});
+                if (_onCancel) _onCancel();
             }
             void StartMultiDispatch() override {}
             void EndMultiDispatch() override {}
@@ -38,6 +41,7 @@ namespace cosync::plugin::avatars
 
         private:
             std::function<void(const Variable&)> _fn;
+            std::function<void()> _onCancel;
         };
 
         RE::BSScript::IVirtualMachine* VM()
@@ -59,7 +63,7 @@ namespace cosync::plugin::avatars
         }
 
         bool Dispatch(const RE::BSTSmartPointer<RE::BSScript::Object>& self, const char* function, ArgsFn args,
-                      std::function<void(const Variable&)> onResult = {})
+                      std::function<void(const Variable&)> onResult = {}, std::function<void()> onCancel = {})
         {
             auto* vm = VM();
             if (!vm || !self) {
@@ -67,7 +71,7 @@ namespace cosync::plugin::avatars
             }
             RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
             if (onResult) {
-                callback.reset(new Callback(std::move(onResult)));
+                callback.reset(new Callback(std::move(onResult), std::move(onCancel)));
             }
             const RE::BSTThreadScrapFunction<bool(RE::BSScrapArray<Variable>&)> packer =
                 [args = std::move(args)](RE::BSScrapArray<Variable>& a) {
@@ -102,20 +106,73 @@ namespace cosync::plugin::avatars
         float Degrees(float radians) { return radians * 180.0f / std::numbers::pi_v<float>; }
     }
 
-    bool RequestSpawn(std::shared_ptr<std::atomic<std::uint32_t>> result, std::string& error)
+    namespace
+    {
+        RE::TESNPC* NpcBaseOf(RE::TESObjectREFR* ref)
+        {
+            if (!ref) return nullptr;
+            auto base = ref->GetBaseObject();
+            if (!base || !base->Is(RE::FormType::kNPC_)) return nullptr;
+            return static_cast<RE::TESNPC*>(base.get());
+        }
+
+        // First living actor in the player's cell that is not the player.
+        RE::TESNPC* NearbyNpcBase(RE::PlayerCharacter* player, std::uint32_t& refId)
+        {
+            const auto* cell = player->parentCell;
+            if (!cell) return nullptr;
+            RE::TESNPC* found = nullptr;
+            cell->ForEachReference([&](const RE::NiPointer<RE::TESObjectREFR>& ref) {
+                if (ref && ref.get() != player && ref->Is(RE::FormType::kACHR)) {
+                    auto* actor = static_cast<RE::Actor*>(ref.get());
+                    if (!actor->IsDead()) {
+                        if (auto* npc = NpcBaseOf(actor)) {
+                            found = npc;
+                            refId = actor->GetFormID();
+                            return RE::BSContainer::ForEachResult::kStop;
+                        }
+                    }
+                }
+                return RE::BSContainer::ForEachResult::kContinue;
+            });
+            return found;
+        }
+    }
+
+    bool RequestSpawn(SpawnBase which, std::shared_ptr<std::atomic<std::uint32_t>> result, std::string& error,
+                      std::string& detail)
     {
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player) {
             error = "no player";
             return false;
         }
-        // Use the player's own base NPC, read at runtime rather than assumed.
-        auto base = player->GetBaseObject();
-        if (!base || !base->Is(RE::FormType::kNPC_)) {
-            error = "player base object is not an NPC";
+        // Base forms are read at runtime rather than assumed.
+        RE::TESNPC* npc = nullptr;
+        if (which == SpawnBase::PlayerBase) {
+            npc = NpcBaseOf(player);
+            detail = npc ? std::format("player base NPC {:08X}", npc->GetFormID()) : "player base NPC";
+        } else {
+            std::uint32_t source = 0;
+            npc = NearbyNpcBase(player, source);
+            detail = npc ? std::format("base NPC {:08X} of nearby actor {:08X}", npc->GetFormID(), source)
+                         : "nearby NPC base";
+        }
+        if (!npc) {
+            error = std::format("no usable {}", detail);
             return false;
         }
-        auto* npc = static_cast<RE::TESNPC*>(base.get());
+
+        // Verify the form converts to a script object before handing it to the VM;
+        // a failed conversion would silently become None inside PlaceAtMe.
+        {
+            Variable probe;
+            RE::BSScript::PackVariable(probe, npc);
+            if (!probe.is<RE::BSScript::Object>() || !RE::BSScript::get<RE::BSScript::Object>(probe)) {
+                error = std::format("{} could not be converted to a script object", detail);
+                return false;
+            }
+        }
 
         const auto self = ScriptObjectFor(static_cast<RE::Actor*>(player));
         if (!self) {
@@ -138,18 +195,36 @@ namespace cosync::plugin::avatars
                 Push(a, true);   // abSnapOffsetToNavmesh
             },
             [result](const Variable& v) {
-                std::uint32_t id = kSpawnFailed;
-                if (v.is<RE::BSScript::Object>() && RE::BSScript::get<RE::BSScript::Object>(v)) {
-                    if (auto* ref = RE::BSScript::UnpackVariable<RE::TESObjectREFR>(v)) {
+                std::uint32_t id = kSpawnWrongType;
+                if (v.is<std::nullptr_t>()) {
+                    id = kSpawnReturnedNone;
+                } else if (v.is<RE::BSScript::Object>()) {
+                    if (!RE::BSScript::get<RE::BSScript::Object>(v)) {
+                        id = kSpawnReturnedNone;
+                    } else if (auto* ref = RE::BSScript::UnpackVariable<RE::TESObjectREFR>(v)) {
                         id = ref->GetFormID();
+                    } else {
+                        id = kSpawnUnpackFailed;
                     }
                 }
                 result->store(id);
-            });
+            },
+            [result] { result->store(kSpawnCanceled); });
         if (!dispatched) {
             error = "VM refused PlaceAtMe dispatch";
         }
         return dispatched;
+    }
+
+    const char* DescribeSpawnError(std::uint32_t v) noexcept
+    {
+        switch (v) {
+        case kSpawnCanceled: return "VM cancelled the call";
+        case kSpawnReturnedNone: return "PlaceAtMe returned None";
+        case kSpawnWrongType: return "result was not an object";
+        case kSpawnUnpackFailed: return "object result had no reference behind it";
+        default: return "unknown";
+        }
     }
 
     bool Freeze(std::uint32_t refId)

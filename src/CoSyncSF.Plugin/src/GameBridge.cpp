@@ -6,6 +6,8 @@
 #include "cosync/net/Util.h"
 #include "cosync/shared/Log.h"
 
+#include <algorithm>
+
 namespace cosync::plugin
 {
     namespace
@@ -16,7 +18,8 @@ namespace cosync::plugin
         constexpr auto kSummaryInterval = std::chrono::seconds(5);
         constexpr auto kAvatarMoveInterval = std::chrono::milliseconds(100);  // Papyrus calls; 10 Hz
         constexpr auto kAvatarRetryInterval = std::chrono::seconds(5);
-        constexpr std::uint32_t kAvatarMaxAttempts = 3;
+        constexpr auto kAvatarSpawnTimeout = std::chrono::seconds(10);  // e.g. VM frozen during a load
+        constexpr std::uint32_t kAvatarLoggedAttempts = 6;              // keep retrying, but quietly
     }
 
     GameBridge& GameBridge::Get()
@@ -133,10 +136,18 @@ namespace cosync::plugin
         // Spawn result published by the VM thread?
         if (avatar.pending) {
             const auto result = avatar.pending->load();
-            if (result != 0) {
+            if (result == 0 && now - avatar.requestedAt > kAvatarSpawnTimeout) {
+                if (avatar.attempts <= kAvatarLoggedAttempts) {
+                    log::Warn("[avatar] player {} '{}': no reply from VM within 10 s; retrying", id, remote.name);
+                }
+                _orphans.push_back(std::move(avatar.pending));  // despawn it if it ever arrives
+            } else if (result != 0) {
                 avatar.pending.reset();
-                if (result == avatars::kSpawnFailed) {
-                    log::Warn("[avatar] player {} '{}': PlaceAtMe returned no reference", id, remote.name);
+                if (avatars::IsSpawnError(result)) {
+                    if (avatar.attempts <= kAvatarLoggedAttempts) {
+                        log::Warn("[avatar] player {} '{}': spawn failed ({}): {}", id, remote.name, avatar.baseDetail,
+                                  avatars::DescribeSpawnError(result));
+                    }
                 } else {
                     avatar.refId = result;
                     const bool frozen = avatars::Freeze(avatar.refId);
@@ -153,16 +164,24 @@ namespace cosync::plugin
             return;
         }
 
-        if (avatar.refId == 0 && !avatar.pending && avatar.attempts < kAvatarMaxAttempts && now >= avatar.nextAttempt) {
+        if (avatar.refId == 0 && !avatar.pending && now >= avatar.nextAttempt) {
             ++avatar.attempts;
-            avatar.nextAttempt = now + kAvatarRetryInterval;
+            // Back off: 5 s, 10 s, ... capped at 30 s.
+            avatar.nextAttempt = now + std::min(kAvatarRetryInterval * avatar.attempts, std::chrono::seconds(30));
+            // Alternate base forms so a refusal specific to one of them is visible.
+            const auto which = (avatar.attempts % 2 == 1) ? avatars::SpawnBase::PlayerBase : avatars::SpawnBase::NearbyNpc;
             auto slot = std::make_shared<std::atomic<std::uint32_t>>(0);
             std::string error;
-            if (avatars::RequestSpawn(slot, error)) {
+            std::string detail;
+            if (avatars::RequestSpawn(which, slot, error, detail)) {
                 avatar.pending = std::move(slot);
-                log::Info("[avatar] player {} '{}': spawn requested (attempt {}/{})", id, remote.name, avatar.attempts,
-                          kAvatarMaxAttempts);
-            } else {
+                avatar.requestedAt = now;
+                avatar.baseDetail = detail;
+                if (avatar.attempts <= kAvatarLoggedAttempts) {
+                    log::Info("[avatar] player {} '{}': spawn requested, attempt {} ({})", id, remote.name,
+                              avatar.attempts, detail);
+                }
+            } else if (avatar.attempts <= kAvatarLoggedAttempts) {
                 log::Warn("[avatar] player {} '{}': spawn not dispatched: {}", id, remote.name, error);
             }
         }
@@ -210,7 +229,7 @@ namespace cosync::plugin
         std::erase_if(_orphans, [](const std::shared_ptr<std::atomic<std::uint32_t>>& slot) {
             const auto result = slot->load();
             if (result == 0) return false;  // still in flight
-            if (result != avatars::kSpawnFailed) {
+            if (!avatars::IsSpawnError(result)) {
                 log::Info("[avatar] despawn late-arriving ref {:08X}", result);
                 avatars::Despawn(result);
             }
