@@ -104,6 +104,20 @@ namespace cosync::plugin::avatars
         }
 
         float Degrees(float radians) { return radians * 180.0f / std::numbers::pi_v<float>; }
+
+        // "ActorBase -> Form" style chain of a script object's type, for diagnostics.
+        std::string TypeChain(const RE::BSTSmartPointer<RE::BSScript::Object>& object)
+        {
+            if (!object) return "<null object>";
+            std::string chain;
+            const RE::BSScript::ObjectTypeInfo* type = object->type.get();
+            for (int depth = 0; type && depth < 16; ++depth) {
+                if (!chain.empty()) chain += " -> ";
+                chain += type->name.c_str();
+                type = type->parentTypeInfo.get();
+            }
+            return chain.empty() ? "<no type>" : chain;
+        }
     }
 
     namespace
@@ -172,6 +186,11 @@ namespace cosync::plugin::avatars
                 error = std::format("{} could not be converted to a script object", detail);
                 return false;
             }
+            // PlaceAtMe's first parameter is `Form`; record what the form actually packed as.
+            log::Info("[avatar] PlaceAtMe arg 1 packs as [{}] (vm type id {}, form type {}); self is [{}]",
+                      TypeChain(RE::BSScript::get<RE::BSScript::Object>(probe)),
+                      RE::BSScript::GetVMTypeID<RE::TESNPC>(), static_cast<int>(npc->GetFormType()),
+                      TypeChain(ScriptObjectFor(static_cast<RE::Actor*>(player))));
         }
 
         const auto self = ScriptObjectFor(static_cast<RE::Actor*>(player));
@@ -193,6 +212,18 @@ namespace cosync::plugin::avatars
                 PushNone(a);     // akOffsetValues
                 PushNone(a);     // akAliasToFill
                 Push(a, true);   // abSnapOffsetToNavmesh
+
+                // Diagnostic: the raw Papyrus type of each argument actually sent
+                // (0 none, 1 object, 3 int, 5 bool; >= 22 is an object type pointer).
+                std::string types;
+                for (std::uint32_t i = 0; i < a.size(); ++i) {
+                    const auto raw = static_cast<std::uint32_t>(a[i].GetType().GetRawType());
+                    types += std::format("{}{}={}", i == 0 ? "" : " ", i, raw);
+                    if (a[i].is<RE::BSScript::Object>()) {
+                        types += std::format("[{}]", TypeChain(RE::BSScript::get<RE::BSScript::Object>(a[i])));
+                    }
+                }
+                log::Info("[avatar] PlaceAtMe args sent: {}", types);
             },
             [result](const Variable& v) {
                 std::uint32_t id = kSpawnWrongType;
