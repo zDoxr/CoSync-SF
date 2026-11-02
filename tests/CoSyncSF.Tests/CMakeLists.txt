@@ -8,9 +8,10 @@ add_executable(cosync_tests
     InterpolationTests.cpp
     ProtocolTests.cpp
     SessionTests.cpp
+    UiModelTests.cpp
     WorkerTests.cpp
 )
-target_link_libraries(cosync_tests PRIVATE CoSyncSF::Network GTest::gtest GTest::gtest_main)
+target_link_libraries(cosync_tests PRIVATE CoSyncSF::Network CoSyncSF::UI GTest::gtest GTest::gtest_main)
 
 include(GoogleTest)
 # Integration tests open real UDP sockets on 127.0.0.1; run serially.

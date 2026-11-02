@@ -1,6 +1,10 @@
 # CoSync-SF — Multiplayer UI Framework
 
-Recommendation, evidence and architecture for the CoSync multiplayer interface (Multiplayer tab, host/join, server browser, player list, diagnostics, settings). **Nothing in this document is implemented yet.** The roadmap puts the UI after transform sync (Phase 6).
+Recommendation, evidence and architecture for the CoSync multiplayer interface (Multiplayer tab, host/join, server browser, player list, diagnostics, settings).
+
+**Status (2026-11-02):**
+- ✅ The **UI core** is implemented: `src/CoSyncSF.UI`, the `UiCommand`/`UiSnapshot`/`UiModel` contract from §3, themes and JSON. It has 10 unit tests in `tests/CoSyncSF.Tests/UiModelTests.cpp`.
+- ⬜ Not yet: the Scaleform movie and its engine integration (blocked on reverse-engineering `IMenu::LoadMovie`), and plugin wiring.
 
 ## 1. What Starfield's UI actually is (evidence)
 
@@ -61,9 +65,21 @@ Rules:
 - **Diagnostics**: transport stats, last disconnect reason, proxy validation (`VALID`/`INCOMPLETE` per player), log tail.
 - **Settings**: display name, default host settings, interpolation delay, proxy options (scale for debugging), theme.
 
-## 5. Next steps (UI)
+## 5. UI core contract (implemented)
 
-1. RE `IMenu::LoadMovie`, `UI::RegisterMenu` and the menu-creation callback for 1.16.244, and record them in REVERSE_ENGINEERING.md.
-2. Build a minimal AS3 movie that loads, shows one text field, and round-trips one intent to C++.
-3. Implement `UiModel`/`UiSnapshot`/`UiCommand` with unit tests, independent of Scaleform.
-4. Add the pause-menu entry point.
+`cosync::ui` (`src/CoSyncSF.UI/include/cosync/ui/UiModel.h`):
+
+| Piece | What it does |
+|---|---|
+| `ParseIntent(name, args)` | Turns a view intent into a validated `UiCommand`, or a user-facing error. Intents: `host` (name, port, maxPlayers, password), `join` (numeric address with optional port, password), `leave`, `kick` (player), `setName`, `selectTab`, `setTheme`, `refreshServers`. All limits match the wire protocol (name 1–32 bytes, server name ≤ 64, password ≤ 64, 2–64 players). |
+| `UiModel` | Holds UI-only state (tab, theme, diagnostics ring of 64) plus inputs from the plugin (connection, players with proxy state, servers, versions). The snapshot `version` increases only when content changes, so the view re-renders only on a real change. |
+| `UiModel::ApplyLocal` | Executes UI-only commands (tab). Everything else goes back to the plugin, which forwards session actions to `NetworkWorker` and game actions to `GameBridge`. |
+| `Theme` / `ParseTheme` | Visual tokens: colours, opacity, corner radius, spacing, font scale, transition time. They load from `key = value` text (`#RRGGBB` colours), so a theme change needs no rebuild. The default theme is "Starfield Modern" (dark panels, amber accent, cyan secondary). |
+| `ToJson(snapshot)` | Strict JSON for the view. **UNKNOWN:** whether Starfield's Scaleform AS3 runtime provides `JSON.parse`. If not, the bridge will pass `GFx::Value` objects built from the same snapshot. |
+
+## 6. Next steps (UI)
+
+1. In IDA, reverse-engineer `IMenu::LoadMovie`, `UI::RegisterMenu` and the menu-creation callback for 1.16.244, and record them in REVERSE_ENGINEERING.md.
+2. Build a minimal AS3 movie that loads, shows one text field, and round-trips one intent to C++ through `ParseIntent`.
+3. Wire `UiModel` into the plugin: feed it from `GameBridge::Tick` and execute commands on the main thread.
+4. Add the pause-menu entry point, then build the full Multiplayer tab on the snapshot.

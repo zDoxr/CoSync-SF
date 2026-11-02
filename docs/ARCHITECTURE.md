@@ -140,7 +140,7 @@ Evidence: [REVERSE_ENGINEERING.md](REVERSE_ENGINEERING.md), [REMOTE_PROXY_RESEAR
 - VM results come back on VM threads and are published only through `std::atomic` slots. The main thread is the only consumer and the only engine caller.
 - Proxies are bounded to the local player's cell. They are despawned on leave, on cell change and at session end. Results of in-flight spawns that arrive late are despawned (`_orphans`).
 
-## UI layer (planned)
+## UI layer (core implemented, view planned)
 
 See [UI_FRAMEWORK.md](UI_FRAMEWORK.md). It is a Scaleform AS3 view (`CoSyncMultiplayerMenu.swf`) fed by an immutable `UiSnapshot` from a C++ `UiModel`. The view emits `UiCommand` intents, which are validated, then forwarded to `NetworkWorker` or queued for `GameBridge`. UI code never calls engine code or sockets directly.
 
@@ -153,6 +153,6 @@ See [UI_FRAMEWORK.md](UI_FRAMEWORK.md). It is a Scaleform AS3 view (`CoSyncMulti
 | World (actor lifecycle, proxies, cells) | `CoSyncSF.Plugin/Avatars.*` (engine calls), `GameBridge` (lifecycle) |
 | Player (local tracking, remote representation) | `GameState.*` (local), `GameBridge` + `Avatars` (remote) |
 | Synchronization (interpolation, authority) | `CoSyncSF.Shared/Interpolation`, server relay/validation |
-| UI | planned (`UI_FRAMEWORK.md`) |
+| UI | `CoSyncSF.UI` (core: commands, snapshots, themes, JSON; unit-tested). Scaleform view planned (`UI_FRAMEWORK.md`) |
 
 No new modules were introduced. The current split already keeps networking free of engine code. `Avatars.*` should become a `World/` folder once it grows past proxies.

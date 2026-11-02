@@ -76,7 +76,7 @@ Goal: two real Starfield clients show each other's position in the plugin log, t
 ## Phase A — Connectivity
 - [x] ✅ Host/join workflow (protocol level), LAN direct IP
 - [x] ✅ Session lifecycle, identity (session-level), connection status, diagnostics logging
-- [ ] ⬜ In-game lobby/connection UI. Decision: a custom Scaleform AS3 menu plus a pause-menu entry (see [UI_FRAMEWORK.md](UI_FRAMEWORK.md)).
+- [ ] 🟡 In-game lobby/connection UI. Decision: a custom Scaleform AS3 menu plus a pause-menu entry (see [UI_FRAMEWORK.md](UI_FRAMEWORK.md)). ✅ The UI core (`CoSyncSF.UI`: commands, snapshots, themes, JSON) is unit-tested. ⬜ Scaleform view (needs `IMenu::LoadMovie` RE).
 - [ ] ⬜ `SteamTransport` (P2P/SDR through the game's Steam client), Steam identity verification. See RESEARCH §6 for open questions.
 - [ ] ⬜ NAT traversal for non-Steam builds (signaling service + ICE). Requires infrastructure.
 

@@ -20,6 +20,7 @@ find_package(GameNetworkingSockets CONFIG REQUIRED)
 
 add_subdirectory(src/CoSyncSF.Shared)
 add_subdirectory(src/CoSyncSF.Network)
+add_subdirectory(src/CoSyncSF.UI)
 add_subdirectory(src/CoSyncSF.Server)
 add_subdirectory(src/CoSyncSF.Client)
 

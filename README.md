@@ -19,6 +19,7 @@ Two to eight players join one session, over LAN by direct address or discovery, 
 | `cosync-server` (standalone session server) | Implemented. It does **not** simulate Starfield. |
 | `cosync-testclient` (headless protocol client) | Implemented |
 | SFSE plugin (`CoSyncSF.dll`, Starfield 1.16.244, CommonLibSF) | **Runs in game.** Hosts or joins after data load, reads the local player's cell/position/rotation at 20 Hz on the main thread, sends it, and logs remote players' interpolated positions |
+| Multiplayer UI | Core (`CoSyncSF.UI`: validated commands, versioned snapshots, themes, JSON) implemented and tested. The in-game Scaleform menu is not built yet; see [docs/UI_FRAMEWORK.md](docs/UI_FRAMEWORK.md) |
 | Steam networking, NAT traversal | Researched, not implemented |
 | Player/NPC/world synchronization | **Position exchange verified in game** (two copies on one PC, ~20 Hz, same-cell detection) |
 | Remote player proxies (experimental, `-Avatars`) | **Visible in game** (2026-11-02): an engine-spawned NPC actor per remote player in your cell. It is validated (actor, enabled, in the player's cell, 3D loaded), moved to the remote pose at 10 Hz and despawned cleanly. No appearance copy or animation yet. See [docs/REMOTE_PROXY_RESEARCH.md](docs/REMOTE_PROXY_RESEARCH.md) |
