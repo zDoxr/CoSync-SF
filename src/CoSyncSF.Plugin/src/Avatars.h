@@ -70,6 +70,32 @@ namespace cosync::plugin::avatars
     // False if the reference no longer exists.
     bool Move(std::uint32_t refId, const Vec3& position, const Vec3& rotationRadians);
 
+    // Papyrus ObjectReference.SetScale(Float) (1 param, registered in the exe). Debug aid.
+    bool SetScale(std::uint32_t refId, float scale);
+
     // Disables and deletes the avatar. Safe to call with a stale id.
     void Despawn(std::uint32_t refId);
+
+    // Engine-side state of a spawned avatar, read synchronously on the MAIN THREAD.
+    // Every read is backed by disassembly of Starfield.exe 1.16.244 (docs/REVERSE_ENGINEERING.md):
+    //   form type   TESForm+0x2E == 0x4B (ACHR)       PlaceActorAtMe native 0x207A220 compares it
+    //   disabled    TESForm+0x20 bit 11              ObjectReference.IsDisabled native 0x208BAB0
+    //   deleted     TESForm+0x20 bit 5               CommonLibSF kDeleted (not yet traced in the exe)
+    //   parent cell TESObjectREFR+0xB0               PlaceActorAtMe passes it to vfunc 0x10C (SetParentCell)
+    //   3D          vtbl[0xAC](NiPointer<NiAVObject>&) ObjectReference.Is3DLoaded native 0x2075F00
+    struct ProxyState
+    {
+        bool exists = false;        // LookupByID found a form
+        bool isActor = false;       // form type ACHR
+        bool disabled = false;
+        bool deleted = false;
+        bool has3D = false;         // Get3D returned a scene-graph node
+        bool sameCellAsPlayer = false;
+        std::uint32_t parentCellId = 0;
+        std::uint32_t baseId = 0;
+        Vec3 position;
+        float distanceToPlayer = -1.0f;
+    };
+    [[nodiscard]] ProxyState Probe(std::uint32_t refId);
+    [[nodiscard]] std::string Describe(const ProxyState& s);
 }

@@ -28,6 +28,12 @@ namespace cosync::plugin
         void EnableLocalPlayerReads(bool enable) noexcept { _readLocalPlayer = enable; }
         // Experimental: spawn and move a stand-in actor per remote player in the same cell.
         void EnableAvatars(bool enable) noexcept { _avatarsEnabled = enable; }
+        void SetAvatarScale(float scale) noexcept { _avatarScale = scale; }
+        void SetAvatarOptions(bool freezeAI, bool move) noexcept
+        {
+            _avatarFreezeAI = freezeAI;
+            _avatarMove = move;
+        }
         void Tick();
 
     private:
@@ -39,6 +45,8 @@ namespace cosync::plugin
             std::chrono::steady_clock::time_point nextAttempt{};
             std::chrono::steady_clock::time_point nextMove{};
             std::chrono::steady_clock::time_point requestedAt{};
+            std::chrono::steady_clock::time_point nextProbe{};  // engine-state validation log
+            std::uint32_t probes = 0;
             std::string baseDetail;
         };
 
@@ -60,6 +68,7 @@ namespace cosync::plugin
         void RemoveRemote(PlayerId id);
         void RemoveAllRemotes();
         void ReapOrphans();
+        void CheckDespawns();
         void UpdateVmState();
         void UpdateTemplate();
         [[nodiscard]] bool TemplateDecided() const noexcept;
@@ -68,6 +77,9 @@ namespace cosync::plugin
         bool _readLocalPlayer = false;
         bool _inWorld = false;
         bool _avatarsEnabled = false;
+        float _avatarScale = 1.0f;
+        bool _avatarFreezeAI = false;
+        bool _avatarMove = true;
         bool _vmReady = false;
         bool _vmSettled = false;
         std::chrono::steady_clock::time_point _vmReadySince{};
@@ -80,6 +92,8 @@ namespace cosync::plugin
         std::chrono::steady_clock::time_point _nextTemplateTry{};
         // Spawns that were still in flight when their avatar was released.
         std::vector<std::shared_ptr<std::atomic<std::uint32_t>>> _orphans;
+        // Despawned refs to re-check (Disable/Delete run asynchronously on the VM).
+        std::vector<std::pair<std::uint32_t, std::chrono::steady_clock::time_point>> _despawnChecks;
         std::uint32_t _localLocationId = 0;
         std::string _localLocationName;
         std::chrono::steady_clock::time_point _nextSample{};

@@ -17,3 +17,4 @@ CMakeUserPresets.json
 *.pem
 *.key
 steam_appid.txt
+__pycache__/

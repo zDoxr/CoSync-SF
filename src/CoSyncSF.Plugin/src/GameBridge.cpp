@@ -132,6 +132,7 @@ namespace cosync::plugin
             }
         }
         ReapOrphans();
+        CheckDespawns();
     }
 
     void GameBridge::UpdateVmState()
@@ -242,9 +243,13 @@ namespace cosync::plugin
                     }
                 } else {
                     avatar.refId = result;
-                    const bool frozen = avatars::Freeze(avatar.refId);
-                    log::Info("[avatar] player {} '{}': spawned ref {:08X} (AI {})", id, remote.name, avatar.refId,
-                              frozen ? "disable requested" : "NOT disabled");
+                    const bool frozen = _avatarFreezeAI && avatars::Freeze(avatar.refId);
+                    if (_avatarScale != 1.0f) avatars::SetScale(avatar.refId, _avatarScale);
+                    log::Info("[avatar] player {} '{}': spawned ref {:08X} (AI {}); right after spawn: {}", id,
+                              remote.name, avatar.refId, frozen ? "disable requested" : (_avatarFreezeAI ? "NOT disabled" : "left on (AvatarFreezeAI=0)"),
+                              avatars::Describe(avatars::Probe(avatar.refId)));
+                    avatar.probes = 0;
+                    avatar.nextProbe = now + std::chrono::seconds(1);
                 }
             }
         }
@@ -277,7 +282,18 @@ namespace cosync::plugin
             }
         }
 
-        if (avatar.refId != 0 && now >= avatar.nextMove) {
+        // Validation: log the proxy's engine state at 1, 2, 4 and 8 s after spawning, then every 15 s.
+        if (avatar.refId != 0 && now >= avatar.nextProbe) {
+            const auto state = avatars::Probe(avatar.refId);
+            ++avatar.probes;
+            const auto delay = avatar.probes < 4 ? std::chrono::seconds(1LL << avatar.probes) : std::chrono::seconds(15);
+            avatar.nextProbe = now + delay;
+            const bool ok = state.isActor && !state.disabled && !state.deleted && state.has3D && state.sameCellAsPlayer;
+            log::Info("[avatar] player {} '{}': ref {:08X} {} [{}]", id, remote.name, avatar.refId,
+                      ok ? "VALID" : "INCOMPLETE", avatars::Describe(state));
+        }
+
+        if (_avatarMove && avatar.refId != 0 && now >= avatar.nextMove) {
             avatar.nextMove = now + kAvatarMoveInterval;
             if (!avatars::Move(avatar.refId, remote.pose->position, remote.pose->rotation)) {
                 log::Warn("[avatar] player {} '{}': ref {:08X} no longer exists", id, remote.name, avatar.refId);
@@ -294,6 +310,7 @@ namespace cosync::plugin
         if (avatar.refId != 0) {
             log::Info("[avatar] player {}: despawn ref {:08X} ({})", id, avatar.refId, why);
             avatars::Despawn(avatar.refId);
+            _despawnChecks.emplace_back(avatar.refId, std::chrono::steady_clock::now() + std::chrono::seconds(2));
             avatar.refId = 0;
         }
         avatar.attempts = 0;  // allow a fresh spawn next time they share a cell
@@ -324,6 +341,17 @@ namespace cosync::plugin
                 log::Info("[avatar] despawn late-arriving ref {:08X}", result);
                 avatars::Despawn(result);
             }
+            return true;
+        });
+    }
+
+    void GameBridge::CheckDespawns()
+    {
+        const auto now = std::chrono::steady_clock::now();
+        std::erase_if(_despawnChecks, [now](const auto& entry) {
+            if (now < entry.second) return false;
+            log::Info("[avatar] despawned ref {:08X} 2 s later: {}", entry.first,
+                      avatars::Describe(avatars::Probe(entry.first)));
             return true;
         });
     }

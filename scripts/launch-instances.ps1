@@ -35,6 +35,9 @@ param(
     [int]$DelaySeconds = 10,
     [switch]$WindowedOnly,
     [switch]$Avatars,                # experimental: spawn stand-ins for remote players
+    [double]$AvatarScale = 1.0,      # debug: scale stand-ins so they are easy to spot
+    [switch]$AvatarFreezeAI,         # experiment: EnableAI(false) on stand-ins (makes them semi-transparent)
+    [switch]$AvatarNoMove,           # experiment: do not SetPosition/SetAngle stand-ins
     [switch]$RestoreDisplay
 )
 
@@ -193,6 +196,9 @@ function Write-InstanceConfig([int]$n) {
         'Password='
         '[Experimental]'
         "RemoteAvatars=$(if ($Avatars) { 1 } else { 0 })"
+        "AvatarScale=$($AvatarScale.ToString([Globalization.CultureInfo]::InvariantCulture))"
+        "AvatarFreezeAI=$(if ($AvatarFreezeAI) { 1 } else { 0 })"
+        "AvatarMove=$(if ($AvatarNoMove) { 0 } else { 1 })"
         '[Debug]'
         'LogLevel=debug'
     ) | Set-Content -LiteralPath $ini -Encoding ASCII

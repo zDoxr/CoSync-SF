@@ -183,6 +183,10 @@ SFSE_PLUGIN_LOAD(const SFSE::LoadInterface* a_sfse)
     }
     plugin::GameBridge::Get().EnableLocalPlayerReads(haveAddressLibrary);
     plugin::GameBridge::Get().EnableAvatars(haveAddressLibrary && g_config.remoteAvatars);
+    plugin::GameBridge::Get().SetAvatarScale(g_config.avatarScale);
+    plugin::GameBridge::Get().SetAvatarOptions(g_config.avatarFreezeAI, g_config.avatarMove);
+    log::Info("avatar options: freezeAI={} move={} scale={:.2f}", g_config.avatarFreezeAI, g_config.avatarMove,
+              g_config.avatarScale);
     log::Info("remote avatars: {}", haveAddressLibrary && g_config.remoteAvatars ? "ON (experimental)" : "off");
 
     const auto* messaging = SFSE::GetMessagingInterface();

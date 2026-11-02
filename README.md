@@ -6,7 +6,7 @@ Cooperative multiplayer and dedicated session hosting for **Starfield** (PC), bu
 
 ## Intended experience
 
-Two to eight players join one session, over LAN by direct address or discovery, and later over Steam. Each player sees the others as characters in their world. Combat, loot and world state are shared, and an optional standalone server keeps sessions and characters persistent. Getting there is a long road; [docs/ROADMAP.md](docs/ROADMAP.md) lists the milestones honestly.
+Two to eight players join one session, over LAN by direct address or discovery, and later over Steam. Each player sees the others as characters in their world. Combat, loot and world state are shared, and an optional standalone server keeps sessions and characters persistent. Getting there is a long road; [docs/DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md) lists the milestones honestly.
 
 ## Current status
 
@@ -20,7 +20,8 @@ Two to eight players join one session, over LAN by direct address or discovery, 
 | `cosync-testclient` (headless protocol client) | Implemented |
 | SFSE plugin (`CoSyncSF.dll`, Starfield 1.16.244, CommonLibSF) | **Runs in game.** Hosts or joins after data load, reads the local player's cell/position/rotation at 20 Hz on the main thread, sends it, and logs remote players' interpolated positions |
 | Steam networking, NAT traversal | Researched, not implemented |
-| Player/NPC/world synchronization | **Position exchange verified in game** (two copies on one PC, ~20 Hz, same-cell detection). Results appear in the logs only; no visible remote characters yet |
+| Player/NPC/world synchronization | **Position exchange verified in game** (two copies on one PC, ~20 Hz, same-cell detection) |
+| Remote player proxies (experimental, `-Avatars`) | **Visible in game** (2026-11-02): an engine-spawned NPC actor per remote player in your cell. It is validated (actor, enabled, in the player's cell, 3D loaded), moved to the remote pose at 10 Hz and despawned cleanly. No appearance copy or animation yet. See [docs/REMOTE_PROXY_RESEARCH.md](docs/REMOTE_PROXY_RESEARCH.md) |
 
 ## Architecture
 
@@ -86,7 +87,7 @@ From another PC, replace `127.0.0.1` with the server's LAN IP and allow UDP 3701
 3. Edit `Data/SFSE/Plugins/CoSyncSF.ini`. Set `Mode=host` on one PC, or `Mode=client` with `Address=<host-ip>:37015`, and give each player a unique `Name`.
 4. Launch through `sfse_loader.exe`. Check `Documents/My Games/Starfield/SFSE/Logs/CoSyncSF.log`.
 
-The plugin reads the player's position, but it never changes game state.
+The plugin reads the player's position. It changes game state only when `[Experimental] RemoteAvatars=1`: it then spawns, moves and deletes stand-in actors in your cell.
 
 ### Two instances on one PC
 
@@ -108,8 +109,12 @@ Start the game once normally first, so Starfield creates `StarfieldPrefs.ini`. I
 ## Documentation
 
 - [docs/RESEARCH.md](docs/RESEARCH.md): ecosystem findings, verified vs. unverified, licences
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): boundaries, threading, protocol, authority model
-- [docs/ROADMAP.md](docs/ROADMAP.md): milestones and status
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): boundaries, threading, protocol, authority model, proxy lifecycle
+- [docs/REVERSE_ENGINEERING.md](docs/REVERSE_ENGINEERING.md): verified engine functions, offsets and evidence (Starfield 1.16.244)
+- [docs/REMOTE_PROXY_RESEARCH.md](docs/REMOTE_PROXY_RESEARCH.md): how remote players are represented, and why
+- [docs/UI_FRAMEWORK.md](docs/UI_FRAMEWORK.md): multiplayer UI recommendation and architecture
+- `tools/re/`: the static-analysis scripts used for the RE evidence
+- [docs/DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md): milestones and status
 - [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 
 ## License

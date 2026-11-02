@@ -117,3 +117,42 @@ Long term, the session server can become more authoritative for state it can val
 - `PlayerId` (u32, server-assigned) for players.
 - Synced world entities will get a `NetEntityId` (u32, owner-assigned within a server-granted range), with an explicit spawn/despawn lifecycle and per-entity sequence numbers for stale-update rejection.
 - Game references are mapped as (plugin file name, local FormID) → never raw FormIDs across machines, because load orders differ.
+
+## Engine integration: remote-player proxies
+
+Evidence: [REVERSE_ENGINEERING.md](REVERSE_ENGINEERING.md), [REMOTE_PROXY_RESEARCH.md](REMOTE_PROXY_RESEARCH.md).
+
+```
+ network thread                  main thread (GameBridge::Tick)                       Papyrus VM threads
+ ──────────────                  ─────────────────────────────                        ──────────────────
+ PlayerTransform ─► mailbox ─►   interpolator.Sample()
+ PlayerJoined/Left ─► queue ─►   per remote: Avatar state machine
+                                   none ── same cell & VM settled ──► spawn requested ──► PlaceActorAtMe (engine spawn path)
+                                   spawned ◄── atomic result slot ◄──────────────────────── callback (FormID / error)
+                                   spawned: Probe() (sync, verified offsets) ─ log VALID/INCOMPLETE
+                                            Move() 10 Hz ───────────────────────────────► SetPosition / SetAngle
+                                   leave/cell change: Despawn() ────────────────────────► Disable + Delete
+                                            re-Probe after 2 s (must be gone)
+```
+
+- The proxy is an **NPC actor created by the engine's own `PlaceActorAtMe` → `TESDataHandler::CreateReference` path**. It is not a second PlayerCharacter, because the engine has no pathway for one (RE §6).
+- Engine reads in `Avatars.cpp` are limited to offsets and virtuals proven in the exe (RE §4). Anything else goes through engine natives.
+- VM results come back on VM threads and are published only through `std::atomic` slots. The main thread is the only consumer and the only engine caller.
+- Proxies are bounded to the local player's cell. They are despawned on leave, on cell change and at session end. Results of in-flight spawns that arrive late are despawned (`_orphans`).
+
+## UI layer (planned)
+
+See [UI_FRAMEWORK.md](UI_FRAMEWORK.md). It is a Scaleform AS3 view (`CoSyncMultiplayerMenu.swf`) fed by an immutable `UiSnapshot` from a C++ `UiModel`. The view emits `UiCommand` intents, which are validated, then forwarded to `NetworkWorker` or queued for `GameBridge`. UI code never calls engine code or sockets directly.
+
+## Module boundaries vs. the mission's proposed layers
+
+| Proposed layer | Where it lives today |
+|---|---|
+| Core (lifecycle, config, logging, version) | `CoSyncSF.Plugin/Plugin.cpp`, `PluginConfig.*`, `CoSyncSF.Shared/Log`, `GameRuntime` |
+| Networking (GNS, sessions, identity, serialization) | `CoSyncSF.Network`, `CoSyncSF.Shared/Protocol` |
+| World (actor lifecycle, proxies, cells) | `CoSyncSF.Plugin/Avatars.*` (engine calls), `GameBridge` (lifecycle) |
+| Player (local tracking, remote representation) | `GameState.*` (local), `GameBridge` + `Avatars` (remote) |
+| Synchronization (interpolation, authority) | `CoSyncSF.Shared/Interpolation`, server relay/validation |
+| UI | planned (`UI_FRAMEWORK.md`) |
+
+No new modules were introduced. The current split already keeps networking free of engine code. `Avatars.*` should become a `World/` folder once it grows past proxies.

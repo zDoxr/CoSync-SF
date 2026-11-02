@@ -9,6 +9,7 @@
 
 #include <RE/Starfield.h>
 
+#include <cmath>
 #include <format>
 #include <functional>
 #include <numbers>
@@ -378,6 +379,72 @@ namespace cosync::plugin::avatars
             Push(a, yaw);
         });
         return moved;
+    }
+
+    namespace
+    {
+        // TESObjectREFR virtual 0xAC. Is3DLoaded (native 0x2075F00) calls it as
+        // `call [vtbl+0x560]` with rdx = &out, then tests *rax != null and releases
+        // `out` (NiRefObject refcount at +8, DeleteThis = vfunc 1). CommonLibSF only
+        // declares it as Unk_AC(), so it is called through the vtable here.
+        bool Has3D(RE::TESObjectREFR* ref)
+        {
+            using Get3D_t = void** (*)(RE::TESObjectREFR*, void**);
+            constexpr std::size_t kGet3DIndex = 0xAC;
+            const auto vtbl = *reinterpret_cast<void* const* const*>(ref);
+            const auto fn = reinterpret_cast<Get3D_t>(vtbl[kGet3DIndex]);
+            void* out = nullptr;
+            void** result = fn(ref, &out);
+            const bool loaded = result && *result != nullptr;
+            if (out) {
+                static_cast<RE::NiRefObject*>(out)->DecRefCount();
+            }
+            return loaded;
+        }
+    }
+
+    ProxyState Probe(std::uint32_t refId)
+    {
+        ProxyState s;
+        auto* form = RE::TESForm::LookupByID(refId);
+        if (!form) return s;
+        s.exists = true;
+        s.isActor = form->Is(RE::FormType::kACHR);
+        s.disabled = form->IsDisabled();
+        s.deleted = form->IsDeleted();
+        if (!s.isActor) return s;
+        auto* actor = static_cast<RE::Actor*>(form);
+        if (auto base = actor->GetBaseObject()) s.baseId = base->GetFormID();
+        const auto* cell = actor->parentCell;
+        s.parentCellId = cell ? cell->GetFormID() : 0;
+        const auto pos = actor->GetPosition();
+        s.position = { pos.x, pos.y, pos.z };
+        if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+            s.sameCellAsPlayer = cell && cell == player->parentCell;
+            const auto p = player->GetPosition();
+            const float dx = pos.x - p.x, dy = pos.y - p.y, dz = pos.z - p.z;
+            s.distanceToPlayer = std::sqrt(dx * dx + dy * dy + dz * dz);
+        }
+        // Only ask for 3D on a live, enabled reference.
+        if (!s.deleted) s.has3D = Has3D(actor);
+        return s;
+    }
+
+    std::string Describe(const ProxyState& s)
+    {
+        if (!s.exists) return "no form (gone)";
+        return std::format("{}{}{} 3D={} cell={:08X}{} base={:08X} pos=({:.1f}, {:.1f}, {:.1f}) dist={:.1f}",
+                           s.isActor ? "Actor" : "NOT an actor", s.disabled ? " DISABLED" : " enabled",
+                           s.deleted ? " DELETED" : "", s.has3D ? "loaded" : "NONE", s.parentCellId,
+                           s.sameCellAsPlayer ? " (player's cell)" : " (NOT player's cell)", s.baseId, s.position.x,
+                           s.position.y, s.position.z, s.distanceToPlayer);
+    }
+
+    bool SetScale(std::uint32_t refId, float scale)
+    {
+        auto* actor = LookupActor(refId);
+        if (!actor) return false;
+        return Dispatch(ScriptObjectFor(actor), "SetScale", [scale](RE::BSScrapArray<Variable>& a) { Push(a, scale); });
     }
 
     void Despawn(std::uint32_t refId)

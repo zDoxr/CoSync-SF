@@ -1,4 +1,4 @@
-# CoSync-SF — Roadmap
+# CoSync-SF — Development Roadmap
 
 Legend:
 - ✅ **done**: implemented and verified by automated tests (network prototype)
@@ -7,7 +7,6 @@ Legend:
 - ⛔ **blocked**: blocker noted
 - ⬜ **pending**
 
-Nothing is 🎮 yet.
 
 ## Milestone 1 — Networking foundation (current)
 
@@ -40,21 +39,48 @@ Goal: two real Starfield clients show each other's position in the plugin log, t
    - About 19.5 updates/s each way, 32–34 ms rtt, 0 dropped events.
    - Same-location vs. elsewhere detection followed cell changes.
    - A `stale` pose was held while the other copy was on a loading screen.
-6. 🎮 Remote-player avatars, partly working (2026-10-27): `PlaceActorAtMe` spawns an actor per remote player in the same cell. It is moved to the interpolated pose via Papyrus `SetPosition`/`SetAngle` (10 Hz) and despawned when the player leaves the cell.
-   - `PlaceAtMe(Form, ...)` was rejected ("Type mismatch for argument 1"); `PlaceActorAtMe(actorbase, ...)` works.
-   - Spawning must wait for the Papyrus VM to thaw after a load.
-   - Cloning the player's base NPC `00000007` rendered only a faint floating head (it has no body or outfit of its own). Now a nearby NPC's base is used; the player base is only a fallback. ⬜ Copy the remote player's actual appearance.
-   - ⬜ Walking/running animation (the avatar currently slides).
+6. 🎮 **Remote-player proxies: first milestone reached (2026-11-02).** Each copy spawns a proxy actor for the other player through the engine's own `PlaceActorAtMe` → `TESDataHandler::CreateReference` path. Engine-side validation logs every proxy as `VALID`: ACHR, enabled, in the player's cell, 3D loaded within 1 s. It follows the remote pose and is gone 2 s after despawn. The user confirmed visually that it renders opaque. Details: [REMOTE_PROXY_RESEARCH.md](REMOTE_PROXY_RESEARCH.md).
+   - Root causes found by RE (see [REVERSE_ENGINEERING.md](REVERSE_ENGINEERING.md)):
+     - `FF…` template bases are rejected by the native on purpose.
+     - The semi-transparent proxies were caused by `EnableAI(false)` right after spawn (A/B tested). `AvatarFreezeAI` now defaults to off.
+   - `PlaceAtMe(Form, …)` was rejected ("Type mismatch for argument 1"); `PlaceActorAtMe(actorbase, …)` works.
+   - Spawning waits for the Papyrus VM to thaw after a load.
+   - ⬜ Proxy behaviour control without freezing AI: the NPC may wander, talk or fight between updates.
+   - ⬜ Copy the remote player's actual appearance.
+   - ⬜ Walking/running animation (the proxy currently slides).
+
+## Outstanding blockers
+
+| Blocker | Why it matters | What is needed |
+|---|---|---|
+| No IDA/Ghidra on this machine | Large functions (`CreateReference` `0x5A0520`, the EnableAI → animation path) need decompilation and type recovery | Install Ghidra 12.1.x + JDK 21 (or IDA), point REA at it (`GHIDRA_INSTALL_DIR`) |
+| No WinDbg/cdb | Four crash dumps from 2026-10-27 are unanalysed | Install WinDbg (Microsoft Store) |
+| Proxy AI | Without `EnableAI(false)` the NPC is a live AI actor | RE an AI-neutral approach (see REMOTE_PROXY_RESEARCH "Known gaps") |
+| `IMenu::LoadMovie` unresolved for 1.16.244 | Required for the Scaleform Multiplayer tab | RE (UI_FRAMEWORK §5) |
+
+## Testing requirements
+
+- Every engine-facing change: `./scripts/build.ps1` (62 unit/integration tests), then `./scripts/launch-instances.ps1 -Avatars`. Check both logs for `[avatar] ... VALID` within 2 s of spawn, `despawned ref ... no form (gone)`, and no new Papyrus.0.log errors.
+- Visual checks need a human (or a screenshot) and should be A/B tested against a single switch (`-AvatarFreezeAI`, `-AvatarScale`).
+- Still untested: proxies across a save/load (must not persist), a cell change by one player, three or more players, and two physical machines.
+
+## Next implementation steps
+
+1. Proxy behaviour without freezing AI (delayed freeze after fade-in, an AI-neutral package/faction, or C++ `SetPosition`). Validate opacity and stability.
+2. Save/load hygiene test for proxies.
+3. Phase 5 polish: animation speed/direction from the network velocity; despawn/respawn on cell transitions (already follows cells, but needs a test).
+4. Install Ghidra and decompile `0x5A0520` for a direct, synchronous spawn.
+5. UI foundation (UI_FRAMEWORK §5).
 
 ## Phase A — Connectivity
 - [x] ✅ Host/join workflow (protocol level), LAN direct IP
 - [x] ✅ Session lifecycle, identity (session-level), connection status, diagnostics logging
-- [ ] ⬜ In-game lobby/connection UI. Options: SFSE Menu interface (Scaleform), or a console command first.
+- [ ] ⬜ In-game lobby/connection UI. Decision: a custom Scaleform AS3 menu plus a pause-menu entry (see [UI_FRAMEWORK.md](UI_FRAMEWORK.md)).
 - [ ] ⬜ `SteamTransport` (P2P/SDR through the game's Steam client), Steam identity verification. See RESEARCH §6 for open questions.
 - [ ] ⬜ NAT traversal for non-Steam builds (signaling service + ICE). Requires infrastructure.
 
 ## Phase B — Player synchronization
-- [ ] ⬜ Remote player proxies: spawn/despawn lifecycle tied to PlayerJoined/Left and cell loads
+- [x] 🎮 Remote player proxies: spawn/despawn lifecycle tied to PlayerJoined/Left and cell changes, with engine-state validation (2026-11-02)
 - [x] ✅ Interpolation buffer (100 ms delay, 250 ms extrapolation cap, teleport/location snap, shortest-arc angles), receive-timestamped on the network thread, drop-oldest when the game thread stalls
 - [ ] ⬜ Animation state replication (graph variables / events)
 - [ ] ⬜ Respawn and disconnect cleanup

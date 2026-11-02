@@ -120,6 +120,8 @@ Sending positions is the smallest part. Each system needs engine access on the *
   - The VM is frozen during save loads (`VirtualMachine::freezeState`), and calls dispatched then are dropped without a reply.
   - Placing the player's base NPC (`00000007`) yields a mostly invisible actor (only a faint head), because the player's appearance lives on the PlayerCharacter instance, not the base.
 
+- **Update 2026-11-02:** the native pathway behind PlaceActorAtMe, the reason `FF…` bases fail, and the cause of the transparent proxies (`EnableAI(false)`) are documented with disassembly evidence in [REVERSE_ENGINEERING.md](REVERSE_ENGINEERING.md) and [REMOTE_PROXY_RESEARCH.md](REMOTE_PROXY_RESEARCH.md).
+
 ### 8.2 Stable location identity
 
 Starfield FormIDs encode the defining plugin in their high bits: full `0x00–0xFC`, medium `0xFD`+index byte, small `0xFE`+12-bit index, runtime `0xFF`. CoSync resolves the index through `TESDataHandler::compiledFileCollection` (`files` / `mediumFiles` / `smallFiles`; the handler pointer comes with SFSE's `PostDataLoad` message). It then sends `FNV-1a(lowercase(plugin file name), local id)`, so players with different load orders agree on cell identity. The medium-master bit layout is [unverified] in game; check the `local location:` log line.

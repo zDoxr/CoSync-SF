@@ -27,6 +27,11 @@ namespace cosync::plugin
         std::string password;
         log::Level logLevel = log::Level::Info;
         bool remoteAvatars = false;  // [Experimental] RemoteAvatars
+        // [Experimental] AvatarFreezeAI: EnableAI(false) right after spawn. OFF by default: it left
+        // proxies stuck semi-transparent in game (2026-11-02); with AI on they render opaque.
+        bool avatarFreezeAI = false;
+        bool avatarMove = true;       // [Experimental] AvatarMove (SetPosition/SetAngle at 10 Hz)
+        float avatarScale = 1.0f;     // [Experimental] AvatarScale (debug: >1 makes proxies easy to spot)
     };
 
     // Reads the INI; missing keys keep their defaults, invalid values are

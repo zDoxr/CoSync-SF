@@ -7,9 +7,11 @@
 #include <KnownFolders.h>
 #include <ShlObj.h>
 
+#include <algorithm>
 #include <charconv>
 #include <cwctype>
 #include <format>
+#include <string>
 
 namespace cosync::plugin
 {
@@ -86,6 +88,13 @@ namespace cosync::plugin
         }
 
         c.remoteAvatars = ReadString(iniPath, L"Experimental", L"RemoteAvatars", "0") == "1";
+        c.avatarFreezeAI = ReadString(iniPath, L"Experimental", L"AvatarFreezeAI", "0") == "1";
+        c.avatarMove = ReadString(iniPath, L"Experimental", L"AvatarMove", "1") == "1";
+        try {
+            c.avatarScale = std::clamp(std::stof(ReadString(iniPath, L"Experimental", L"AvatarScale", "1.0")), 0.1f, 10.0f);
+        } catch (...) {
+            c.avatarScale = 1.0f;
+        }
 
         const auto level = ReadString(iniPath, L"Debug", L"LogLevel", "info");
         if (level == "debug") c.logLevel = log::Level::Debug;
