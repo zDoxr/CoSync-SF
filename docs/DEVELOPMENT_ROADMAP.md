@@ -53,7 +53,7 @@ Goal: two real Starfield clients show each other's position in the plugin log, t
 
 | Blocker | Why it matters | What is needed |
 |---|---|---|
-| No IDA/Ghidra on this machine | Large functions (`CreateReference` `0x5A0520`, the EnableAI → animation path) need decompilation and type recovery | Install Ghidra 12.1.x + JDK 21 (or IDA), point REA at it (`GHIDRA_INSTALL_DIR`) |
+| No IDA/Ghidra on this machine | Large functions (`CreateReference` `0x5A0520`, the EnableAI → animation path) need decompilation and type recovery | Install Ghidra 12.1.x + JDK 21 (or IDA Pro) |
 | No WinDbg/cdb | Four crash dumps from 2026-10-27 are unanalysed | Install WinDbg (Microsoft Store) |
 | Proxy AI | Without `EnableAI(false)` the NPC is a live AI actor | RE an AI-neutral approach (see REMOTE_PROXY_RESEARCH "Known gaps") |
 | `IMenu::LoadMovie` unresolved for 1.16.244 | Required for the Scaleform Multiplayer tab | RE (UI_FRAMEWORK §5) |

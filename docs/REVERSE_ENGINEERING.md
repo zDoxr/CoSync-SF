@@ -17,7 +17,7 @@ Verified engine facts for Starfield, with the evidence behind each one. Anything
 
 ## Method and tools
 
-- **IDA Pro and Ghidra are not installed** on this machine. IDA left only a config folder; there is no Ghidra and no Java runtime. The REA MCP server reports both providers as unavailable.
+- **IDA Pro and Ghidra are not installed** on this machine. IDA left only a config folder; there is no Ghidra and no Java runtime.
 - Analysis instead uses `tools/re/sfre.py`, a small, reproducible static-analysis tool (Python + pefile + capstone + numpy). It:
   - maps the PE image and takes function bounds from `.pdata` (following chained unwind info);
   - resolves Address Library IDs exactly as CommonLibSF does (`commonlib-shared/src/REL/IDDB.cpp`, `load_v5`);
