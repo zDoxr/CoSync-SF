@@ -17,7 +17,7 @@ Verified engine facts for Starfield, with the evidence behind each one. Anything
 
 ## Method and tools
 
-- **IDA Pro and Ghidra are not installed** on this machine. IDA left only a config folder; there is no Ghidra and no Java runtime.
+- For the first findings, no disassembler was installed. IDA Pro 9.3 (with the x64 decompiler) has since been added; its batch scripts live in `tools/re/ida/`.
 - Analysis instead uses `tools/re/sfre.py`, a small, reproducible static-analysis tool (Python + pefile + capstone + numpy). It:
   - maps the PE image and takes function bounds from `.pdata` (following chained unwind info);
   - resolves Address Library IDs exactly as CommonLibSF does (`commonlib-shared/src/REL/IDDB.cpp`, `load_v5`);
@@ -153,7 +153,7 @@ Papyrus `Actor.EnableAI` → thunk `0x1FD1020` (`rcx=self, dl=abEnable, r8b=abPa
 - Sets or clears bit 1 of `Actor+0x208` (set = AI enabled). VERIFIED.
 - When disabling with `pauseVoice`, it sets bit 20 of `+0x208` and calls vfunc `0x82` (`vtbl+0x410`). When re-enabling, it clears that bit and conditionally calls vfunc `0x83`. VERIFIED. The voice semantics are INFERRED from the parameter name.
 - It then dereferences `Actor+0x228` → `+0x8` → `+0x458` (INFERRED: process / animation-side object) and calls `0x23B20F0(obj, flag)`, then vfunc `0x278/8` on that object. If 3D is loaded (Get3D, `vtbl+0x560`), it also updates further objects under `+0x228 → +0x10`. VERIFIED instruction-level; the purpose is UNKNOWN.
-- **VERIFIED-RT (A/B test, 2026-11-02):** calling `EnableAI(false, true)` on a freshly spawned proxy left it **semi-transparent**. The same build with that call disabled rendered the proxies **fully opaque**, as confirmed by the user watching both windows. The precise mechanism is UNKNOWN. The leading hypothesis is that the fade-in of newly loaded 3D stops advancing once AI/animation updates are disabled; the `0x23B20F0` call path is the place to confirm this. The earlier "faint floating head" from cloning the player base (2026-10-27) was made with the same freeze. Its transparency is probably the same issue; why only the head was visible is UNKNOWN.
+- **VERIFIED-RT (A/B test, 2026-11-02):** calling `EnableAI(false, true)` on a freshly spawned proxy left it **semi-transparent**. The same build with that call disabled rendered the proxies **fully opaque**, as confirmed by the user watching both windows. - **VERIFIED-RT (2026-11-02, freeze delayed until 3 s after the 3D loaded):** the proxy rendered opaque, but **its 3D stopped following the reference**. The reference's `data.location` kept tracking the remote player exactly (probe `(-749.1, 1653.6)` = network pose), while the visible model stayed where it was (user observation). So with AI disabled the engine stops updating the actor's 3D from its reference: no fade-in, no transform sync, no animation. `EnableAI(false)` therefore cannot be used on a live proxy at any point. The fade explanation for the transparency is consistent with this but not separately proven. The earlier "faint floating head" from cloning the player base (2026-10-27) was made with the same freeze. Its transparency is probably the same issue; why only the head was visible is UNKNOWN.
 
 ## 6. PlayerCharacter construction (can there be a second player?)
 
@@ -178,13 +178,41 @@ Conclusion: the engine creates a PlayerCharacter only through a factory that ove
 | SFSE 0.2.21 offers `SFSEMenuInterface` v2: `RegisterMenuMovieCreated(cb(IMenu*))` and `RegisterScaleformManagerCreated(cb(BSScaleformManager*))`. | `sfse/PluginAPI.h` | VERIFIED (header) |
 | `EnableAI` (`0x1959170`) dereferences `UI` singleton `0x5FD9B80` (calls `0x2542020`, `0x2544220`) when re-enabling AI. | §5 | VERIFIED; purpose UNKNOWN |
 
-## 8. Crash evidence not yet analysed
+## 8. Animation graph variables (locomotion)
+
+Runtime evidence. Variables were read with Papyrus `GetAnimationVariable*` on the local player while it moved, and on the proxies. Candidate names came from `.rdata` strings.
+
+| Variable | Exists on humanoid graphs | Meaning (calibrated on the player) |
+|---|---|---|
+| `Speed` (float) | yes | horizontal speed in world units/s: strafe 5.00 at a measured 5.16–5.36 u/s; backwards 4.40 at 4.38 u/s; 0 idle |
+| `Direction` (float) | yes | movement direction relative to facing, as a fraction of a turn: 0 forward, 0.25 right, 0.5 back; holds its last value when idle |
+| `TurnDelta` (float) | yes | 0 while walking straight; a stale value (-19.9) on a frozen proxy |
+| `DirectionSmoothed` | on one of the two graphs only | |
+| `SpeedSampled`, `SpeedSmoothed`, `IsMoving`, `IsRunning`, `IsSprinting`, `LocomotionBlend`, `LocomotionType`, `bInJumpState` | **no** | Papyrus.0.log: "cannot fetch variable named …" |
+
+- `SetAnimationVariableFloat` writes stick on the proxy, with AI on or off: the readback equals the written value (Speed 4.3–5.2, Direction 0–0.5).
+- **But writing `Speed`/`Direction` does not make the proxy play a walk cycle.** With AI on, it follows the position updates in a standing pose (user observation). NPC locomotion clips are therefore selected by the movement/AI system, not by these variables alone. **UNKNOWN:** which engine path selects NPC locomotion (the movement controller vs. graph events). That is the next RE target for animation.
+- With AI on and no network motion, the proxy's own AI sets `Speed` 0.4–0.9 (it wanders), so the engine owns these variables whenever the AI moves the actor.
+
+## 9. Appearance: `Actor.CopyAppearance`
+
+| Item | Evidence | Confidence |
+|---|---|---|
+| `Actor.CopyAppearance(Actor akSource)` is registered in the Actor native table `0x1FCC740`; thunk `0x1FCC700`. | `lea rdx,"CopyAppearance"`, `lea r9,0x1FCC700` | VERIFIED |
+| Thunk: if the source is None → "Cannot copy actor if source Actor is None". Otherwise it calls `0x17A96D0(self, source->data.objectReference /*+0x98*/, source == [0x5E61438])`. | disassembly; `0x5E61438` = Address Library ID 883420 (meaning UNKNOWN, a special actor, likely the player) | VERIFIED |
+| `0x17A96D0` (ID 97401): `dst = self->base`. If `dst != src`, it calls `TESNPC::CopyAppearance(dst, src, 0)` (`0xCD8DF0`), then vfunc 0x17 on `dst` with `0x800` and `0x4000` (INFERRED: add save change flags). If the source is the special actor, it writes `dst+0x348 = src`. Finally it calls `0x195D720(self, 0, 0x28, 0)` (INFERRED: rebuild 3D/appearance). | disassembly | VERIFIED (semantics INFERRED) |
+| **The copy targets the base NPC.** Every actor that shares that base changes, and the change is saved. | same | VERIFIED |
+| `TESNPC::CopyAppearance` (`0xCD8DF0`) copies: ACBS flag bit 0 (`+0xF0`, female) through `0x5D58A0`; byte `+0x450`; ACBS flag bit 19 through `0xCCE940`; 12 bytes at `+0x350..+0x35B`; 5 floats from the array at `+0x3D8` through `0xCE7BB0(dst, i, v)`; the bulk through **`0xCD56E0(dst, src, flag)`**; byte `+0x400`. | disassembly | VERIFIED (field meanings UNKNOWN until `0xCD56E0` is decompiled) |
+
+Consequence: an exact copy of a remote player means sending these fields over the network and applying them to a **proxy-owned** base NPC, never to a shared base. The local player's base `00000007` would change the local player itself.
+
+## 10. Crash evidence not yet analysed
 
 - Four crash dumps from 2026-10-27, from the cell-walking experiment: `Starfield_10-28-03-{07,13,20,24}.dmp` (~150 MB each) in the game folder. The commit history attributes the 22:20/22:24 silent exits to iterating `TESObjectCELL::references` and reading `Actor::boolBits` with unverified layouts. That code was removed. The dumps have **not** been analysed (no WinDbg/cdb installed). **UNKNOWN** until analysed.
 
-## 9. Open items (what is needed and why)
+## 11. Open items (what is needed and why)
 
-1. **IDA Pro or Ghidra** (Ghidra 12.1.x + JDK 21) to decompile `0x5A0520` (CreateReference), `0x23B20F0` (the EnableAI → animation path) and the 3D fade logic. The capstone tooling is enough for targeted reads, but not for type recovery across a 0x2000-byte function.
+1. **IDA Pro 9.3** (now available; database being built under `local/ida/`, script `tools/re/ida/analyze_and_save.py`). Decompile `0xCD56E0` (appearance fields), `0x5A0520` (CreateReference), NPC locomotion selection, and `0x23B20F0` (the EnableAI → process path).
 2. **WinDbg/cdb** to analyse the four crash dumps.
 3. The full new-reference descriptor layout, if direct (non-Papyrus) spawning is pursued.
 4. Animation-graph driving for proxies (`IAnimationGraphManagerHolder` at TESObjectREFR+0x60 per CommonLibSF; unverified).

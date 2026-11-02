@@ -6,7 +6,10 @@
 #include "cosync/net/Util.h"
 #include "cosync/shared/Log.h"
 
+#include <RE/Starfield.h>
+
 #include <algorithm>
+#include <cmath>
 
 namespace cosync::plugin
 {
@@ -124,6 +127,7 @@ namespace cosync::plugin
         if (_avatarsEnabled) {
             UpdateVmState();
             UpdateTemplate();
+            if (_opt.animDiag) UpdateAnimDiag();
         }
         for (auto& [id, remote] : _remotes) {
             remote.pose = remote.interpolator.Sample(nowMs);
@@ -158,7 +162,7 @@ namespace cosync::plugin
 
     bool GameBridge::TemplateDecided() const noexcept
     {
-        return _templateBase != 0 || _templateTries >= kTemplateMaxTries;
+        return !_opt.nearbyBase || _templateBase != 0 || _templateTries >= kTemplateMaxTries;
     }
 
     void GameBridge::UpdateTemplate()
@@ -243,13 +247,22 @@ namespace cosync::plugin
                     }
                 } else {
                     avatar.refId = result;
-                    const bool frozen = _avatarFreezeAI && avatars::Freeze(avatar.refId);
+                    avatar.frozen = _opt.freezeMode == 1 && avatars::Freeze(avatar.refId);
+                    avatar.loaded3DAt = {};
+                    avatar.lastPosAt = {};
+                    avatar.speed = 0.0f;
+                    avatar.sentSpeed = -1.0f;
+                    avatar.sentDirection = -1.0f;
+                    avatar.nextAnimWrite = {};
                     if (_avatarScale != 1.0f) avatars::SetScale(avatar.refId, _avatarScale);
                     log::Info("[avatar] player {} '{}': spawned ref {:08X} (AI {}); right after spawn: {}", id,
-                              remote.name, avatar.refId, frozen ? "disable requested" : (_avatarFreezeAI ? "NOT disabled" : "left on (AvatarFreezeAI=0)"),
+                              remote.name, avatar.refId,
+                              avatar.frozen          ? "disabled at spawn"
+                              : _opt.freezeMode == 2 ? "on until 3D has loaded"
+                                                     : "left on",
                               avatars::Describe(avatars::Probe(avatar.refId)));
                     avatar.probes = 0;
-                    avatar.nextProbe = now + std::chrono::seconds(1);
+                    avatar.nextProbe = now + std::chrono::milliseconds(250);
                 }
             }
         }
@@ -282,19 +295,43 @@ namespace cosync::plugin
             }
         }
 
-        // Validation: log the proxy's engine state at 1, 2, 4 and 8 s after spawning, then every 15 s.
+        // Validation: probe every 250 ms until 3D is loaded (measures the 3D load time), then
+        // log at roughly 1, 2, 4 and 8 s after that and every 15 s afterwards.
+        constexpr std::chrono::steady_clock::time_point kNever{};
         if (avatar.refId != 0 && now >= avatar.nextProbe) {
             const auto state = avatars::Probe(avatar.refId);
-            ++avatar.probes;
-            const auto delay = avatar.probes < 4 ? std::chrono::seconds(1LL << avatar.probes) : std::chrono::seconds(15);
-            avatar.nextProbe = now + delay;
-            const bool ok = state.isActor && !state.disabled && !state.deleted && state.has3D && state.sameCellAsPlayer;
-            log::Info("[avatar] player {} '{}': ref {:08X} {} [{}]", id, remote.name, avatar.refId,
-                      ok ? "VALID" : "INCOMPLETE", avatars::Describe(state));
+            if (state.has3D && avatar.loaded3DAt == kNever) {
+                avatar.loaded3DAt = now;
+                log::Info("[avatar] player {} '{}': ref {:08X} 3D loaded {} ms after the spawn request", id,
+                          remote.name, avatar.refId,
+                          std::chrono::duration_cast<std::chrono::milliseconds>(now - avatar.requestedAt).count());
+            }
+            if (avatar.loaded3DAt == kNever) {
+                avatar.nextProbe = now + std::chrono::milliseconds(250);
+            } else {
+                ++avatar.probes;
+                const auto delay =
+                    avatar.probes < 4 ? std::chrono::seconds(1LL << avatar.probes) : std::chrono::seconds(15);
+                avatar.nextProbe = now + delay;
+                const bool ok =
+                    state.isActor && !state.disabled && !state.deleted && state.has3D && state.sameCellAsPlayer;
+                log::Info("[avatar] player {} '{}': ref {:08X} {} [{}]", id, remote.name, avatar.refId,
+                          ok ? "VALID" : "INCOMPLETE", avatars::Describe(state));
+            }
         }
 
-        if (_avatarMove && avatar.refId != 0 && now >= avatar.nextMove) {
+        // Freeze mode 2: disable AI only after the 3D has been loaded for freezeDelay seconds,
+        // so the engine's own post-load work (suspected fade-in) can finish first.
+        if (_opt.freezeMode == 2 && avatar.refId != 0 && !avatar.frozen && avatar.loaded3DAt != kNever &&
+            now - avatar.loaded3DAt >= std::chrono::duration<float>(_opt.freezeDelay)) {
+            avatar.frozen = avatars::Freeze(avatar.refId);
+            log::Info("[avatar] player {} '{}': ref {:08X} AI disabled {:.1f} s after 3D load", id, remote.name,
+                      avatar.refId, _opt.freezeDelay);
+        }
+
+        if (_opt.move && avatar.refId != 0 && now >= avatar.nextMove) {
             avatar.nextMove = now + kAvatarMoveInterval;
+            if (_opt.animate) DriveLocomotion(avatar, *remote.pose);
             if (!avatars::Move(avatar.refId, remote.pose->position, remote.pose->rotation)) {
                 log::Warn("[avatar] player {} '{}': ref {:08X} no longer exists", id, remote.name, avatar.refId);
                 avatar.refId = 0;
@@ -343,6 +380,117 @@ namespace cosync::plugin
             }
             return true;
         });
+    }
+
+    namespace
+    {
+        using avatars::AnimVarKind;
+        // Locomotion graph variable candidates (strings found in Starfield.exe 1.16.244).
+        // Locomotion graph variables that exist on humanoid graphs (runtime check 2026-11-02:
+        // SpeedSampled, SpeedSmoothed, IsMoving, IsRunning, IsSprinting, LocomotionBlend,
+        // LocomotionType, bInJumpState are "cannot fetch" on both player and NPC graphs).
+        constexpr avatars::AnimVar kDiagVars[] = {
+            { "Speed", AnimVarKind::kFloat },
+            { "Direction", AnimVarKind::kFloat },
+            { "TurnDelta", AnimVarKind::kFloat },
+        };
+    }
+
+    void GameBridge::UpdateAnimDiag()
+    {
+        constexpr std::chrono::steady_clock::time_point kNever{};
+        const auto now = std::chrono::steady_clock::now();
+        auto* player = RE::PlayerCharacter::GetSingleton();
+
+        // Measured horizontal speed of the local player (engine units per second), for calibration.
+        if (player && _inWorld) {
+            const auto p = player->GetPosition();
+            const float dt = std::chrono::duration<float>(now - _lastPlayerPosAt).count();
+            if (_lastPlayerPosAt == kNever || dt >= 0.2f) {
+                if (_lastPlayerPosAt != kNever) {
+                    const float dx = p.x - _lastPlayerPos.x, dy = p.y - _lastPlayerPos.y;
+                    _playerSpeed = std::sqrt(dx * dx + dy * dy) / dt;
+                }
+                _lastPlayerPos = { p.x, p.y, p.z };
+                _lastPlayerPosAt = now;
+            }
+        }
+
+        // Log reads that have completed.
+        if (_playerAnim && _playerAnim->remaining.load() <= 0) {
+            log::Info("[anim] player: measured {:.2f} u/s yaw {:.2f} | {}", _playerSpeed,
+                      player ? player->GetAngle().z : 0.0f, avatars::FormatReadout(*_playerAnim, kDiagVars));
+            _playerAnim.reset();
+        }
+        for (auto& [id, remote] : _remotes) {
+            auto& a = remote.avatar;
+            if (a.anim && a.anim->remaining.load() <= 0) {
+                log::Info("[anim] proxy {:08X} ({}): {}", a.refId, remote.name,
+                          avatars::FormatReadout(*a.anim, kDiagVars));
+                a.anim.reset();
+            }
+        }
+
+        if (now < _nextAnimDiag || !_vmSettled || !_inWorld) return;
+        _nextAnimDiag = now + std::chrono::seconds(1);
+        if (!_playerAnim) _playerAnim = avatars::RequestAnimVars(avatars::PlayerRefId(), kDiagVars);
+        for (auto& [id, remote] : _remotes) {
+            auto& a = remote.avatar;
+            if (a.refId != 0 && !a.anim && a.loaded3DAt != kNever) {
+                a.anim = avatars::RequestAnimVars(a.refId, kDiagVars);
+            }
+        }
+    }
+
+    // Locomotion from network motion. Calibrated on the local player (2026-11-02, AvatarAnimDiag):
+    //   "Speed"     = horizontal speed in world units per second (strafe 5.0 at a measured 5.2 u/s,
+    //                 backwards 4.4 at 4.4 u/s, 0 when idle)
+    //   "Direction" = movement direction relative to facing as a fraction of a turn
+    //                 (0 forward, 0.25 right, 0.5 back; keeps its last value when idle)
+    // Engine yaw convention: forward = (sin yaw, cos yaw), so right = (cos yaw, -sin yaw).
+    void GameBridge::DriveLocomotion(Avatar& avatar, const InterpolatedPose& pose)
+    {
+        constexpr std::chrono::steady_clock::time_point kNever{};
+        constexpr float kTwoPi = 6.28318530718f;
+        constexpr float kIdleSpeed = 0.3f;        // below this the proxy stands
+        constexpr float kSmoothing = 0.5f;        // per 100 ms tick
+        const auto now = std::chrono::steady_clock::now();
+        if (avatar.loaded3DAt == kNever) return;  // no graph before 3D
+
+        float direction = avatar.sentDirection < 0.0f ? 0.0f : avatar.sentDirection;
+        if (avatar.lastPosAt != kNever) {
+            const float dt = std::chrono::duration<float>(now - avatar.lastPosAt).count();
+            if (dt > 0.0f && dt < 1.0f) {
+                const float vx = (pose.position.x - avatar.lastPos.x) / dt;
+                const float vy = (pose.position.y - avatar.lastPos.y) / dt;
+                const float raw = std::sqrt(vx * vx + vy * vy);
+                avatar.speed += (raw - avatar.speed) * kSmoothing;
+                if (raw > kIdleSpeed) {
+                    float rel = std::atan2(vx, vy) - pose.rotation.z;
+                    rel = std::fmod(rel, kTwoPi);
+                    if (rel < 0.0f) rel += kTwoPi;
+                    direction = rel / kTwoPi;
+                    if (direction >= 1.0f) direction = 0.0f;
+                }
+            }
+        }
+        avatar.lastPos = pose.position;
+        avatar.lastPosAt = now;
+
+        const float speed = avatar.speed < kIdleSpeed ? 0.0f : avatar.speed;
+        // Write when the value changed meaningfully, and at least every 500 ms (the engine may reset it).
+        const bool speedChanged = std::abs(speed - avatar.sentSpeed) > 0.1f;
+        float dd = std::abs(direction - avatar.sentDirection);
+        dd = std::min(dd, 1.0f - dd);  // wrap-around distance
+        const bool dirChanged = speed > 0.0f && dd > 0.02f;
+        if (!speedChanged && !dirChanged && now < avatar.nextAnimWrite) return;
+        avatar.nextAnimWrite = now + std::chrono::milliseconds(500);
+        avatars::SetAnimFloat(avatar.refId, "Speed", speed);
+        avatar.sentSpeed = speed;
+        if (speed > 0.0f || avatar.sentDirection < 0.0f) {
+            avatars::SetAnimFloat(avatar.refId, "Direction", direction);
+            avatar.sentDirection = direction;
+        }
     }
 
     void GameBridge::CheckDespawns()

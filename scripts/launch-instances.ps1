@@ -36,8 +36,16 @@ param(
     [switch]$WindowedOnly,
     [switch]$Avatars,                # experimental: spawn stand-ins for remote players
     [double]$AvatarScale = 1.0,      # debug: scale stand-ins so they are easy to spot
-    [switch]$AvatarFreezeAI,         # experiment: EnableAI(false) on stand-ins (makes them semi-transparent)
+    [ValidateSet(0, 1, 2)]
+    [int]$AvatarFreezeAI = 0,        # proxy AI: 0 on, 1 off at spawn (semi-transparent), 2 off after 3D load + delay
+    [double]$AvatarFreezeDelay = 3,
+    [ValidateSet('player', 'nearby')]
+    [string]$AvatarBase = 'player',  # proxy base NPC
+    [switch]$AvatarAnimDiag,         # log locomotion graph variables of player and proxies
+    [switch]$AvatarAnimate,          # drive proxy locomotion variables from network velocity
     [switch]$AvatarNoMove,           # experiment: do not SetPosition/SetAngle stand-ins
+    [double]$RenderScale = 0.5,      # test instances share one GPU: render at this scale (DLSS/FSR upscales)
+    [switch]$NoVsync,                # vsync stops the focused copy from starving the other of GPU time
     [switch]$RestoreDisplay
 )
 
@@ -152,6 +160,11 @@ foreach ($name in $iniFiles) {
     # Bethesda games pause their main loop when the window loses focus; with two
     # copies only the focused one would tick (observed 2026-10-27). Keep both running.
     Set-IniValue $path 'General' 'bAlwaysActive' '1'
+    # Two copies share one GPU, and Windows favours the foreground window, so the
+    # unfocused copy lagged at 11-16 FPS while the GPU sat at 99% (2026-11-02).
+    # Cap the frame rate with vsync and lower the render scale for test runs.
+    Set-IniValue $path 'Display' 'bEnableVsync' $(if ($NoVsync) { '0' } else { '1' })
+    Set-IniValue $path 'Display' 'fRenderResolutionScaleFactor' $RenderScale.ToString('0.0000', [Globalization.CultureInfo]::InvariantCulture)
     if ($Avatars) {
         # Papyrus log (Documents\My Games\Starfield\Logs\Script) records VM call errors.
         Set-IniValue $path 'Papyrus' 'bEnableLogging' '1'
@@ -197,7 +210,11 @@ function Write-InstanceConfig([int]$n) {
         '[Experimental]'
         "RemoteAvatars=$(if ($Avatars) { 1 } else { 0 })"
         "AvatarScale=$($AvatarScale.ToString([Globalization.CultureInfo]::InvariantCulture))"
-        "AvatarFreezeAI=$(if ($AvatarFreezeAI) { 1 } else { 0 })"
+        "AvatarFreezeAI=$AvatarFreezeAI"
+        "AvatarFreezeDelay=$($AvatarFreezeDelay.ToString([Globalization.CultureInfo]::InvariantCulture))"
+        "AvatarBase=$AvatarBase"
+        "AvatarAnimDiag=$(if ($AvatarAnimDiag) { 1 } else { 0 })"
+        "AvatarAnimate=$(if ($AvatarAnimate) { 1 } else { 0 })"
         "AvatarMove=$(if ($AvatarNoMove) { 0 } else { 1 })"
         '[Debug]'
         'LogLevel=debug'

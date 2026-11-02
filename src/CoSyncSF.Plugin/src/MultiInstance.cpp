@@ -91,4 +91,23 @@ namespace cosync::plugin
         detail = "multi-instance mode: Starfield.exe's FindWindowA(\"Starfield\") single-instance check bypassed";
         return true;
     }
+
+    bool DisablePowerThrottlingIfRequested(std::string& detail)
+    {
+        char value[8]{};
+        if (GetEnvironmentVariableA("COSYNC_MULTI_INSTANCE", value, sizeof(value)) == 0 || std::strcmp(value, "1") != 0) {
+            detail = "power throttling: unchanged (not a multi-instance test)";
+            return false;
+        }
+        PROCESS_POWER_THROTTLING_STATE state{};
+        state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+        state.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+        state.StateMask = 0;  // controlled bits cleared = never throttle
+        if (!SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &state, sizeof(state))) {
+            detail = std::format("power throttling: opt-out failed (error {})", GetLastError());
+            return false;
+        }
+        detail = "power throttling: disabled for this process (multi-instance test)";
+        return true;
+    }
 }

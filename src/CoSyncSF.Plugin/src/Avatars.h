@@ -5,7 +5,9 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
+#include <vector>
 
 // Remote-player stand-ins ("avatars") via the game's Papyrus VM.
 //
@@ -75,6 +77,39 @@ namespace cosync::plugin::avatars
 
     // Disables and deletes the avatar. Safe to call with a stale id.
     void Despawn(std::uint32_t refId);
+
+    // ---- Animation graph variables ------------------------------------------
+    // Papyrus ObjectReference natives, all registered in Starfield.exe 1.16.244:
+    //   Float GetAnimationVariableFloat(String)  native 0x2070580
+    //   Int   GetAnimationVariableInt(String)    native 0x2070460
+    //   Bool  GetAnimationVariableBool(String)   (wrapper 0x209FCB0)
+    //   None  SetAnimationVariableFloat(String, Float) native 0x207F9C0
+    //   None  SetAnimationVariableBool(String, Bool)   native 0x207F8B0
+    // Variable names are graph-defined; candidates come from strings in the exe
+    // (Speed, SpeedSampled, Direction, IsMoving, ...), verified at runtime by reading
+    // them on the local player.
+    enum class AnimVarKind : char { kFloat = 'f', kInt = 'i', kBool = 'b' };
+    struct AnimVar
+    {
+        const char* name;
+        AnimVarKind kind;
+    };
+
+    // Asynchronous read of several variables. Each slot holds the float bits of the
+    // value (ints and bools converted) once its call returns; `remaining` counts down.
+    struct AnimReadout
+    {
+        explicit AnimReadout(std::size_t n) : bits(n) {}
+        std::vector<std::atomic<std::uint32_t>> bits;
+        std::atomic<int> remaining{ 0 };
+        std::atomic<int> failed{ 0 };
+    };
+    // Returns nullptr if the ref is gone or no call could be dispatched.
+    [[nodiscard]] std::shared_ptr<AnimReadout> RequestAnimVars(std::uint32_t refId, std::span<const AnimVar> vars);
+    [[nodiscard]] std::string FormatReadout(const AnimReadout& r, std::span<const AnimVar> vars);
+
+    bool SetAnimFloat(std::uint32_t refId, const char* name, float value);
+    bool SetAnimBool(std::uint32_t refId, const char* name, bool value);
 
     // Engine-side state of a spawned avatar, read synchronously on the MAIN THREAD.
     // Every read is backed by disassembly of Starfield.exe 1.16.244 (docs/REVERSE_ENGINEERING.md):

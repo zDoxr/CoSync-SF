@@ -27,9 +27,16 @@ namespace cosync::plugin
         std::string password;
         log::Level logLevel = log::Level::Info;
         bool remoteAvatars = false;  // [Experimental] RemoteAvatars
-        // [Experimental] AvatarFreezeAI: EnableAI(false) right after spawn. OFF by default: it left
-        // proxies stuck semi-transparent in game (2026-11-02); with AI on they render opaque.
-        bool avatarFreezeAI = false;
+        // [Experimental] AvatarFreezeAI: 0 = never; 1 = EnableAI(false) right after spawn (left
+        // proxies stuck semi-transparent in game, 2026-11-02); 2 = after 3D has been loaded for
+        // AvatarFreezeDelay seconds.
+        int avatarFreezeMode = 0;
+        float avatarFreezeDelay = 3.0f;
+        // [Experimental] AvatarBase: "player" = the player character's own base NPC (00000007);
+        // "nearby" = the data-file base of a random nearby NPC (old behaviour).
+        bool avatarNearbyBase = false;
+        bool avatarAnimDiag = false;  // [Experimental] AvatarAnimDiag: log graph variables 1/s
+        bool avatarAnimate = false;   // [Experimental] AvatarAnimate: drive locomotion variables
         bool avatarMove = true;       // [Experimental] AvatarMove (SetPosition/SetAngle at 10 Hz)
         float avatarScale = 1.0f;     // [Experimental] AvatarScale (debug: >1 makes proxies easy to spot)
     };

@@ -22,6 +22,15 @@ How a remote player should exist in Starfield's world, why earlier attempts misb
 | 6. Receives transform updates | Proxy position follows the remote pose (Papyrus `SetPosition`/`SetAngle`, 10 Hz) | ✅ VERIFIED-RT (it slides; no walk animation) |
 | 7. Safe cleanup | `Disable()` + `Delete()`; 2 s later `LookupByID` returns null; no crash | ✅ VERIFIED-RT |
 
+## Update 2026-11-02 (afternoon): AI, animation, appearance
+
+- **AI cannot be disabled on a live proxy.** Freezing at spawn leaves it semi-transparent. Freezing 3 s after the 3D loads keeps it opaque, but the model then no longer follows position updates (RE §5). The proxy keeps AI on, so neutralizing its behaviour (wandering, combat, dialogue) needs another mechanism.
+- **Animation: not solved yet.** Graph variables `Speed`/`Direction` are calibrated (RE §8) and written from network velocity (`AvatarAnimate=1`). The writes stick, but the proxy still slides in a standing pose, so NPC locomotion is selected by the movement system. Next: RE how the engine moves NPCs with animation (decompile the movement path in IDA).
+- **Appearance:** cloning a nearby NPC (or a random template) is rejected. The proxy must look exactly like the remote player. The engine's own mechanism is `Actor.CopyAppearance`, which copies a fixed set of TESNPC fields onto the target's **base** (RE §9). Plan:
+  1. Default base is now the player character's own base `00000007` (`AvatarBase=player`) instead of a random NPC. On a test rig where both copies load the same save, this already shows the right character.
+  2. Give each remote player a **dedicated proxy NPC record**. Either ship a small plugin file with a `CoSync_RemotePlayer` NPC_ record, or clone a base at runtime and spawn through `TESDataHandler::CreateReference` directly (PlaceActorAtMe rejects runtime bases, RE §2).
+  3. Serialize the fields `TESNPC::CopyAppearance` copies (RE §9, after `0xCD56E0` is decompiled), plus the worn equipment, and send them reliably on join and on change. Apply them to the dedicated record, then refresh the 3D the way `0x17A96D0` does.
+
 ## Why earlier attempts failed (determined)
 
 | Symptom (date) | Root cause | Evidence |

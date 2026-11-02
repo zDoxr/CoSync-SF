@@ -45,15 +45,16 @@ Goal: two real Starfield clients show each other's position in the plugin log, t
      - The semi-transparent proxies were caused by `EnableAI(false)` right after spawn (A/B tested). `AvatarFreezeAI` now defaults to off.
    - `PlaceAtMe(Form, …)` was rejected ("Type mismatch for argument 1"); `PlaceActorAtMe(actorbase, …)` works.
    - Spawning waits for the Papyrus VM to thaw after a load.
-   - ⬜ Proxy behaviour control without freezing AI: the NPC may wander, talk or fight between updates.
-   - ⬜ Copy the remote player's actual appearance.
-   - ⬜ Walking/running animation (the proxy currently slides).
+   - ⛔ Freezing AI is ruled out (2026-11-02): with AI disabled the engine stops updating the proxy's 3D. ⬜ Neutralize behaviour with AI on.
+   - ⬜ Exact appearance copy of the remote player (plan in REMOTE_PROXY_RESEARCH "Update 2026-11-02"). The base is now `00000007`, not a random NPC.
+   - ⬜ Walking/running animation. Graph variables are calibrated and written, but the proxy still slides, so the next step is RE of NPC locomotion selection.
+   - ✅ Two-copy test rig lag explained: GPU at 99% and Windows favours the foreground window. The launcher now defaults test copies to vsync and a 0.5 render scale, and the plugin opts multi-instance copies out of power throttling.
 
 ## Outstanding blockers
 
 | Blocker | Why it matters | What is needed |
 |---|---|---|
-| No IDA/Ghidra on this machine | Large functions (`CreateReference` `0x5A0520`, the EnableAI → animation path) need decompilation and type recovery | Install Ghidra 12.1.x + JDK 21 (or IDA Pro) |
+| IDA database still building | `0xCD56E0` (appearance), NPC locomotion, `0x5A0520` need decompilation | IDA Pro 9.3 now available; run `tools/re/ida/analyze_and_save.py` |
 | No WinDbg/cdb | Four crash dumps from 2026-10-27 are unanalysed | Install WinDbg (Microsoft Store) |
 | Proxy AI | Without `EnableAI(false)` the NPC is a live AI actor | RE an AI-neutral approach (see REMOTE_PROXY_RESEARCH "Known gaps") |
 | `IMenu::LoadMovie` unresolved for 1.16.244 | Required for the Scaleform Multiplayer tab | RE (UI_FRAMEWORK §5) |

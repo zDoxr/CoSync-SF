@@ -17,4 +17,9 @@ namespace cosync::plugin
     // i.e. from SFSEPlugin_Load. Returns true if the patch was installed;
     // `detail` explains the outcome either way.
     bool InstallMultiInstancePatchIfRequested(std::string& detail);
+
+    // Multi-instance tests only (COSYNC_MULTI_INSTANCE=1): opts this process out of
+    // Windows power throttling (EcoQoS: execution speed and timer resolution), so an
+    // unfocused copy is never put into efficiency mode. Returns false if not requested.
+    bool DisablePowerThrottlingIfRequested(std::string& detail);
 }

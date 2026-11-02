@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Avatars.h"
 #include "cosync/net/NetworkWorker.h"
 #include "cosync/shared/Interpolation.h"
 
@@ -29,11 +30,16 @@ namespace cosync::plugin
         // Experimental: spawn and move a stand-in actor per remote player in the same cell.
         void EnableAvatars(bool enable) noexcept { _avatarsEnabled = enable; }
         void SetAvatarScale(float scale) noexcept { _avatarScale = scale; }
-        void SetAvatarOptions(bool freezeAI, bool move) noexcept
+        struct AvatarOptions
         {
-            _avatarFreezeAI = freezeAI;
-            _avatarMove = move;
-        }
+            int freezeMode = 0;        // 0 never, 1 at spawn, 2 after 3D loaded + freezeDelay
+            float freezeDelay = 3.0f;  // seconds
+            bool move = true;
+            bool animDiag = false;
+            bool animate = false;
+            bool nearbyBase = false;  // false: player base 00000007
+        };
+        void SetAvatarOptions(const AvatarOptions& o) noexcept { _opt = o; }
         void Tick();
 
     private:
@@ -47,6 +53,15 @@ namespace cosync::plugin
             std::chrono::steady_clock::time_point requestedAt{};
             std::chrono::steady_clock::time_point nextProbe{};  // engine-state validation log
             std::uint32_t probes = 0;
+            std::chrono::steady_clock::time_point loaded3DAt{};  // first probe that saw 3D
+            bool frozen = false;
+            std::shared_ptr<avatars::AnimReadout> anim;  // diagnostics read in flight
+            Vec3 lastPos{};                              // for velocity (AvatarAnimate)
+            std::chrono::steady_clock::time_point lastPosAt{};
+            float speed = 0.0f;                          // smoothed horizontal speed, units/s
+            float sentSpeed = -1.0f;                     // last values written to the graph
+            float sentDirection = -1.0f;
+            std::chrono::steady_clock::time_point nextAnimWrite{};
             std::string baseDetail;
         };
 
@@ -78,8 +93,15 @@ namespace cosync::plugin
         bool _inWorld = false;
         bool _avatarsEnabled = false;
         float _avatarScale = 1.0f;
-        bool _avatarFreezeAI = false;
-        bool _avatarMove = true;
+        AvatarOptions _opt;
+        // Animation diagnostics (AvatarAnimDiag).
+        std::shared_ptr<avatars::AnimReadout> _playerAnim;
+        std::chrono::steady_clock::time_point _nextAnimDiag{};
+        Vec3 _lastPlayerPos{};
+        std::chrono::steady_clock::time_point _lastPlayerPosAt{};
+        float _playerSpeed = 0.0f;  // measured horizontal speed, units/s
+        void UpdateAnimDiag();
+        void DriveLocomotion(Avatar& avatar, const InterpolatedPose& pose);
         bool _vmReady = false;
         bool _vmSettled = false;
         std::chrono::steady_clock::time_point _vmReadySince{};

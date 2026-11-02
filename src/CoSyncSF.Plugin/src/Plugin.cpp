@@ -157,6 +157,9 @@ SFSE_PLUGIN_LOAD(const SFSE::LoadInterface* a_sfse)
     } else {
         log::Info("{}", multiInstance);
     }
+    std::string throttling;
+    plugin::DisablePowerThrottlingIfRequested(throttling);
+    log::Info("{}", throttling);
 
     std::string warnings;
     const auto iniPath = plugin::ConfigPath();
@@ -184,9 +187,13 @@ SFSE_PLUGIN_LOAD(const SFSE::LoadInterface* a_sfse)
     plugin::GameBridge::Get().EnableLocalPlayerReads(haveAddressLibrary);
     plugin::GameBridge::Get().EnableAvatars(haveAddressLibrary && g_config.remoteAvatars);
     plugin::GameBridge::Get().SetAvatarScale(g_config.avatarScale);
-    plugin::GameBridge::Get().SetAvatarOptions(g_config.avatarFreezeAI, g_config.avatarMove);
-    log::Info("avatar options: freezeAI={} move={} scale={:.2f}", g_config.avatarFreezeAI, g_config.avatarMove,
-              g_config.avatarScale);
+    plugin::GameBridge::Get().SetAvatarOptions({ g_config.avatarFreezeMode, g_config.avatarFreezeDelay,
+                                                 g_config.avatarMove, g_config.avatarAnimDiag, g_config.avatarAnimate,
+                                                 g_config.avatarNearbyBase });
+    log::Info("avatar base: {}", g_config.avatarNearbyBase ? "random nearby NPC" : "player base NPC 00000007");
+    log::Info("avatar options: freezeAI={} (delay {:.1f} s) move={} animDiag={} animate={} scale={:.2f}",
+              g_config.avatarFreezeMode, g_config.avatarFreezeDelay, g_config.avatarMove, g_config.avatarAnimDiag,
+              g_config.avatarAnimate, g_config.avatarScale);
     log::Info("remote avatars: {}", haveAddressLibrary && g_config.remoteAvatars ? "ON (experimental)" : "off");
 
     const auto* messaging = SFSE::GetMessagingInterface();

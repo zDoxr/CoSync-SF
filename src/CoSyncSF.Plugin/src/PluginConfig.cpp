@@ -88,7 +88,18 @@ namespace cosync::plugin
         }
 
         c.remoteAvatars = ReadString(iniPath, L"Experimental", L"RemoteAvatars", "0") == "1";
-        c.avatarFreezeAI = ReadString(iniPath, L"Experimental", L"AvatarFreezeAI", "0") == "1";
+        {
+            const auto freeze = ReadString(iniPath, L"Experimental", L"AvatarFreezeAI", "0");
+            c.avatarFreezeMode = freeze == "1" ? 1 : freeze == "2" ? 2 : 0;
+        }
+        try {
+            c.avatarFreezeDelay = std::clamp(std::stof(ReadString(iniPath, L"Experimental", L"AvatarFreezeDelay", "3")), 0.0f, 60.0f);
+        } catch (...) {
+            c.avatarFreezeDelay = 3.0f;
+        }
+        c.avatarNearbyBase = ReadString(iniPath, L"Experimental", L"AvatarBase", "player") == "nearby";
+        c.avatarAnimDiag = ReadString(iniPath, L"Experimental", L"AvatarAnimDiag", "0") == "1";
+        c.avatarAnimate = ReadString(iniPath, L"Experimental", L"AvatarAnimate", "0") == "1";
         c.avatarMove = ReadString(iniPath, L"Experimental", L"AvatarMove", "1") == "1";
         try {
             c.avatarScale = std::clamp(std::stof(ReadString(iniPath, L"Experimental", L"AvatarScale", "1.0")), 0.1f, 10.0f);

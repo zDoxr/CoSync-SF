@@ -9,7 +9,9 @@
 
 #include <RE/Starfield.h>
 
+#include <bit>
 #include <cmath>
+#include <limits>
 #include <format>
 #include <functional>
 #include <numbers>
@@ -445,6 +447,79 @@ namespace cosync::plugin::avatars
         auto* actor = LookupActor(refId);
         if (!actor) return false;
         return Dispatch(ScriptObjectFor(actor), "SetScale", [scale](RE::BSScrapArray<Variable>& a) { Push(a, scale); });
+    }
+
+    std::shared_ptr<AnimReadout> RequestAnimVars(std::uint32_t refId, std::span<const AnimVar> vars)
+    {
+        auto* actor = LookupActor(refId);
+        if (!actor || vars.empty()) return nullptr;
+        const auto self = ScriptObjectFor(actor);
+        auto out = std::make_shared<AnimReadout>(vars.size());
+        constexpr std::uint32_t kPending = 0x7FC00001;  // a NaN payload no getter returns
+        for (auto& b : out->bits) b.store(kPending);
+        out->remaining.store(static_cast<int>(vars.size()));
+        for (std::size_t i = 0; i < vars.size(); ++i) {
+            const auto& var = vars[i];
+            const char* fn = var.kind == AnimVarKind::kFloat ? "GetAnimationVariableFloat"
+                             : var.kind == AnimVarKind::kInt ? "GetAnimationVariableInt"
+                                                              : "GetAnimationVariableBool";
+            const std::string name = var.name;
+            const bool ok = Dispatch(
+                self, fn, [name](RE::BSScrapArray<Variable>& a) { Push(a, std::string_view{ name }); },
+                [out, i](const Variable& v) {
+                    float f = std::numeric_limits<float>::quiet_NaN();
+                    if (v.is<float>()) f = RE::BSScript::get<float>(v);
+                    else if (v.is<std::int32_t>()) f = static_cast<float>(RE::BSScript::get<std::int32_t>(v));
+                    else if (v.is<bool>()) f = RE::BSScript::get<bool>(v) ? 1.0f : 0.0f;
+                    else out->failed.fetch_add(1);
+                    out->bits[i].store(std::bit_cast<std::uint32_t>(f));
+                    out->remaining.fetch_sub(1);
+                },
+                [out] {
+                    out->failed.fetch_add(1);
+                    out->remaining.fetch_sub(1);
+                });
+            if (!ok) {
+                out->failed.fetch_add(1);
+                out->remaining.fetch_sub(1);
+            }
+        }
+        return out;
+    }
+
+    std::string FormatReadout(const AnimReadout& r, std::span<const AnimVar> vars)
+    {
+        std::string s;
+        for (std::size_t i = 0; i < vars.size() && i < r.bits.size(); ++i) {
+            const float f = std::bit_cast<float>(r.bits[i].load());
+            if (!s.empty()) s += ' ';
+            if (std::isnan(f)) s += std::format("{}=?", vars[i].name);
+            else if (vars[i].kind == AnimVarKind::kFloat) s += std::format("{}={:.3f}", vars[i].name, f);
+            else s += std::format("{}={}", vars[i].name, static_cast<int>(f));
+        }
+        return s;
+    }
+
+    bool SetAnimFloat(std::uint32_t refId, const char* name, float value)
+    {
+        auto* actor = LookupActor(refId);
+        if (!actor) return false;
+        const std::string n = name;
+        return Dispatch(ScriptObjectFor(actor), "SetAnimationVariableFloat", [n, value](RE::BSScrapArray<Variable>& a) {
+            Push(a, std::string_view{ n });
+            Push(a, value);
+        });
+    }
+
+    bool SetAnimBool(std::uint32_t refId, const char* name, bool value)
+    {
+        auto* actor = LookupActor(refId);
+        if (!actor) return false;
+        const std::string n = name;
+        return Dispatch(ScriptObjectFor(actor), "SetAnimationVariableBool", [n, value](RE::BSScrapArray<Variable>& a) {
+            Push(a, std::string_view{ n });
+            Push(a, value);
+        });
     }
 
     void Despawn(std::uint32_t refId)
