@@ -107,8 +107,9 @@ namespace cosync::ui
         if (intent == "join") {
             const auto address = Trim(Arg(args, "address"));
             const auto endpoint = net::Endpoint::Parse(address, 37015);
-            if (!endpoint || !IsNumericHost(endpoint->host)) {
-                error = "Address must be a numeric IP, optionally with :port (e.g. 192.168.1.20:37015).";
+            const bool steamPeer = endpoint && endpoint->host.starts_with("steam:");
+            if (!endpoint || (!steamPeer && !IsNumericHost(endpoint->host))) {
+                error = "Join code must be steam:<SteamID> or a numeric IP with optional :port (e.g. 192.168.1.20:37015).";
                 return std::nullopt;
             }
             return cmd::JoinGame{ endpoint->ToString(), std::string(password) };

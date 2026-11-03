@@ -26,6 +26,17 @@ namespace cosync::net
         }
 
         Endpoint ep;
+        // "steam:<SteamID64>": a Steam P2P peer (SteamTransport), virtual port 0.
+        if (text.starts_with("steam:")) {
+            const auto digits = text.substr(6);
+            std::uint64_t id = 0;
+            const auto* end = digits.data() + digits.size();
+            auto [ptr, ec] = std::from_chars(digits.data(), end, id);
+            if (ec != std::errc{} || ptr != end || id == 0) return std::nullopt;
+            ep.host = std::string(text);
+            ep.port = 0;
+            return ep;
+        }
         if (text.front() == '[') {
             // [ipv6]:port or [ipv6]
             const auto close = text.find(']');
@@ -68,6 +79,7 @@ namespace cosync::net
 
     std::string Endpoint::ToString() const
     {
+        if (host.starts_with("steam:")) return host;  // Steam P2P peer
         if (host.find(':') != std::string::npos) {
             return std::format("[{}]:{}", host, port);
         }

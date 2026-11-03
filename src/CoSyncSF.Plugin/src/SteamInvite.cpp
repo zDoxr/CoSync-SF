@@ -5,6 +5,10 @@
 #include <windows.h>
 
 #include <cstring>
+#include <format>
+#include <mutex>
+#include <string_view>
+#include <utility>
 
 namespace cosync::plugin::steam
 {
@@ -37,6 +41,90 @@ namespace cosync::plugin::steam
             }();
             return api;
         }
+    }
+
+    namespace
+    {
+        std::mutex g_joinLock;
+        std::string g_pendingJoin;
+
+        // "+cosync_join <code>" -> "<code>" ("" if absent).
+        std::string ParseConnect(const char* text)
+        {
+            constexpr std::string_view kKey = "+cosync_join ";
+            const std::string_view s(text ? text : "");
+            const auto at = s.find(kKey);
+            if (at == std::string_view::npos) return {};
+            auto rest = s.substr(at + kKey.size());
+            rest = rest.substr(0, rest.find_first_of(" \t\"\r\n"));
+            return std::string(rest);
+        }
+
+        void SetPending(std::string code)
+        {
+            if (code.empty()) return;
+            std::lock_guard lock(g_joinLock);
+            g_pendingJoin = std::move(code);
+        }
+
+        // Same declaration order as Valve's CCallbackBase (steam_api_common.h), so MSVC produces
+        // the vtable layout steam_api64.dll calls into: Run(void*), Run(void*, bool, u64),
+        // GetCallbackSizeBytes(); then u8 flags, int callback id.
+        class JoinRequestedCallback
+        {
+        public:
+            virtual void Run(void* param)
+            {
+                // GameRichPresenceJoinRequested_t: CSteamID friend (8 bytes), char connect[256].
+                const char* connect = static_cast<const char*>(param) + 8;
+                char copy[257] = {};
+                std::memcpy(copy, connect, 256);
+                SetPending(ParseConnect(copy));
+            }
+            virtual void Run(void* param, bool, std::uint64_t) { Run(param); }
+            virtual int GetCallbackSizeBytes() { return 8 + 256; }
+
+            std::uint8_t callbackFlags = 0;
+            int callbackId = 337;  // k_iSteamFriendsCallbacks (300) + 37
+        };
+        JoinRequestedCallback g_joinCallback;
+        bool g_listening = false;
+    }
+
+    std::uint64_t LocalSteamId()
+    {
+        HMODULE dll = GetModuleHandleW(L"steam_api64.dll");
+        if (!dll) return 0;
+        using GetUser_t = void* (*)();
+        using GetId_t = std::uint64_t (*)(void*);
+        auto getUser = reinterpret_cast<GetUser_t>(GetProcAddress(dll, "SteamAPI_SteamUser_v021"));
+        auto getId = reinterpret_cast<GetId_t>(GetProcAddress(dll, "SteamAPI_ISteamUser_GetSteamID"));
+        void* user = getUser ? getUser() : nullptr;
+        return user && getId ? getId(user) : 0;
+    }
+
+    std::string SteamJoinCode()
+    {
+        const auto id = LocalSteamId();
+        return id ? std::format("steam:{}", id) : std::string();
+    }
+
+    void InstallInviteListener()
+    {
+        if (g_listening) return;
+        SetPending(ParseConnect(GetCommandLineA()));  // launched from an invite
+        HMODULE dll = GetModuleHandleW(L"steam_api64.dll");
+        using Register_t = void (*)(void*, int);
+        auto reg = dll ? reinterpret_cast<Register_t>(GetProcAddress(dll, "SteamAPI_RegisterCallback")) : nullptr;
+        if (!reg) return;
+        reg(&g_joinCallback, g_joinCallback.callbackId);
+        g_listening = true;
+    }
+
+    std::string TakePendingJoin()
+    {
+        std::lock_guard lock(g_joinLock);
+        return std::exchange(g_pendingJoin, {});
     }
 
     bool Available()

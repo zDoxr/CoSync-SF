@@ -36,3 +36,16 @@ TEST(Endpoint, RejectsMalformed)
     EXPECT_FALSE(Endpoint::Parse("[::1"));
     EXPECT_FALSE(Endpoint::Parse("1.2.3.4"));  // no port and no default
 }
+
+TEST(Endpoint, ParsesSteamPeers)
+{
+    const auto ep = Endpoint::Parse("steam:76561198000000001", 37015);
+    ASSERT_TRUE(ep.has_value());
+    EXPECT_EQ(ep->host, "steam:76561198000000001");
+    EXPECT_EQ(ep->port, 0);  // Steam virtual port, not the UDP default
+    EXPECT_EQ(ep->ToString(), "steam:76561198000000001");
+    EXPECT_EQ(Endpoint::Parse(ep->ToString())->host, ep->host);
+    EXPECT_FALSE(Endpoint::Parse("steam:abc").has_value());
+    EXPECT_FALSE(Endpoint::Parse("steam:0").has_value());
+    EXPECT_FALSE(Endpoint::Parse("steam:").has_value());
+}

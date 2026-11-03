@@ -13,6 +13,7 @@
 #include "PluginConfig.h"
 #include "Overlay.h"
 #include "SessionControl.h"
+#include "SteamInvite.h"
 
 #include "cosync/net/NetworkWorker.h"
 #include "cosync/shared/GameRuntime.h"
@@ -118,6 +119,9 @@ namespace
                 std::string detail;
                 plugin::overlay::Install(detail);
                 log::Info("{}", detail);
+                plugin::steam::InstallInviteListener();
+                log::Info("Steam: {} (SteamID {})", plugin::steam::Available() ? "available" : "unavailable",
+                          plugin::steam::LocalSteamId());
             }
             StartNetworking();
             break;

@@ -1,6 +1,7 @@
 #include "cosync/net/NetworkWorker.h"
 
 #include "cosync/net/GnsTransport.h"
+#include "cosync/net/SteamTransport.h"
 #include "cosync/net/LanDiscovery.h"
 #include "cosync/shared/Log.h"
 
@@ -88,13 +89,18 @@ namespace cosync::net
     void NetworkWorker::Run(std::promise<std::string>& ready)
     {
         // Everything network-related is created, used and destroyed on this thread.
-        GnsTransport serverTransport;
-        GnsTransport clientTransport;
+        GnsTransport serverUdp;
+        GnsTransport clientUdp;
+        // Steam P2P/relay alongside direct UDP (inactive outside the game: no steam_api64.dll).
+        SteamTransport serverSteam;
+        SteamTransport clientSteam;
+        MultiTransport serverTransport(serverUdp, serverSteam);
+        MultiTransport clientTransport(clientUdp, clientSteam);
         std::optional<SessionServer> server;
         discovery::Responder discovery;
 
-        if (!clientTransport.IsReady()) {
-            ready.set_value(clientTransport.InitError());
+        if (!clientUdp.IsReady()) {
+            ready.set_value(clientUdp.InitError());
             return;
         }
 

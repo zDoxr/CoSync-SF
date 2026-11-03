@@ -74,7 +74,10 @@ namespace cosync::plugin
             std::string code;
             if (worker) {
                 const auto st = worker->Status();
-                if (worker->IsHost()) {
+                if (worker->IsHost() && _steamAvailable) {
+                    code = steam::SteamJoinCode();  // through Steam's relays: works across the internet
+                }
+                if (code.empty() && worker->IsHost()) {
                     if (_localIp.empty() && now >= _nextIpTry) {
                         _nextIpTry = now + std::chrono::seconds(30);
                         _localIp = steam::LocalIPv4();
@@ -113,6 +116,14 @@ namespace cosync::plugin
         if (_ui.Snapshot().version != _publishedUiVersion) {
             _publishedUiVersion = _ui.Snapshot().version;
             overlay::Publish(_ui.Snapshot());
+        }
+
+        // An accepted Steam invite (or a launch from one) overrides any join code: leave and join.
+        if (const auto invite = steam::TakePendingJoin(); !invite.empty()) {
+            std::string error;
+            log::Info("[ui] accepted Steam invite: joining {}", invite);
+            if (!session::Join(invite, "", error)) log::Warn("[ui] invite join failed: {}", error);
+            _ui.SetError(error);
         }
 
         std::vector<ui::UiCommand> commands;

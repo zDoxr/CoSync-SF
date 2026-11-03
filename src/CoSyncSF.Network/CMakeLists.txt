@@ -8,6 +8,7 @@ add_library(cosync_network STATIC
     src/NetworkWorker.cpp
     src/SessionClient.cpp
     src/SessionServer.cpp
+    src/SteamTransport.cpp
     src/Util.cpp
 )
 add_library(CoSyncSF::Network ALIAS cosync_network)
