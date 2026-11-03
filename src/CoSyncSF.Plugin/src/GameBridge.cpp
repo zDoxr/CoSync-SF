@@ -74,16 +74,18 @@ namespace cosync::plugin
             std::string code;
             if (worker) {
                 const auto st = worker->Status();
-                if (worker->IsHost() && _steamAvailable) {
-                    code = steam::SteamJoinCode();  // through Steam's relays: works across the internet
-                }
-                if (code.empty() && worker->IsHost()) {
+                std::string lan;
+                if (worker->IsHost()) {
                     if (_localIp.empty() && now >= _nextIpTry) {
                         _nextIpTry = now + std::chrono::seconds(30);
                         _localIp = steam::LocalIPv4();
                     }
-                    if (!_localIp.empty()) code = std::format("{}:{}", _localIp, worker->ListenPort());
+                    if (!_localIp.empty()) lan = std::format("{}:{}", _localIp, worker->ListenPort());
+                    // Primary code: Steam (relay, works across the internet) when available, else LAN.
+                    code = _steamAvailable ? steam::SteamJoinCode() : std::string();
+                    if (code.empty()) code = lan;
                 }
+                _ui.SetLanCode(lan);
                 _ui.SetConnection(st.state, "", worker->IsHost(), "", code, st.localPlayer, st.rttMs, st.droppedEvents);
                 std::vector<ui::PlayerRow> rows;
                 auto roster = worker->Roster();
@@ -105,6 +107,22 @@ namespace cosync::plugin
             } else {
                 _ui.SetConnection(net::ClientState::Idle, "", false, "", "", kInvalidPlayerId, 0, 0);
                 _ui.SetPlayers({});
+                _ui.SetLanCode("");
+            }
+            // LAN browse results.
+            if (_discovery.valid() && _discovery.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                std::vector<ui::ServerRow> rows;
+                for (const auto& d : _discovery.get()) {
+                    ui::ServerRow r;
+                    r.name = d.info.serverName;
+                    r.address = d.endpoint.ToString();
+                    r.players = d.info.players;
+                    r.maxPlayers = d.info.maxPlayers;
+                    r.pingMs = d.latencyMs;
+                    r.passworded = d.info.passwordRequired;
+                    rows.push_back(std::move(r));
+                }
+                _ui.SetServers(std::move(rows));
             }
             if (code != _joinCode) {
                 _joinCode = code;
@@ -151,6 +169,15 @@ namespace cosync::plugin
             } else if (std::holds_alternative<ui::cmd::InviteFriends>(c)) {
                 if (_joinCode.empty()) error = "Host a game first.";
                 else if (!steam::OpenInviteDialog("+cosync_join " + _joinCode)) error = "Steam overlay not available.";
+            } else if (std::holds_alternative<ui::cmd::RefreshServers>(c)) {
+                if (!_discovery.valid()) {
+                    // Blocking UDP query on a worker thread (no engine or session state touched).
+                    _discovery = std::async(std::launch::async, [] {
+                        std::string err;
+                        const std::vector<std::string> local{ "127.0.0.1" };  // same-PC hosts
+                        return net::discovery::Discover(net::discovery::kDefaultPort, 700, true, local, err);
+                    });
+                }
             } else if (std::holds_alternative<ui::cmd::CopyJoinCode>(c)) {
                 if (_joinCode.empty() || !steam::CopyToClipboard(_joinCode)) error = "No join code to copy.";
             }

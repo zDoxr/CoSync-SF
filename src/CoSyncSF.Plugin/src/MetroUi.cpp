@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <format>
 #include <string>
@@ -231,34 +232,93 @@ namespace cosync::plugin::metroui
             ImGui::SetCursorScreenPos({ p.x, p.y + size.y + 20 });
         }
 
-        void CodeRow(const ui::UiSnapshot& s, const ui::Theme& t, const std::function<void(ui::UiCommand)>& emit,
-                     bool withInvite)
+        // Code bar: tag chip, the code, copy, optional Invite.
+        void CodeRow(const char* id, const char* tag, const std::string& code, const ui::Theme& t,
+                     const std::function<void(ui::UiCommand)>& emit, bool invite, bool inviteEnabled)
         {
-            const bool have = !s.joinCode.empty();
+            ImGui::PushID(id);
+            const bool have = !code.empty();
             const float avail = ImGui::GetContentRegionAvail().x;
-            const float inviteW = withInvite ? 170.0f : 0.0f;
-            const float codeW = avail - 46 - (withInvite ? inviteW + 12 : 0);
+            const float inviteW = invite ? 150.0f : 0.0f;
+            const float codeW = avail - 46 - 8 - (invite ? inviteW + 10 : 0);
             const auto p = ImGui::GetCursorScreenPos();
             auto* dl = ImGui::GetWindowDrawList();
             dl->AddRectFilled(p, { p.x + codeW, p.y + 46 }, U32(kSurface2), kControl);
-            Font(g_mono, 17);
-            const char* text = have ? s.joinCode.c_str() : "—";
+            Font(g_semibold, 11);
+            const auto tagSize = ImGui::CalcTextSize(tag);
+            dl->AddRectFilled({ p.x + 10, p.y + 13 }, { p.x + 26 + tagSize.x, p.y + 33 }, U32(t.accentAlt, 0.16f), 999);
+            dl->AddText({ p.x + 18, p.y + 23 - tagSize.y * 0.5f }, U32(t.accentAlt), tag);
+            PopFont();
+            Font(g_mono, 16);
+            const char* text = have ? code.c_str() : "-";
             const auto ts = ImGui::CalcTextSize(text);
-            dl->AddText({ p.x + 16, p.y + 23 - ts.y * 0.5f }, U32(have ? kText : kFaint), text);
+            dl->AddText({ p.x + 38 + tagSize.x, p.y + 23 - ts.y * 0.5f }, U32(have ? kText : kFaint), text);
             PopFont();
             ImGui::Dummy({ codeW, 46 });
             ImGui::SameLine(0, 8);
             ImGui::BeginDisabled(!have);
             if (Icon("copy", kIconCopy, kText, 46)) {
-                Emit("copyJoinCode", {}, emit);
+                ImGui::SetClipboardText(code.c_str());
                 Toast("Copied");
             }
             ImGui::EndDisabled();
-            if (withInvite) {
-                ImGui::SameLine(0, 12);
+            if (invite) {
+                ImGui::SameLine(0, 10);
                 const std::string label = std::string(kIconInvite) + "  Invite";
-                if (Button(label.c_str(), inviteW, t.accent, 0x111317, have && s.steamAvailable)) Emit("invite", {}, emit);
+                if (Button(label.c_str(), inviteW, t.accent, 0x111317, have && inviteEnabled)) Emit("invite", {}, emit);
             }
+            ImGui::PopID();
+        }
+
+        // Steam code (with Invite) and LAN code.
+        void Codes(const ui::UiSnapshot& s, const ui::Theme& t, const std::function<void(ui::UiCommand)>& emit)
+        {
+            const bool steamCode = s.joinCode.starts_with("steam:");
+            if (steamCode) CodeRow("steam", "STEAM", s.joinCode, t, emit, true, s.steamAvailable);
+            CodeRow("lan", "LAN", s.lanCode.empty() && !steamCode ? s.joinCode : s.lanCode, t, emit, !steamCode,
+                    false);
+        }
+
+        // Nearby LAN sessions (discovery), refreshed every 5 s while visible.
+        void Nearby(const ui::UiSnapshot& s, const ui::Theme& t, const std::function<void(ui::UiCommand)>& emit)
+        {
+            static std::chrono::steady_clock::time_point next{};
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= next) {
+                next = now + std::chrono::seconds(5);
+                emit(ui::cmd::RefreshServers{});
+            }
+            Label("NEARBY");
+            if (s.servers.empty()) {
+                Font(g_body, 15);
+                ImGui::TextColored(Col(kFaint), "No games on your network");
+                PopFont();
+                return;
+            }
+            for (std::size_t i = 0; i < s.servers.size() && i < 3; ++i) {
+                const auto& sv = s.servers[i];
+                ImGui::PushID(static_cast<int>(i));
+                const auto p = ImGui::GetCursorScreenPos();
+                const float w = ImGui::GetContentRegionAvail().x, h = 44;
+                auto* dl = ImGui::GetWindowDrawList();
+                const bool hovered = ImGui::IsMouseHoveringRect(p, { p.x + w, p.y + h });
+                dl->AddRectFilled(p, { p.x + w, p.y + h }, U32(hovered ? 0x202634 : kSurface2), kControl);
+                Font(g_semibold, 15);
+                dl->AddText({ p.x + 14, p.y + 12 }, U32(kText), sv.name.c_str());
+                PopFont();
+                Font(g_body, 14);
+                const std::string meta = std::format("{}/{}  {} ms", sv.players, sv.maxPlayers, sv.pingMs);
+                const auto ms = ImGui::CalcTextSize(meta.c_str());
+                dl->AddText({ p.x + w - ms.x - 14, p.y + 22 - ms.y * 0.5f }, U32(kDim), meta.c_str());
+                PopFont();
+                if (ImGui::InvisibleButton("srv", { w, h })) {
+                    std::snprintf(u.joinCode, sizeof(u.joinCode), "%s", sv.address.c_str());
+                    Emit("join", { { "address", sv.address }, { "password", u.joinPassword } }, emit);
+                }
+                ImGui::Dummy({ 0, 2 });
+                ImGui::PopID();
+            }
+            (void)t;
         }
 
         void Play(const ui::UiSnapshot& s, const ui::Theme& t, const std::function<void(ui::UiCommand)>& emit)
@@ -272,8 +332,8 @@ namespace cosync::plugin::metroui
                 ImGui::TextColored(Col(kDim), "%zu %s", s.players.size(), s.players.size() == 1 ? "player" : "players");
                 PopFont();
                 ImGui::Dummy({ 0, 8 });
-                Label("JOIN CODE");
-                CodeRow(s, t, emit, true);
+                Label("JOIN CODES");
+                Codes(s, t, emit);
                 ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 46 - ImGui::GetStyle().WindowPadding.y);
                 if (Ghost("Leave session", 180, t.bad)) Emit("leave", {}, emit);
                 ImGui::EndChild();
@@ -311,6 +371,8 @@ namespace cosync::plugin::metroui
             ImGui::Dummy({ 0, 4 });
             Field("##code", "Join code", u.joinCode, sizeof(u.joinCode));
             Field("##jpw", "Password (optional)", u.joinPassword, sizeof(u.joinPassword), ImGuiInputTextFlags_Password);
+            ImGui::Dummy({ 0, 2 });
+            Nearby(s, t, emit);
             ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 46 - ImGui::GetStyle().WindowPadding.y);
             if (Button("Join", -1, t.accentAlt, 0x0B1418)) {
                 Emit("join", { { "address", u.joinCode }, { "password", u.joinPassword } }, emit);
@@ -327,7 +389,7 @@ namespace cosync::plugin::metroui
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4);
             Chip(std::to_string(s.players.size()).c_str(), kDim);
 
-            const float footer = 46 + 24;
+            const float footer = 46 * 2 + 12 + 24;
             ImGui::BeginChild("list", { 0, ImGui::GetContentRegionAvail().y - footer }, ImGuiChildFlags_None,
                               ImGuiWindowFlags_NoBackground);
             if (s.players.empty()) {
@@ -379,7 +441,7 @@ namespace cosync::plugin::metroui
             }
             ImGui::EndChild();
             ImGui::Dummy({ 0, 4 });
-            CodeRow(s, t, emit, true);
+            Codes(s, t, emit);
         }
 
         void ToastLayer(const ui::UiSnapshot& s, const ui::Theme& t)

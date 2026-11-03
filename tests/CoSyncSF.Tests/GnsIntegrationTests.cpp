@@ -3,6 +3,7 @@
 #include "cosync/net/GnsTransport.h"
 #include "cosync/net/SessionClient.h"
 #include "cosync/net/SessionServer.h"
+#include "cosync/net/SteamTransport.h"
 #include "cosync/shared/GameRuntime.h"
 
 #include <gtest/gtest.h>
@@ -188,4 +189,38 @@ TEST(GnsIntegration, SecondListenerOnSamePortIsRefused)
     ASSERT_TRUE(first.Listen(kPort, error)) << error;
     EXPECT_FALSE(second.Listen(kPort, error));
     EXPECT_NE(error.find("already in use"), std::string::npos) << error;
+}
+
+// The Steam path on one PC: fake Steam identities over local GNS, routed by MultiTransport. A full
+// session (Hello/Welcome) completes when the client joins "steam:<host id>".
+TEST(GnsIntegration, FakeSteamPeersJoinThroughMultiTransport)
+{
+    GnsTransport hostUdp, clientUdp;
+    FakeSteamTransport hostSteam(41), clientSteam(42);
+    ASSERT_TRUE(hostSteam.IsReady());
+    MultiTransport host(hostUdp, &hostSteam);
+    MultiTransport client(clientUdp, &clientSteam);
+
+    ServerConfig sc;
+    sc.serverName = "fake-steam";
+    SessionServer server(host, sc);
+    std::string error;
+    ASSERT_TRUE(server.Start(37231, error)) << error;
+
+    ClientConfig cc;
+    cc.playerName = "SteamPeer";
+    SessionClient sessionClient(client, cc);
+    const auto endpoint = Endpoint::Parse("steam:41");
+    ASSERT_TRUE(endpoint);
+    ASSERT_TRUE(sessionClient.Connect(*endpoint, error)) << error;
+
+    std::vector<ClientEvent> events;
+    ASSERT_TRUE(PumpUntil(
+        [&] {
+            server.Update();
+            sessionClient.Update(events);
+        },
+        [&] { return sessionClient.State() == ClientState::InSession; }));
+    EXPECT_EQ(server.ConnectedPlayerCount(), 1u);
+    EXPECT_NE(sessionClient.LocalPlayerId(), kInvalidPlayerId);
 }

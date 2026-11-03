@@ -7,7 +7,11 @@
 // runtime; no SDK dependency). MAIN THREAD.
 namespace cosync::plugin::steam
 {
-    // steam_api64.dll is loaded and the friends interface is available.
+    // Development: identity steam:<id> without Steam (see [Dev] FakeSteamId). 0 = real Steam. Invites
+    // between copies go through %TEMP%\CoSyncFakeSteam\invite.txt. Call before InstallInviteListener.
+    void SetFake(std::uint32_t id);
+    [[nodiscard]] bool IsFake();
+    // steam_api64.dll is loaded and the friends interface is available (always true when fake).
     bool Available();
     // Opens the Steam overlay's invite dialog; invited friends receive `connectString`.
     bool OpenInviteDialog(const std::string& connectString);

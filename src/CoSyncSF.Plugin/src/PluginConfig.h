@@ -45,6 +45,9 @@ namespace cosync::plugin
         bool avatarMirror = false;    // [Experimental] AvatarMoveMode=mirror: proxies replay the local player's controls
         bool avatarControls = false;  // [Experimental] AvatarMoveMode=controls: proxies replay the remote player's controls
         float avatarScale = 1.0f;     // [Experimental] AvatarScale (debug: >1 makes proxies easy to spot)
+        // [Dev] FakeSteamId: 0 = real Steam; N (1..999) = test identity steam:N over local GNS (several
+        // copies on one PC with one Steam account). Invites go through a shared file in %TEMP%.
+        std::uint32_t fakeSteamId = 0;
     };
 
     // Reads the INI; missing keys keep their defaults, invalid values are

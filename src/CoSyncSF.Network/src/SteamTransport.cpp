@@ -319,22 +319,51 @@ namespace cosync::net
         return std::format("steam {}", info.m_szConnectionDescription);
     }
 
+    // ---- FakeSteamTransport -----------------------------------------------------------------------
+
+    bool FakeSteamTransport::Listen(std::uint16_t, std::string& error)
+    {
+        if (!IsReady()) {
+            error = "fake Steam unavailable";
+            return false;
+        }
+        return _gns.Listen(static_cast<std::uint16_t>(kFakeSteamBasePort + _id), error);
+    }
+
+    ConnectionId FakeSteamTransport::Connect(const Endpoint& endpoint, std::string& error)
+    {
+        std::uint32_t target = 0;
+        const std::string_view host(endpoint.host);
+        const std::string_view digits = host.size() > 6 ? host.substr(6) : std::string_view();
+        if (!host.starts_with("steam:") ||
+            std::from_chars(digits.data(), digits.data() + digits.size(), target).ec != std::errc{} || target == 0 ||
+            target >= 1000) {
+            error = std::format("'{}' is not a fake Steam ID (steam:1..999)", endpoint.host);
+            return kInvalidConnection;
+        }
+        return _gns.Connect(Endpoint{ "127.0.0.1", static_cast<std::uint16_t>(kFakeSteamBasePort + target) }, error);
+    }
+
     // ---- MultiTransport -------------------------------------------------------------------------
 
     bool MultiTransport::Listen(std::uint16_t port, std::string& error)
     {
         if (!_direct.Listen(port, error)) return false;
-        std::string steamError;
-        _steamListening = _steam.IsReady() && _steam.Listen(port, steamError);
-        if (_steam.IsReady() && !_steamListening) log::Warn("Steam relay listening failed: {}", steamError);
-        if (_steamListening) log::Info("listening on Steam P2P (relay) as well as UDP {}", port);
+        std::string p2pError;
+        _steamListening = _steam && _steam->Listen(port, p2pError);
+        if (_steam && !_steamListening) log::Warn("P2P (Steam) listening failed: {}", p2pError);
+        if (_steamListening) log::Info("listening on P2P (Steam) as well as UDP {}", port);
         return true;
     }
 
     ConnectionId MultiTransport::Connect(const Endpoint& endpoint, std::string& error)
     {
         if (endpoint.host.starts_with("steam:")) {
-            const auto id = _steam.Connect(endpoint, error);
+            if (!_steam) {
+                error = "Steam is not available";
+                return kInvalidConnection;
+            }
+            const auto id = _steam->Connect(endpoint, error);
             return id == kInvalidConnection ? kInvalidConnection : (id | kSteamBit);
         }
         return _direct.Connect(endpoint, error);
@@ -342,20 +371,25 @@ namespace cosync::net
 
     bool MultiTransport::Send(ConnectionId c, std::span<const std::uint8_t> data, Delivery delivery)
     {
-        return (c & kSteamBit) ? _steam.Send(c & ~kSteamBit, data, delivery) : _direct.Send(c, data, delivery);
+        if (c & kSteamBit) return _steam && _steam->Send(c & ~kSteamBit, data, delivery);
+        return _direct.Send(c, data, delivery);
     }
 
     void MultiTransport::Close(ConnectionId c, CloseCode code, std::string_view reason, bool linger)
     {
-        if (c & kSteamBit) _steam.Close(c & ~kSteamBit, code, reason, linger);
-        else _direct.Close(c, code, reason, linger);
+        if (c & kSteamBit) {
+            if (_steam) _steam->Close(c & ~kSteamBit, code, reason, linger);
+        } else {
+            _direct.Close(c, code, reason, linger);
+        }
     }
 
     void MultiTransport::Poll(std::vector<TransportEvent>& out)
     {
         _direct.Poll(out);
+        if (!_steam) return;
         _scratch.clear();
-        _steam.Poll(_scratch);
+        _steam->Poll(_scratch);
         for (auto& ev : _scratch) {
             ev.connection |= kSteamBit;
             out.push_back(std::move(ev));
@@ -365,16 +399,18 @@ namespace cosync::net
     void MultiTransport::Shutdown()
     {
         _direct.Shutdown();
-        _steam.Shutdown();
+        if (_steam) _steam->Shutdown();
     }
 
     std::optional<ConnectionStats> MultiTransport::GetStats(ConnectionId c)
     {
-        return (c & kSteamBit) ? _steam.GetStats(c & ~kSteamBit) : _direct.GetStats(c);
+        if (c & kSteamBit) return _steam ? _steam->GetStats(c & ~kSteamBit) : std::nullopt;
+        return _direct.GetStats(c);
     }
 
     std::string MultiTransport::Describe(ConnectionId c)
     {
-        return (c & kSteamBit) ? _steam.Describe(c & ~kSteamBit) : _direct.Describe(c);
+        if (c & kSteamBit) return _steam ? _steam->Describe(c & ~kSteamBit) : std::string("steam?");
+        return _direct.Describe(c);
     }
 }

@@ -126,6 +126,7 @@ namespace cosync::ui
         std::string lastError;  // most recent rejected intent / failure, for a toast
         std::string joinCode;   // what other players enter to join this session (host: address:port)
         bool steamAvailable = false;  // Steam overlay invites possible
+        std::string lanCode;          // host's LAN address:port (direct UDP), alongside the Steam code
     };
 
     // Serializes a snapshot for the view (strict JSON, UTF-8 passed through).
@@ -149,6 +150,7 @@ namespace cosync::ui
         void SetTheme(Theme theme);
         void SetError(std::string error);
         void SetJoinCode(std::string code, bool steamAvailable);
+        void SetLanCode(std::string code);
 
         // Applies UI-only commands (tab selection) locally and returns true; returns
         // false for commands the plugin must execute (session actions, theme loading).

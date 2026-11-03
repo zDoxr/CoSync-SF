@@ -48,6 +48,7 @@ param(
     [int]$AvatarAnimDiagLevel = 0,  # 1 = same as -AvatarAnimDiag; 2 = also float variables at 2 Hz
     [switch]$AvatarAnimate,          # drive proxy locomotion variables from network velocity
     [switch]$AvatarNoMove,           # experiment: do not SetPosition/SetAngle stand-ins
+    [switch]$FakeSteam,              # dev: copy n gets test identity steam:n (Steam-path testing on one PC)
     [double]$RenderScale = 0.5,      # test instances share one GPU: render at this scale (DLSS/FSR upscales)
     [switch]$NoVsync,                # vsync stops the focused copy from starving the other of GPU time
     [switch]$RestoreDisplay
@@ -221,6 +222,8 @@ function Write-InstanceConfig([int]$n) {
         "AvatarAnimDiag=$(if ($AvatarAnimDiagLevel -gt 0) { $AvatarAnimDiagLevel } elseif ($AvatarAnimDiag) { 1 } else { 0 })"
         "AvatarAnimate=$(if ($AvatarAnimate) { 1 } else { 0 })"
         "AvatarMove=$(if ($AvatarNoMove) { 0 } else { 1 })"
+        '[Dev]'
+        "FakeSteamId=$(if ($FakeSteam) { $n } else { 0 })"
         '[Debug]'
         'LogLevel=debug'
     ) | Set-Content -LiteralPath $ini -Encoding ASCII

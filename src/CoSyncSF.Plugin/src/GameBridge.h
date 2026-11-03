@@ -3,6 +3,7 @@
 #include "AnimEvents.h"
 #include "AnimProbe.h"
 #include "Avatars.h"
+#include "cosync/net/LanDiscovery.h"
 #include "cosync/net/NetworkWorker.h"
 #include "cosync/ui/UiModel.h"
 #include "cosync/shared/Interpolation.h"
@@ -10,6 +11,7 @@
 #include <atomic>
 #include <memory>
 #include <chrono>
+#include <future>
 #include <deque>
 #include <map>
 #include <string>
@@ -192,6 +194,7 @@ namespace cosync::plugin
         std::chrono::steady_clock::time_point _nextIpTry{};
         std::string _localIp;
         std::string _joinCode;
+        std::future<std::vector<net::discovery::DiscoveredServer>> _discovery;  // LAN browse in flight
         bool _steamAvailable = false;
         // Hostility sync (docs/NPC_SYNC_ARCHITECTURE.md): report NPCs that enter combat against a
         // player, apply reports from others with StartCombat.

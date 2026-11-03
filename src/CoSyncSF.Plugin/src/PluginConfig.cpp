@@ -122,6 +122,13 @@ namespace cosync::plugin
             c.avatarScale = 1.0f;
         }
 
+        try {
+            c.fakeSteamId = static_cast<std::uint32_t>(
+                std::clamp(std::stoi(ReadString(iniPath, L"Dev", L"FakeSteamId", "0")), 0, 999));
+        } catch (...) {
+            c.fakeSteamId = 0;
+        }
+
         const auto level = ReadString(iniPath, L"Debug", L"LogLevel", "info");
         if (level == "debug") c.logLevel = log::Level::Debug;
         else if (level == "warn") c.logLevel = log::Level::Warn;

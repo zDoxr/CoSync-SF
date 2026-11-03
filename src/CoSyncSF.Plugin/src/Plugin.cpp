@@ -77,6 +77,7 @@ namespace
         wc.client.password = g_config.password;
         wc.client.gameRuntime = g_runtimeVersion;
         wc.client.clientBuild = "CoSyncSF.dll/0.2.0";
+        wc.fakeSteamId = g_config.fakeSteamId;
 
         if (g_config.mode == plugin::Mode::Host) {
             wc.mode = net::WorkerMode::Host;
@@ -122,6 +123,7 @@ namespace
                 std::string detail;
                 plugin::overlay::Install(detail);
                 log::Info("{}", detail);
+                plugin::steam::SetFake(g_config.fakeSteamId);
                 plugin::steam::InstallInviteListener();
                 log::Info("Steam: {} (SteamID {})", plugin::steam::Available() ? "available" : "unavailable",
                           plugin::steam::LocalSteamId());

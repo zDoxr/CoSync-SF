@@ -1,5 +1,6 @@
 #pragma once
 
+#include "cosync/net/GnsTransport.h"
 #include "cosync/net/Transport.h"
 
 #include <cstddef>
@@ -70,13 +71,39 @@ namespace cosync::net
         std::vector<StatusChange> _statusQueue;
     };
 
-    // Routes between a direct-IP transport and the Steam transport: endpoints with host
-    // "steam:..." go to Steam, everything else to `direct`. Listen() starts both (Steam failing is
-    // not fatal). Steam connection ids carry bit 63.
+    // Development stand-in for Steam P2P, for testing several game copies on one PC with one Steam
+    // account: identity "steam:<N>" (small N from [Dev] FakeSteamId), carried over a local
+    // GameNetworkingSockets socket on UDP kFakeSteamBasePort + N. Steam itself is not involved.
+    inline constexpr std::uint16_t kFakeSteamBasePort = 47000;
+    class FakeSteamTransport final : public ITransport
+    {
+    public:
+        explicit FakeSteamTransport(std::uint32_t fakeId) : _id(fakeId) {}
+        [[nodiscard]] bool IsReady() const noexcept { return _gns.IsReady() && _id != 0 && _id < 1000; }
+        bool Listen(std::uint16_t port, std::string& error) override;
+        ConnectionId Connect(const Endpoint& endpoint, std::string& error) override;
+        bool Send(ConnectionId c, std::span<const std::uint8_t> data, Delivery d) override { return _gns.Send(c, data, d); }
+        void Close(ConnectionId c, CloseCode code, std::string_view reason, bool linger) override
+        {
+            _gns.Close(c, code, reason, linger);
+        }
+        void Poll(std::vector<TransportEvent>& out) override { _gns.Poll(out); }
+        void Shutdown() override { _gns.Shutdown(); }
+        std::optional<ConnectionStats> GetStats(ConnectionId c) override { return _gns.GetStats(c); }
+        [[nodiscard]] std::string Describe(ConnectionId c) override { return "fake-steam " + _gns.Describe(c); }
+
+    private:
+        std::uint32_t _id;
+        GnsTransport _gns;
+    };
+
+    // Routes between a direct-IP transport and a P2P transport (Steam, or FakeSteamTransport):
+    // endpoints with host "steam:..." go to P2P, everything else to `direct`. Listen() starts both
+    // (P2P failing is not fatal). P2P connection ids carry bit 63. `p2p` may be null.
     class MultiTransport final : public ITransport
     {
     public:
-        MultiTransport(ITransport& direct, SteamTransport& steam) : _direct(direct), _steam(steam) {}
+        MultiTransport(ITransport& direct, ITransport* p2p) : _direct(direct), _steam(p2p) {}
 
         bool Listen(std::uint16_t port, std::string& error) override;
         ConnectionId Connect(const Endpoint& endpoint, std::string& error) override;
@@ -91,7 +118,7 @@ namespace cosync::net
     private:
         static constexpr ConnectionId kSteamBit = 1ull << 63;
         ITransport& _direct;
-        SteamTransport& _steam;
+        ITransport* _steam;
         bool _steamListening = false;
         std::vector<TransportEvent> _scratch;
     };

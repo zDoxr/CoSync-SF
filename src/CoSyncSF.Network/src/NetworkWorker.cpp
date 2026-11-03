@@ -2,6 +2,8 @@
 
 #include "cosync/net/GnsTransport.h"
 #include "cosync/net/SteamTransport.h"
+
+#include <memory>
 #include "cosync/net/LanDiscovery.h"
 #include "cosync/shared/Log.h"
 
@@ -92,10 +94,25 @@ namespace cosync::net
         GnsTransport serverUdp;
         GnsTransport clientUdp;
         // Steam P2P/relay alongside direct UDP (inactive outside the game: no steam_api64.dll).
-        SteamTransport serverSteam;
-        SteamTransport clientSteam;
-        MultiTransport serverTransport(serverUdp, serverSteam);
-        MultiTransport clientTransport(clientUdp, clientSteam);
+        std::unique_ptr<ITransport> serverP2P;
+        std::unique_ptr<ITransport> clientP2P;
+        if (_config.fakeSteamId != 0) {
+            auto s = std::make_unique<FakeSteamTransport>(_config.fakeSteamId);
+            auto c = std::make_unique<FakeSteamTransport>(_config.fakeSteamId);
+            if (s->IsReady() && c->IsReady()) {
+                serverP2P = std::move(s);
+                clientP2P = std::move(c);
+            }
+        } else {
+            auto s = std::make_unique<SteamTransport>();
+            auto c = std::make_unique<SteamTransport>();
+            if (s->IsReady() && c->IsReady()) {
+                serverP2P = std::move(s);
+                clientP2P = std::move(c);
+            }
+        }
+        MultiTransport serverTransport(serverUdp, serverP2P.get());
+        MultiTransport clientTransport(clientUdp, clientP2P.get());
         std::optional<SessionServer> server;
         discovery::Responder discovery;
 

@@ -316,6 +316,7 @@ namespace cosync::ui
         Key(o, "lastError"); Str(o, s.lastError);
         Key(o, "joinCode"); Str(o, s.joinCode);
         Key(o, "steamAvailable"); o += s.steamAvailable ? "true" : "false";
+        Key(o, "lanCode"); Str(o, s.lanCode);
         const auto& t = s.theme;
         Key(o, "theme"); o += '{';
         Key(o, "name"); Str(o, t.name);
@@ -416,6 +417,13 @@ namespace cosync::ui
         if (_snapshot.joinCode == code && _snapshot.steamAvailable == steamAvailable) return;
         _snapshot.joinCode = std::move(code);
         _snapshot.steamAvailable = steamAvailable;
+        Touch();
+    }
+
+    void UiModel::SetLanCode(std::string code)
+    {
+        if (_snapshot.lanCode == code) return;
+        _snapshot.lanCode = std::move(code);
         Touch();
     }
 

@@ -33,6 +33,9 @@ namespace cosync::net
         std::uint32_t tickHz = 60;
         std::size_t eventQueueCapacity = 1024;
         std::size_t transformQueueCapacity = 2048;  // oldest dropped first when full
+        // Development: 0 = real Steam P2P (when the game's Steam is available); N = FakeSteamTransport
+        // identity steam:N on UDP 47000+N, for several copies on one PC with one Steam account.
+        std::uint32_t fakeSteamId = 0;
     };
 
     // A remote transform with the local monotonic time it was received.

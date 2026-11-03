@@ -5,6 +5,8 @@
 #include <windows.h>
 
 #include <cstring>
+#include <cstdio>
+#include <algorithm>
 #include <format>
 #include <mutex>
 #include <string_view>
@@ -45,6 +47,36 @@ namespace cosync::plugin::steam
 
     namespace
     {
+        std::uint32_t g_fakeId = 0;
+        std::uint64_t g_fakeSeen = 0;  // newest fake invite sequence already handled
+        std::string FakeInviteFile()
+        {
+            char tmp[MAX_PATH] = {};
+            GetTempPathA(MAX_PATH, tmp);
+            const std::string dir = std::string(tmp) + "CoSyncFakeSteam";
+            CreateDirectoryA(dir.c_str(), nullptr);
+            return dir + "\\invite.txt";
+        }
+        // File: "<sequence> <senderId> <targetId or 0 = everyone> <connect string>".
+        bool ReadFakeInvite(std::uint64_t& seq, std::uint32_t& sender, std::uint32_t& target, std::string& connect)
+        {
+            FILE* f = nullptr;
+            if (fopen_s(&f, FakeInviteFile().c_str(), "rb") != 0 || !f) return false;
+            char buf[512] = {};
+            const auto n = fread(buf, 1, sizeof(buf) - 1, f);
+            fclose(f);
+            buf[n] = 0;
+            unsigned long long s = 0;
+            unsigned snd = 0, tgt = 0;
+            int used = 0;
+            if (sscanf_s(buf, "%llu %u %u %n", &s, &snd, &tgt, &used) < 3) return false;
+            seq = s;
+            sender = snd;
+            target = tgt;
+            connect = std::string(buf + used);
+            return true;
+        }
+
         std::mutex g_joinLock;
         std::string g_pendingJoin;
 
@@ -93,6 +125,7 @@ namespace cosync::plugin::steam
 
     std::uint64_t LocalSteamId()
     {
+        if (g_fakeId) return g_fakeId;
         HMODULE dll = GetModuleHandleW(L"steam_api64.dll");
         if (!dll) return 0;
         using GetUser_t = void* (*)();
@@ -113,6 +146,10 @@ namespace cosync::plugin::steam
     {
         if (g_listening) return;
         SetPending(ParseConnect(GetCommandLineA()));  // launched from an invite
+        if (g_fakeId) {
+            g_listening = true;  // fake: TakePendingJoin polls the invite file
+            return;
+        }
         HMODULE dll = GetModuleHandleW(L"steam_api64.dll");
         using Register_t = void (*)(void*, int);
         auto reg = dll ? reinterpret_cast<Register_t>(GetProcAddress(dll, "SteamAPI_RegisterCallback")) : nullptr;
@@ -123,18 +160,56 @@ namespace cosync::plugin::steam
 
     std::string TakePendingJoin()
     {
+        if (g_fakeId) {
+            static DWORD next = 0;
+            if (GetTickCount() >= next) {
+                next = GetTickCount() + 500;
+                std::uint64_t seq = 0;
+                std::uint32_t sender = 0, target = 0;
+                std::string connect;
+                if (ReadFakeInvite(seq, sender, target, connect) && seq > g_fakeSeen) {
+                    g_fakeSeen = seq;
+                    if (sender != g_fakeId && (target == 0 || target == g_fakeId)) SetPending(ParseConnect(connect.c_str()));
+                }
+            }
+        }
         std::lock_guard lock(g_joinLock);
         return std::exchange(g_pendingJoin, {});
     }
 
+    void SetFake(std::uint32_t id)
+    {
+        g_fakeId = id;
+        std::uint64_t seq = 0;
+        std::uint32_t sender = 0, target = 0;
+        std::string connect;
+        if (ReadFakeInvite(seq, sender, target, connect)) g_fakeSeen = seq;  // ignore invites from earlier runs
+    }
+
+    bool IsFake() { return g_fakeId != 0; }
+
     bool Available()
     {
+        if (g_fakeId) return true;
         const auto& a = Resolve();
         return a.friends && a.invite && a.friends();
     }
 
     bool OpenInviteDialog(const std::string& connectString)
     {
+        if (g_fakeId) {  // fake: every other copy on this PC receives the invite
+            std::uint64_t seq = 0;
+            std::uint32_t sender = 0, target = 0;
+            std::string old;
+            ReadFakeInvite(seq, sender, target, old);
+            seq = std::max(seq, g_fakeSeen) + 1;
+            g_fakeSeen = seq;  // never accept our own invite
+            FILE* f = nullptr;
+            if (fopen_s(&f, FakeInviteFile().c_str(), "wb") != 0 || !f) return false;
+            fprintf(f, "%llu %u 0 %s", static_cast<unsigned long long>(seq), g_fakeId, connectString.c_str());
+            fclose(f);
+            return true;
+        }
         const auto& a = Resolve();
         void* friends = a.friends ? a.friends() : nullptr;
         if (!friends || !a.invite) return false;
@@ -144,6 +219,7 @@ namespace cosync::plugin::steam
 
     bool SetJoinPresence(const std::string& connectString)
     {
+        if (g_fakeId) return true;
         const auto& a = Resolve();
         void* friends = a.friends ? a.friends() : nullptr;
         if (!friends || !a.richPresence) return false;
