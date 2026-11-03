@@ -68,7 +68,10 @@ namespace cosync::net
         void Disconnect();
 
         // Sends the local player's transform (unreliable). Only valid InSession.
-        bool SendTransform(std::uint32_t locationId, const Vec3& position, const Vec3& rotation);
+        bool SendTransform(std::uint32_t locationId, const Vec3& position, const Vec3& rotation,
+                           const std::optional<proto::PlayerControls>& controls = std::nullopt,
+                           const std::vector<proto::AnimEvent>& events = {},
+                           const std::optional<proto::WeaponState>& weapon = std::nullopt);
 
         [[nodiscard]] ClientState State() const noexcept { return _state; }
         [[nodiscard]] PlayerId LocalPlayerId() const noexcept { return _playerId; }

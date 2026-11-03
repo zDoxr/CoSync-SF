@@ -1,10 +1,12 @@
 #pragma once
 
+#include "cosync/shared/Protocol.h"
 #include "cosync/shared/Types.h"
 
 #include <cstdint>
 #include <deque>
 #include <optional>
+#include <vector>
 
 namespace cosync
 {
@@ -23,6 +25,9 @@ namespace cosync
         std::uint32_t locationId = 0;
         Vec3 position;
         Vec3 rotation;  // radians
+        std::optional<proto::PlayerControls> controls;  // sender's engine movement input, if sent
+        std::vector<proto::AnimEvent> events;           // sender's recent graph input events
+        std::optional<proto::WeaponState> weapon;       // sender's weapon, if sent
     };
 
     struct InterpolatedPose

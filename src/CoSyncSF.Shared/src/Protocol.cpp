@@ -2,6 +2,7 @@
 
 #include "cosync/shared/ByteStream.h"
 
+#include <algorithm>
 #include <cmath>
 #include <type_traits>
 
@@ -124,6 +125,24 @@ namespace cosync::proto
             w.U32(m.locationId);
             WriteVec3(w, m.position);
             WriteVec3(w, m.rotation);
+            if (m.controls) {
+                w.U8(1);
+                for (float v : m.controls->values) w.F32(v);
+                w.U8(m.controls->flag);
+            }
+            if (!m.events.empty()) {
+                w.U8(2);
+                w.U8(static_cast<std::uint8_t>(m.events.size()));
+                for (const auto& e : m.events) {
+                    w.U16(e.sequence);
+                    w.String(e.name);
+                }
+            }
+            if (m.weapon) {
+                w.U8(3);
+                w.U32(m.weapon->formId);
+                w.Bool(m.weapon->drawn);
+            }
         }
 
         bool ValidReject(std::uint16_t v) { return v >= 1 && v <= static_cast<std::uint16_t>(RejectReason::RateLimited); }
@@ -254,6 +273,37 @@ namespace cosync::proto
                 m.locationId = r.U32();
                 m.position = ReadVec3(r);
                 m.rotation = ReadVec3(r);
+                bool seenEvents = false;
+                while (r.Ok() && r.Remaining() > 0) {  // tagged sections (1.1+)
+                    const auto tag = r.U8();
+                    if (tag == 1 && !m.controls) {
+                        PlayerControls c;
+                        for (float& v : c.values) v = r.F32();
+                        c.flag = r.U8();
+                        if (r.Ok() && !IsValidControls(c)) r.Fail();
+                        m.controls = c;
+                    } else if (tag == 2 && !seenEvents) {
+                        seenEvents = true;
+                        const std::size_t count = r.U8();
+                        if (count == 0 || count > kMaxAnimEventsPerTransform) {
+                            r.Fail();
+                            break;
+                        }
+                        for (std::size_t i = 0; i < count && r.Ok(); ++i) {
+                            AnimEvent e;
+                            e.sequence = r.U16();
+                            e.name = ReadText(r, kMaxAnimEventNameBytes);
+                            m.events.push_back(std::move(e));
+                        }
+                    } else if (tag == 3 && !m.weapon) {  // 1.3 weapon
+                        WeaponState ws;
+                        ws.formId = r.U32();
+                        ws.drawn = r.Bool();
+                        m.weapon = ws;
+                    } else {
+                        r.Fail();  // unknown or repeated section
+                    }
+                }
                 if (r.Ok() && !IsValidTransform(m)) {
                     r.Fail();
                 }
@@ -398,10 +448,23 @@ namespace cosync::proto
         return name.front() != ' ' && name.back() != ' ';
     }
 
+    bool IsValidControls(const PlayerControls& c) noexcept
+    {
+        if (c.flag > 1) return false;
+        for (float v : c.values) {
+            if (!std::isfinite(v) || std::fabs(v) > kMaxControlValue) return false;
+        }
+        return true;
+    }
+
     bool IsValidTransform(const PlayerTransform& t) noexcept
     {
         constexpr float kMaxRotation = 1000.0f;  // radians; generous, only rejects garbage
-        return IsFiniteBounded(t.position, kMaxCoordinate) && IsFiniteBounded(t.rotation, kMaxRotation);
+        return IsFiniteBounded(t.position, kMaxCoordinate) && IsFiniteBounded(t.rotation, kMaxRotation) &&
+               (!t.controls || IsValidControls(*t.controls)) && t.events.size() <= kMaxAnimEventsPerTransform &&
+               std::ranges::all_of(t.events, [](const AnimEvent& e) {
+                   return !e.name.empty() && IsValidText(e.name, kMaxAnimEventNameBytes);
+               });
     }
 
     std::string_view ToString(MessageType type) noexcept

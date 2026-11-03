@@ -52,10 +52,13 @@ namespace cosync::net
         _remoteTransforms.Drain(out, _remoteTransforms.Capacity());
     }
 
-    void NetworkWorker::SubmitLocalTransform(std::uint32_t locationId, const Vec3& position, const Vec3& rotation)
+    void NetworkWorker::SubmitLocalTransform(std::uint32_t locationId, const Vec3& position, const Vec3& rotation,
+                                             const std::optional<proto::PlayerControls>& controls,
+                                             const std::vector<proto::AnimEvent>& events,
+                                             const std::optional<proto::WeaponState>& weapon)
     {
         std::scoped_lock lock(_localMutex);
-        _localTransform = LocalTransform{ locationId, position, rotation };
+        _localTransform = LocalTransform{ locationId, position, rotation, controls, events, weapon };
     }
 
     std::map<PlayerId, std::string> NetworkWorker::Roster() const
@@ -133,7 +136,7 @@ namespace cosync::net
                     local.swap(_localTransform);
                 }
                 if (local) {
-                    client.SendTransform(local->locationId, local->position, local->rotation);
+                    client.SendTransform(local->locationId, local->position, local->rotation, local->controls, local->events, local->weapon);
                 }
             }
 
@@ -143,7 +146,7 @@ namespace cosync::net
                 if (auto* t = std::get_if<client_event::RemoteTransform>(&ev)) {
                     const auto& m = t->transform;
                     _remoteTransforms.PushDropOldest(
-                        { m.playerId, { SteadyNowMs(), m.sequence, m.locationId, m.position, m.rotation } });
+                        { m.playerId, { SteadyNowMs(), m.sequence, m.locationId, m.position, m.rotation, m.controls, m.events, m.weapon } });
                     continue;
                 }
                 if (!_events.TryPush(std::move(ev))) {

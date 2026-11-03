@@ -291,7 +291,10 @@ namespace cosync::net
         _stateSince = _clock();
     }
 
-    bool SessionClient::SendTransform(std::uint32_t locationId, const Vec3& position, const Vec3& rotation)
+    bool SessionClient::SendTransform(std::uint32_t locationId, const Vec3& position, const Vec3& rotation,
+                                      const std::optional<proto::PlayerControls>& controls,
+                                      const std::vector<proto::AnimEvent>& events,
+                                      const std::optional<proto::WeaponState>& weapon)
     {
         if (_state != ClientState::InSession) {
             return false;
@@ -301,6 +304,9 @@ namespace cosync::net
         t.locationId = locationId;
         t.position = position;
         t.rotation = rotation;
+        t.controls = controls;
+        t.events = events;
+        t.weapon = weapon;
         if (!proto::IsValidTransform(t)) {
             return false;
         }

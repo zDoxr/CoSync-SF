@@ -77,7 +77,11 @@ namespace cosync::net
         // (bounded; if the game thread stalls, the oldest samples are dropped).
         void TakeRemoteTransforms(std::vector<RemoteSample>& out);
         // Latest local transform; the network thread sends at most one per tick.
-        void SubmitLocalTransform(std::uint32_t locationId, const Vec3& position, const Vec3& rotation);
+        // `controls`: the local player's engine movement input (optional, see proto::PlayerControls).
+        void SubmitLocalTransform(std::uint32_t locationId, const Vec3& position, const Vec3& rotation,
+                                  const std::optional<proto::PlayerControls>& controls = std::nullopt,
+                                  const std::vector<proto::AnimEvent>& events = {},
+                                  const std::optional<proto::WeaponState>& weapon = std::nullopt);
         // True once if events were dropped because the game thread fell behind;
         // the caller should then rebuild its state from Roster().
         bool ConsumeOverflow() noexcept { return _overflow.exchange(false); }
@@ -91,6 +95,9 @@ namespace cosync::net
             std::uint32_t locationId = 0;
             Vec3 position;
             Vec3 rotation;
+            std::optional<proto::PlayerControls> controls;
+            std::vector<proto::AnimEvent> events;
+            std::optional<proto::WeaponState> weapon;
         };
 
         void Run(std::promise<std::string>& ready);

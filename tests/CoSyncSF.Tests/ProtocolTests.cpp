@@ -111,7 +111,11 @@ TEST(Protocol, RejectsTrailingBytes)
         bytes.push_back(0);
         const auto r = Decode(bytes);
         EXPECT_FALSE(r.Ok()) << ToString(TypeOf(msg));
-        EXPECT_EQ(r.error, DecodeError::TrailingBytes) << ToString(TypeOf(msg));
+        // 1.1: bytes after a transform are read as the optional controls block, so a stray byte
+        // there is a malformed field rather than trailing data. Either way it is rejected.
+        const auto expected =
+            TypeOf(msg) == MessageType::PlayerTransform ? DecodeError::InvalidField : DecodeError::TrailingBytes;
+        EXPECT_EQ(r.error, expected) << ToString(TypeOf(msg));
     }
 }
 
@@ -161,6 +165,92 @@ TEST(Protocol, RejectsInvalidFieldValues)
         bytes[4] ^= 0xFF;
         EXPECT_FALSE(Decode(bytes).Ok());
     }
+}
+
+TEST(Protocol, TransformControlsRoundTripAndValidation)
+{
+    PlayerTransform t;
+    t.sequence = 7;
+    PlayerControls c;
+    for (std::size_t i = 0; i < c.values.size(); ++i) c.values[i] = static_cast<float>(i) * 0.5f - 3.0f;
+    c.flag = 1;
+    t.controls = c;
+    const auto bytes = Encode(t);
+    EXPECT_EQ(bytes.size(), Encode(PlayerTransform{}).size() + 1 + 4 * kControlFloats + 1);
+    const auto r = Decode(bytes);
+    ASSERT_TRUE(r.Ok());
+    const auto& back = std::get<PlayerTransform>(*r.message);
+    ASSERT_TRUE(back.controls.has_value());
+    EXPECT_EQ(back.controls->values, c.values);
+    EXPECT_EQ(back.controls->flag, 1);
+    // Without controls the 1.0 layout is unchanged.
+    EXPECT_FALSE(std::get<PlayerTransform>(*Decode(Encode(PlayerTransform{})).message).controls.has_value());
+    // Garbage controls are rejected.
+    t.controls->values[3] = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FALSE(Decode(Encode(t)).Ok());
+    t.controls->values[3] = 2.0e4f;
+    EXPECT_FALSE(Decode(Encode(t)).Ok());
+    t.controls->values[3] = 0.0f;
+    t.controls->flag = 2;
+    EXPECT_FALSE(Decode(Encode(t)).Ok());
+    // A bad marker byte or a truncated block is rejected.
+    t.controls->flag = 0;
+    auto bad = Encode(t);
+    bad[Encode(PlayerTransform{}).size()] = 2;
+    EXPECT_FALSE(Decode(bad).Ok());
+    auto cut = Encode(t);
+    cut.pop_back();
+    EXPECT_FALSE(Decode(cut).Ok());
+}
+
+TEST(Protocol, TransformEventsRoundTripAndValidation)
+{
+    PlayerTransform t;
+    t.events = { { 65535, "JumpStart" }, { 0, "MeleeAttackStart" } };
+    PlayerControls c;
+    c.values[1] = 2.0f;
+    t.controls = c;
+    auto r = Decode(Encode(t));
+    ASSERT_TRUE(r.Ok());
+    const auto& back = std::get<PlayerTransform>(*r.message);
+    ASSERT_EQ(back.events.size(), 2u);
+    EXPECT_EQ(back.events[0].sequence, 65535);
+    EXPECT_EQ(back.events[0].name, "JumpStart");
+    EXPECT_EQ(back.events[1].name, "MeleeAttackStart");
+    ASSERT_TRUE(back.controls.has_value());
+    // Events without controls are fine too.
+    t.controls.reset();
+    EXPECT_TRUE(Decode(Encode(t)).Ok());
+    // Too many, empty or oversized names are rejected.
+    t.events.assign(kMaxAnimEventsPerTransform + 1, AnimEvent{ 1, "x" });
+    EXPECT_FALSE(Decode(Encode(t)).Ok());
+    t.events = { { 1, "" } };
+    EXPECT_FALSE(Decode(Encode(t)).Ok());
+    t.events = { { 1, std::string(kMaxAnimEventNameBytes + 1, 'a') } };
+    EXPECT_FALSE(Decode(Encode(t)).Ok());
+    // A repeated section is rejected.
+    t.events = { { 1, "JumpStart" } };
+    auto bytes = Encode(t);
+    const auto base = Encode(PlayerTransform{}).size();
+    bytes.insert(bytes.end(), bytes.begin() + static_cast<std::ptrdiff_t>(base), bytes.end());
+    EXPECT_FALSE(Decode(bytes).Ok());
+}
+
+TEST(Protocol, TransformWeaponRoundTrip)
+{
+    PlayerTransform t;
+    t.weapon = WeaponState{ 0x0001A2B3, true };
+    t.events = { { 3, "Equip" } };
+    auto r = Decode(Encode(t));
+    ASSERT_TRUE(r.Ok());
+    const auto& back = std::get<PlayerTransform>(*r.message);
+    ASSERT_TRUE(back.weapon.has_value());
+    EXPECT_EQ(back.weapon->formId, 0x0001A2B3u);
+    EXPECT_TRUE(back.weapon->drawn);
+    // drawn must be 0 or 1
+    auto bytes = Encode(PlayerTransform{ .weapon = WeaponState{ 5, false } });
+    bytes.back() = 2;
+    EXPECT_FALSE(Decode(bytes).Ok());
 }
 
 TEST(Protocol, RejectsNonFiniteOrHugeTransforms)

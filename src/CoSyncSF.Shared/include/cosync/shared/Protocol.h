@@ -2,6 +2,7 @@
 
 #include "cosync/shared/Types.h"
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -21,7 +22,10 @@ namespace cosync::proto
 {
     inline constexpr std::uint32_t kMagic = 0x46535343;  // "CSSF" as little-endian bytes
     inline constexpr std::uint16_t kProtocolMajor = 1;   // incompatible changes
-    inline constexpr std::uint16_t kProtocolMinor = 0;   // backward-compatible additions
+    inline constexpr std::uint16_t kProtocolMinor = 3;   // backward-compatible additions
+                                                         // 1.1: optional PlayerTransform::controls
+                                                         // 1.2: tagged trailing sections, PlayerTransform::events
+                                                         // 1.3: PlayerTransform::weapon
 
     inline constexpr std::size_t kMaxMessageBytes = 16 * 1024;
     inline constexpr std::size_t kMaxPlayerNameBytes = 32;
@@ -157,6 +161,37 @@ namespace cosync::proto
     // server stamps the authenticated id before relaying). locationId is an
     // opaque location key; its mapping to Starfield cells/worldspaces is defined
     // by the game-integration layer and is not interpreted by the server.
+    // The sender's movement input as the game engine computed it for its own character
+    // (Starfield ControlsData, the result of IMovementPlayerControls; see
+    // docs/ANIMATION_REVERSE_ENGINEERING.md A.10). Opaque to the server; receivers replay it into
+    // the remote player's proxy so the engine animates it like a player.
+    // Bytes +0x00..+0x53 as 21 floats, +0x54 as a flag byte.
+    inline constexpr std::size_t kControlFloats = 21;
+    inline constexpr float kMaxControlValue = 1.0e4f;  // abuse bound; real values are angles/scales
+    struct PlayerControls
+    {
+        std::array<float, kControlFloats> values{};
+        std::uint8_t flag = 0;  // 0 or 1
+    };
+
+    // An animation-graph input event the sender's engine sent to its own character (jump, sneak,
+    // attack, ...). `sequence` increases by one per event (wrapping); senders repeat recent events
+    // in several consecutive transforms and receivers drop sequences they have already seen.
+    inline constexpr std::size_t kMaxAnimEventsPerTransform = 8;
+    inline constexpr std::size_t kMaxAnimEventNameBytes = 48;
+    struct AnimEvent
+    {
+        std::uint16_t sequence = 0;
+        std::string name;
+    };
+
+    // The sender's equipped weapon (game FormID, 0 = none) and whether it is drawn.
+    struct WeaponState
+    {
+        std::uint32_t formId = 0;
+        bool drawn = false;
+    };
+
     struct PlayerTransform
     {
         PlayerId playerId = kInvalidPlayerId;
@@ -164,6 +199,13 @@ namespace cosync::proto
         std::uint32_t locationId = 0;
         Vec3 position;
         Vec3 rotation;  // radians
+        // Optional trailing sections, each at most once, any order: u8 tag + body.
+        //   tag 1 (1.1+): controls = 21 x f32, u8 flag
+        //   tag 2 (1.2+): events   = u8 count (1..8), count x { u16 sequence, string name }
+        //   tag 3 (1.3+): weapon   = u32 formId, u8 drawn (0/1)
+        std::optional<PlayerControls> controls;
+        std::vector<AnimEvent> events;
+        std::optional<WeaponState> weapon;
     };
 
     using Message = std::variant<Hello, Welcome, Reject, SessionSnapshot, PlayerJoined, PlayerLeft,
@@ -202,6 +244,7 @@ namespace cosync::proto
     [[nodiscard]] bool IsValidText(std::string_view s, std::size_t maxBytes) noexcept;
     [[nodiscard]] bool IsValidPlayerName(std::string_view name) noexcept;
     [[nodiscard]] bool IsValidTransform(const PlayerTransform& t) noexcept;
+    [[nodiscard]] bool IsValidControls(const PlayerControls& c) noexcept;
 
     // Serial-number comparison (RFC 1982 style) for wrapping u32 sequences.
     [[nodiscard]] constexpr bool SequenceNewer(std::uint32_t candidate, std::uint32_t last) noexcept
