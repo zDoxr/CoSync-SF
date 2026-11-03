@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <vector>
@@ -116,6 +117,20 @@ namespace cosync::plugin::avatars
     bool RequestCombatTarget(std::uint32_t actorId, std::shared_ptr<std::atomic<std::uint32_t>> result);
     bool StartCombat(std::uint32_t actorId, std::uint32_t targetRefId);
     bool StopCombat(std::uint32_t actorId);  // Papyrus Actor.StopCombat()
+
+    // ---- Local player status (game.pex: actorvalue GetHealthAV(); objectreference.pex:
+    // Float GetValuePercentage(actorvalue), planet GetCurrentPlanet(), Bool IsInSpace();
+    // actor.pex: Int GetLevel()). Planet name from its TESFullName.
+    struct StatusQuery
+    {
+        std::atomic<int> pending{ 4 };
+        std::atomic<int> healthPercent{ -1 };
+        std::atomic<int> level{ -1 };
+        std::atomic<int> inSpace{ -1 };
+        std::mutex lock;
+        std::string planet;
+    };
+    bool RequestStatus(std::uint32_t actorId, std::shared_ptr<StatusQuery> q);
 
     // Papyrus ObjectReference.SetScale(Float) (1 param, registered in the exe). Debug aid.
     bool SetScale(std::uint32_t refId, float scale);

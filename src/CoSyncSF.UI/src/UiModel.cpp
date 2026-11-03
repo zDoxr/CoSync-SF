@@ -117,6 +117,30 @@ namespace cosync::ui
         if (intent == "leave") return cmd::LeaveGame{};
         if (intent == "refreshServers") return cmd::RefreshServers{};
         if (intent == "invite") return cmd::InviteFriends{};
+        {
+            using A = proto::GroupAction;
+            const std::pair<std::string_view, A> groupIntents[] = {
+                { "groupCreate", A::Create }, { "groupInvite", A::Invite }, { "groupAccept", A::Accept },
+                { "groupDecline", A::Decline }, { "groupLeave", A::Leave }, { "groupKick", A::Kick },
+            };
+            for (const auto& [name, action] : groupIntents) {
+                if (intent != name) continue;
+                cmd::Group c{ action };
+                if (action == A::Invite || action == A::Kick) {
+                    if (!ParseUnsigned(Arg(args, "player"), c.target) || c.target == kInvalidPlayerId) {
+                        error = "Unknown player.";
+                        return std::nullopt;
+                    }
+                }
+                if (action == A::Accept || action == A::Decline) {
+                    if (!ParseUnsigned(Arg(args, "group"), c.group) || c.group == 0) {
+                        error = "Unknown group.";
+                        return std::nullopt;
+                    }
+                }
+                return c;
+            }
+        }
         if (intent == "copyJoinCode") return cmd::CopyJoinCode{};
         if (intent == "kick") {
             cmd::KickPlayer c;
@@ -417,6 +441,18 @@ namespace cosync::ui
         if (_snapshot.joinCode == code && _snapshot.steamAvailable == steamAvailable) return;
         _snapshot.joinCode = std::move(code);
         _snapshot.steamAvailable = steamAvailable;
+        Touch();
+    }
+
+    void UiModel::SetGroup(std::uint32_t group, PlayerId leader, std::vector<PlayerId> invited,
+                           std::vector<UiSnapshot::GroupInvite> invites)
+    {
+        auto& s = _snapshot;
+        if (s.myGroup == group && s.myGroupLeader == leader && s.myGroupInvited == invited && s.invites == invites) return;
+        s.myGroup = group;
+        s.myGroupLeader = leader;
+        s.myGroupInvited = std::move(invited);
+        s.invites = std::move(invites);
         Touch();
     }
 

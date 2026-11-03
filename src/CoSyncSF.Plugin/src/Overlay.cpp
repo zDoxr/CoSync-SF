@@ -68,6 +68,8 @@ namespace cosync::plugin::overlay
         // Snapshot/commands exchange with the main thread.
         std::mutex g_lock;
         ui::UiSnapshot g_snapshot;
+        HudState g_hud;
+        std::atomic<bool> g_launcherVisible{ false };
         std::vector<ui::UiCommand> g_commands;
 
         template <class T>
@@ -134,6 +136,10 @@ namespace cosync::plugin::overlay
             if (g_open.load() && g.imgui) {
                 ImGui_ImplWin32_WndProcHandler(hwnd, msg, wparam, lparam);
                 if (IsInputMessage(msg)) return 0;  // the UI owns input while open
+            } else if (g_launcherVisible.load() && g.imgui && msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) {
+                // Game menu open: the launcher gets the mouse; clicks on it never reach the game menu.
+                ImGui_ImplWin32_WndProcHandler(hwnd, msg, wparam, lparam);
+                if (msg != WM_MOUSEMOVE && ImGui::GetIO().WantCaptureMouse) return 0;
             }
             return CallWindowProcW(g_originalWndProc, hwnd, msg, wparam, lparam);
         }
@@ -202,7 +208,16 @@ namespace cosync::plugin::overlay
                 }
                 return;
             }
-            if (static_cast<void*>(swap) != static_cast<void*>(g.swap) || !g_open.load()) return;
+            if (static_cast<void*>(swap) != static_cast<void*>(g.swap)) return;
+            HudState hud;
+            {
+                std::lock_guard lock(g_lock);
+                hud = g_hud;
+            }
+            const bool open = g_open.load();
+            const bool launcher = hud.gameMenuOpen && !open;
+            g_launcherVisible = launcher;
+            if (!open && !launcher && hud.members.empty()) return;
             if (!g.targetsValid && !CreateTargets()) return;
             auto* queue = g_queue.load();
             if (!queue) return;
@@ -215,12 +230,16 @@ namespace cosync::plugin::overlay
             ImGui_ImplDX12_NewFrame();
             ImGui_ImplWin32_NewFrame();
             ImGui::NewFrame();
-            ImGui::GetIO().MouseDrawCursor = true;
-            const bool close = metroui::Draw(snapshot, [](ui::UiCommand c) {
-                std::lock_guard lock(g_lock);
-                if (g_commands.size() < 64) g_commands.push_back(std::move(c));
-            });
-            if (close) g_open = false;
+            ImGui::GetIO().MouseDrawCursor = open;  // the game draws its own cursor in its menus
+            if (!open && !hud.gameMenuOpen) metroui::DrawHud(hud, snapshot.theme);
+            if (launcher && metroui::DrawLauncher(snapshot)) g_open = true;
+            if (open) {
+                const bool close = metroui::Draw(snapshot, [](ui::UiCommand c) {
+                    std::lock_guard lock(g_lock);
+                    if (g_commands.size() < 64) g_commands.push_back(std::move(c));
+                });
+                if (close) g_open = false;
+            }
             ImGui::Render();
 
             auto& frame = g.frames[g.swap->GetCurrentBackBufferIndex()];
@@ -332,6 +351,12 @@ namespace cosync::plugin::overlay
     {
         std::lock_guard lock(g_lock);
         g_snapshot = snapshot;
+    }
+
+    void PublishHud(HudState hud)
+    {
+        std::lock_guard lock(g_lock);
+        g_hud = std::move(hud);
     }
 
     void DrainCommands(std::vector<ui::UiCommand>& out)

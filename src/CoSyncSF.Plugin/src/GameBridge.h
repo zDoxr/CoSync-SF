@@ -132,6 +132,7 @@ namespace cosync::plugin
             std::uint32_t latestSeq = 0;
             bool haveLatest = false;
             std::optional<proto::WeaponState> weapon;  // newest received weapon state
+            std::optional<proto::PlayerStatus> status;  // newest received vitals / whereabouts
             // Graph input events from this player not yet replayed on the proxy (controls mode).
             std::vector<std::string> pendingReplays;
             std::uint16_t lastEventSeq = 0;
@@ -196,6 +197,19 @@ namespace cosync::plugin
         std::string _joinCode;
         std::future<std::vector<net::discovery::DiscoveredServer>> _discovery;  // LAN browse in flight
         bool _steamAvailable = false;
+        // Player status (health, level, planet) and groups: party frames + overhead markers.
+        void UpdateLocalStatus();
+        void PublishHud();
+        [[nodiscard]] const proto::GroupInfo* MyGroup() const;
+        [[nodiscard]] float DistanceTo(const RemotePlayer& r) const;  // meters, -1 if not comparable
+        [[nodiscard]] bool GameMenuOpen();
+        std::shared_ptr<avatars::StatusQuery> _statusQuery;
+        std::optional<proto::PlayerStatus> _localStatus;
+        std::chrono::steady_clock::time_point _nextStatusQuery{};
+        proto::GroupState _groupState;
+        PlayerId _localPlayerId = kInvalidPlayerId;
+        std::chrono::steady_clock::time_point _nextMenuCheck{};
+        bool _menuOpen = false;
         // Hostility sync (docs/NPC_SYNC_ARCHITECTURE.md): report NPCs that enter combat against a
         // player, apply reports from others with StartCombat.
         void UpdateNpcCombat(net::NetworkWorker& worker);

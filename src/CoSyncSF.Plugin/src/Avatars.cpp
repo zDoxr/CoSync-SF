@@ -302,6 +302,74 @@ namespace cosync::plugin::avatars
         return Dispatch(ScriptObjectFor(actor), "StopCombat", [](RE::BSScrapArray<Variable>&) {});
     }
 
+    bool RequestStatus(std::uint32_t actorId, std::shared_ptr<StatusQuery> q)
+    {
+        auto* actor = LookupActor(actorId);
+        if (!actor) return false;
+        const auto self = ScriptObjectFor(actor);
+        auto done = [q] { q->pending.fetch_sub(1); };
+        // Health: Game.GetHealthAV() -> GetValuePercentage(av).
+        const bool a = DispatchStatic(
+            "Game", "GetHealthAV", [](RE::BSScrapArray<Variable>&) {},
+            [q, self, done](const Variable& av) {
+                const Variable copy = av;
+                const bool sent = Dispatch(
+                    self, "GetValuePercentage",
+                    [copy](RE::BSScrapArray<Variable>& args) {
+                        args.emplace_back();
+                        args.back() = copy;
+                    },
+                    [q, done](const Variable& v) {
+                        if (v.is<float>()) {
+                            q->healthPercent.store(static_cast<int>(std::clamp(RE::BSScript::get<float>(v), 0.0f, 1.0f) * 100.0f + 0.5f));
+                        }
+                        done();
+                    },
+                    done);
+                if (!sent) done();
+            },
+            done);
+        const bool b = Dispatch(
+            self, "GetLevel", [](RE::BSScrapArray<Variable>&) {},
+            [q, done](const Variable& v) {
+                if (v.is<std::int32_t>()) q->level.store(RE::BSScript::get<std::int32_t>(v));
+                done();
+            },
+            done);
+        const bool c = Dispatch(
+            self, "IsInSpace", [](RE::BSScrapArray<Variable>&) {},
+            [q, done](const Variable& v) {
+                if (v.is<bool>()) q->inSpace.store(RE::BSScript::get<bool>(v) ? 1 : 0);
+                done();
+            },
+            done);
+        const bool d = Dispatch(
+            self, "GetCurrentPlanet", [](RE::BSScrapArray<Variable>&) {},
+            [q, done](const Variable& v) {
+                if (v.is<RE::BSScript::Object>() && RE::BSScript::get<RE::BSScript::Object>(v)) {
+                    if (auto* form = RE::BSScript::UnpackVariable<RE::TESForm>(v)) {
+                        std::string name;
+                        // RTTI cast via the game's __RTDynamicCast import (ID 184372); type descriptors TESForm
+                        // (ID 843049) and TESFullName (ID 843072) verified against .rdata 2026-11-02.
+                        if (auto* full = starfield_cast<RE::TESFullName*>(form)) {
+                            const char* n = full->GetFullName();
+                            if (n) name = n;
+                        }
+                        if (name.empty()) name = std::format("{:08X}", form->GetFormID());
+                        std::lock_guard lock(q->lock);
+                        q->planet = std::move(name);
+                    }
+                }
+                done();
+            },
+            done);
+        if (!a) done();
+        if (!b) done();
+        if (!c) done();
+        if (!d) done();
+        return a || b || c || d;
+    }
+
     bool RequestTemplateActor(std::shared_ptr<std::atomic<std::uint32_t>> result, std::string& error)
     {
         auto* player = RE::PlayerCharacter::GetSingleton();

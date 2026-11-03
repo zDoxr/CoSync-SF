@@ -75,6 +75,23 @@ Rules:
 3. Theming lives in data: a JSON theme (colours, spacing, font choices, animation timings) loaded at startup and pushed to the movie. Themes can then change without rebuilding the SWF.
 4. The same `UiModel`/`UiSnapshot` feeds the optional ImGui overlay and a future external launcher, so the presentation stays replaceable.
 
+## 3a. Groups, party HUD and the game-menu launcher (2026-11-02, untested in game)
+
+- **Layout.** Sidebar navigation with four pages: **Play** (Host / Join / nearby LAN games / session codes / Leave), **Lobby** (every player with level, health, planet or distance, kick, group invite), **Group** and **Settings** (display name, accent colour, HUD toggles). Nothing from the earlier UI was removed.
+- **Game-menu launcher.** While the game's `MainMenu` or `PauseMenu` is open, a **MULTIPLAYER** tile is drawn top-right. Clicking it opens the CoSync UI. Mouse clicks on the tile never reach the game menu, and once the UI is open the game receives no input.
+  - Detection uses `UI::IsMenuOpen`, RVA 0x2544EC0 (ID 130475). This was verified on 2026-11-02: every caller loads the UI singleton qword at RVA 0x5FD9B80 (ID 937580) into `rcx` and a `BSFixedString*` into `rdx`.
+- **Groups** (protocol 1.5). Groups are server-authoritative, implemented in `GroupManager`:
+  - create, invite (leader only), accept, decline, leave and kick (leader only);
+  - a player can be in one group at a time, and a group holds at most 8;
+  - if the leader leaves, the next member becomes leader;
+  - a player who disconnects is removed from their group and from pending invites.
+  
+  Only group members share party frames and overhead markers.
+- **Player status** (transform tag 4): health % (`GetValuePercentage(Game.GetHealthAV())`), `GetLevel`, `IsInSpace`, and `GetCurrentPlanet`. The planet's name comes from its `TESFullName` via the game's `__RTDynamicCast` import (ID 184372); the type descriptors for TESForm (843049) and TESFullName (843072) were checked against `.rdata`. Status is refreshed once a second.
+- **Party frames.** These are drawn bottom-left, stacked above the player's own health bar. Each shows name, level, a health bar, and the member's planet, "In orbit · <planet>" / "In space", or the distance in metres when on the same planet.
+- **Overhead markers.** Each shows a diamond icon, the member's name and their distance in metres. Markers appear only when the distance is comparable: the same cell, or both players outdoors on the same named planet. A cross-planet member gets no marker.
+  - **Projection is approximate.** It is computed from the player's own view: eye = position + 1.65 m, heading `angle.z`, pitch `angle.x` (assumed positive = looking down), horizontal FOV 85°. It should be close in first person and drift in third person. Reading the engine camera (`NiCamera`, vtable ID 498033) is the next step, and its layout must be verified first.
+
 ## 4. Multiplayer tab: information architecture
 
 - **Session**: Host Game (name, max players, password, port), Join Game (address, or pick from discovery), Leave.

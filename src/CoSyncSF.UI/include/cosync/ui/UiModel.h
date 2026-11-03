@@ -11,6 +11,7 @@
 // to GameBridge).
 
 #include "cosync/net/SessionClient.h"
+#include "cosync/shared/Protocol.h"
 #include "cosync/shared/Types.h"
 
 #include <cstdint>
@@ -38,10 +39,11 @@ namespace cosync::ui
         struct SetTheme { std::string name; };
         struct InviteFriends {};   // open the Steam overlay invite dialog with the join code
         struct CopyJoinCode {};    // put the join code on the clipboard
+        struct Group { proto::GroupAction action = proto::GroupAction::Create; PlayerId target = kInvalidPlayerId; std::uint32_t group = 0; };
     }
     using UiCommand = std::variant<cmd::HostGame, cmd::JoinGame, cmd::LeaveGame, cmd::KickPlayer, cmd::SetDisplayName,
                                    cmd::RefreshServers, cmd::SelectTab, cmd::SetTheme, cmd::InviteFriends,
-                                   cmd::CopyJoinCode>;
+                                   cmd::CopyJoinCode, cmd::Group>;
 
     // Arguments arrive from the view as strings (Scaleform/AS3, or any other front end).
     using IntentArgs = std::map<std::string, std::string, std::less<>>;
@@ -86,6 +88,12 @@ namespace cosync::ui
         bool isHost = false;
         bool sameLocation = false;
         std::string proxy;  // "none", "spawning", "valid", "incomplete"
+        int healthPercent = -1;   // -1 unknown
+        int level = -1;
+        std::string place;        // planet name
+        std::uint8_t placeKind = 0;  // proto::PlaceKind
+        bool inMyGroup = false;
+        float distance = -1.0f;   // meters, -1 = not in the same area
         bool operator==(const PlayerRow&) const = default;
     };
 
@@ -126,6 +134,18 @@ namespace cosync::ui
         std::string lastError;  // most recent rejected intent / failure, for a toast
         std::string joinCode;   // what other players enter to join this session (host: address:port)
         bool steamAvailable = false;  // Steam overlay invites possible
+        // Group (server-authoritative)
+        struct GroupInvite
+        {
+            std::uint32_t group = 0;
+            PlayerId leader = kInvalidPlayerId;
+            std::string leaderName;
+            bool operator==(const GroupInvite&) const = default;
+        };
+        std::uint32_t myGroup = 0;
+        PlayerId myGroupLeader = kInvalidPlayerId;
+        std::vector<PlayerId> myGroupInvited;
+        std::vector<GroupInvite> invites;
         std::string lanCode;          // host's LAN address:port (direct UDP), alongside the Steam code
     };
 
@@ -151,6 +171,8 @@ namespace cosync::ui
         void SetError(std::string error);
         void SetJoinCode(std::string code, bool steamAvailable);
         void SetLanCode(std::string code);
+        void SetGroup(std::uint32_t group, PlayerId leader, std::vector<PlayerId> invited,
+                      std::vector<UiSnapshot::GroupInvite> invites);
 
         // Applies UI-only commands (tab selection) locally and returns true; returns
         // false for commands the plugin must execute (session actions, theme loading).

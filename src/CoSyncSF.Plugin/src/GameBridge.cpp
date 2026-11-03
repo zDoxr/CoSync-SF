@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstring>
 #include <format>
+#include <numbers>
 
 namespace cosync::plugin
 {
@@ -97,6 +98,22 @@ namespace cosync::plugin
                     r.isLocal = pid == st.localPlayer;
                     r.isHost = r.isLocal && worker->IsHost();
                     r.proxy = "none";
+                    if (r.isLocal && _localStatus) {
+                        r.healthPercent = _localStatus->healthPercent;
+                        r.level = _localStatus->level;
+                        r.place = _localStatus->place;
+                        r.placeKind = static_cast<std::uint8_t>(_localStatus->kind);
+                    }
+                    if (auto it = _remotes.find(pid); it != _remotes.end()) {
+                        if (const auto& stt = it->second.status) {
+                            r.healthPercent = stt->healthPercent;
+                            r.level = stt->level;
+                            r.place = stt->place;
+                            r.placeKind = static_cast<std::uint8_t>(stt->kind);
+                        }
+                        r.distance = DistanceTo(it->second);
+                    }
+                    if (const auto* g = MyGroup()) r.inMyGroup = std::ranges::find(g->members, pid) != g->members.end();
                     if (auto it = _remotes.find(pid); it != _remotes.end() && it->second.avatar.refId != 0) {
                         r.sameLocation = true;
                         r.proxy = it->second.avatar.loaded3DAt != kNever ? "valid" : "spawning";
@@ -104,7 +121,19 @@ namespace cosync::plugin
                     rows.push_back(std::move(r));
                 }
                 _ui.SetPlayers(std::move(rows));
+                _localPlayerId = st.localPlayer;
+                // Group view for the UI.
+                std::vector<ui::UiSnapshot::GroupInvite> invites;
+                for (const auto& g : _groupState.groups) {
+                    if (std::ranges::find(g.invited, st.localPlayer) == g.invited.end()) continue;
+                    const auto name = roster.find(g.leader);
+                    invites.push_back({ g.id, g.leader, name != roster.end() ? name->second : std::string("A player") });
+                }
+                if (const auto* g = MyGroup()) _ui.SetGroup(g->id, g->leader, g->invited, std::move(invites));
+                else _ui.SetGroup(0, kInvalidPlayerId, {}, std::move(invites));
             } else {
+                _localPlayerId = kInvalidPlayerId;
+                _ui.SetGroup(0, kInvalidPlayerId, {}, {});
                 _ui.SetConnection(net::ClientState::Idle, "", false, "", "", kInvalidPlayerId, 0, 0);
                 _ui.SetPlayers({});
                 _ui.SetLanCode("");
@@ -178,12 +207,146 @@ namespace cosync::plugin
                         return net::discovery::Discover(net::discovery::kDefaultPort, 700, true, local, err);
                     });
                 }
+            } else if (const auto* gc = std::get_if<ui::cmd::Group>(&c)) {
+                if (auto* w = _worker.load(); w && w->Status().state == net::ClientState::InSession) {
+                    log::Info("[ui] group action {} target {} group {}", static_cast<int>(gc->action), gc->target, gc->group);
+                    w->SubmitGroupRequest({ gc->action, gc->target, gc->group });
+                } else {
+                    error = "Not in a session.";
+                }
             } else if (std::holds_alternative<ui::cmd::CopyJoinCode>(c)) {
                 if (_joinCode.empty() || !steam::CopyToClipboard(_joinCode)) error = "No join code to copy.";
             }
             _ui.SetError(error);
             if (!error.empty()) log::Warn("[ui] {}", error);
         }
+        PublishHud();
+    }
+
+    const proto::GroupInfo* GameBridge::MyGroup() const
+    {
+        for (const auto& g : _groupState.groups) {
+            if (_localPlayerId != kInvalidPlayerId && std::ranges::find(g.members, _localPlayerId) != g.members.end()) return &g;
+        }
+        return nullptr;
+    }
+
+    // Health / level / planet of the local player, refreshed once a second through Papyrus
+    // (Avatars::RequestStatus). Sent with every transform (tag 4).
+    void GameBridge::UpdateLocalStatus()
+    {
+        const auto now = std::chrono::steady_clock::now();
+        if (_statusQuery && _statusQuery->pending.load() <= 0) {
+            proto::PlayerStatus st = _localStatus.value_or(proto::PlayerStatus{});
+            if (const int h = _statusQuery->healthPercent.load(); h >= 0) st.healthPercent = static_cast<std::uint8_t>(std::min(h, 100));
+            if (const int l = _statusQuery->level.load(); l > 0) st.level = static_cast<std::uint16_t>(std::min(l, 65535));
+            const int space = _statusQuery->inSpace.load();
+            std::string planet;
+            {
+                std::lock_guard lock(_statusQuery->lock);
+                planet = _statusQuery->planet;
+            }
+            if (planet.size() > proto::kMaxPlaceBytes) planet.resize(proto::kMaxPlaceBytes);
+            if (!proto::IsValidText(planet, proto::kMaxPlaceBytes)) planet.clear();
+            st.place = std::move(planet);
+            st.kind = space == 1 ? proto::PlaceKind::Space : space == 0 ? proto::PlaceKind::Surface : proto::PlaceKind::Unknown;
+            if (!_localStatus || _localStatus->place != st.place || _localStatus->kind != st.kind) {
+                log::Info("[status] local: {} ({}), level {}, health {}%", st.place.empty() ? "?" : st.place,
+                          st.kind == proto::PlaceKind::Space ? "space" : "surface", st.level, st.healthPercent);
+            }
+            _localStatus = std::move(st);
+            _statusQuery.reset();
+        }
+        if (_statusQuery && now - _nextStatusQuery > std::chrono::seconds(10)) _statusQuery.reset();  // lost callback
+        if (!_statusQuery && now >= _nextStatusQuery) {
+            _nextStatusQuery = now + std::chrono::seconds(1);
+            auto q = std::make_shared<avatars::StatusQuery>();
+            if (avatars::RequestStatus(avatars::PlayerRefId(), q)) _statusQuery = std::move(q);
+        }
+    }
+
+    // Distance in meters (Starfield world units are meters) when both players are in the same
+    // cell, or both outdoors on the same planet; otherwise -1 (different planet / space / interior).
+    float GameBridge::DistanceTo(const RemotePlayer& r) const
+    {
+        if (!_inWorld || !r.haveLatest || !r.pose || _localLocationId == 0) return -1.0f;
+        const auto loc = r.pose->locationId;
+        bool comparable = loc == _localLocationId;
+        if (!comparable && (loc & _localLocationId & 0x80000000u) != 0 && r.status && _localStatus) {
+            comparable = r.status->kind == proto::PlaceKind::Surface && _localStatus->kind == proto::PlaceKind::Surface &&
+                         !r.status->place.empty() && r.status->place == _localStatus->place;
+        }
+        if (!comparable) return -1.0f;
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) return -1.0f;
+        const auto p = player->GetPosition();
+        const float dx = r.latestPos.x - p.x, dy = r.latestPos.y - p.y, dz = r.latestPos.z - p.z;
+        return std::sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    // The game's main or pause menu (UI::IsMenuOpen, RVA 0x2544EC0, verified 2026-11-02: callers
+    // pass the UI singleton qword at RVA 0x5FD9B80 = ID 937580 and a BSFixedString*).
+    bool GameBridge::GameMenuOpen()
+    {
+        const auto now = std::chrono::steady_clock::now();
+        if (now < _nextMenuCheck) return _menuOpen;
+        _nextMenuCheck = now + std::chrono::milliseconds(100);
+        auto* ui = RE::UI::GetSingleton();
+        if (!ui) return _menuOpen = false;
+        static const RE::BSFixedString kMain("MainMenu");
+        static const RE::BSFixedString kPause("PauseMenu");
+        _menuOpen = ui->IsMenuOpen(kMain) || ui->IsMenuOpen(kPause);
+        return _menuOpen;
+    }
+
+    // Party frames (group members) and overhead markers. Markers are projected from the local
+    // view: eye = player position + 1.65 m, heading data.angle.z (0 = +Y, clockwise), pitch
+    // data.angle.x (positive = down), horizontal FOV 85 deg. First-person accurate; in third person
+    // the marker sits slightly off (the engine camera is not read yet - see docs/UI_FRAMEWORK.md).
+    void GameBridge::PublishHud()
+    {
+        overlay::HudState hud;
+        hud.gameMenuOpen = GameMenuOpen();
+        const auto* g = MyGroup();
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (g && _inWorld && player) {
+            const auto pos = player->GetPosition();
+            const auto ang = player->GetAngle();
+            const float yaw = ang.z, pitch = ang.x;
+            const float fx = std::sin(yaw) * std::cos(pitch), fy = std::cos(yaw) * std::cos(pitch), fz = -std::sin(pitch);
+            const float rx = std::cos(yaw), ry = -std::sin(yaw);  // right, rz = 0
+            // up = right x forward
+            const float ux = ry * fz, uy = -rx * fz, uz = rx * fy - ry * fx;
+            const float tanH = std::tan(85.0f * 0.5f * std::numbers::pi_v<float> / 180.0f);
+            for (const auto pid : g->members) {
+                if (pid == _localPlayerId) continue;
+                const auto it = _remotes.find(pid);
+                if (it == _remotes.end()) continue;
+                const auto& r = it->second;
+                overlay::HudMember m;
+                m.name = r.name.empty() ? std::format("Player {}", pid) : r.name;
+                if (r.status) {
+                    m.level = r.status->level;
+                    m.healthPercent = r.status->healthPercent;
+                    m.place = r.status->place;
+                    m.placeKind = static_cast<std::uint8_t>(r.status->kind);
+                }
+                m.distance = DistanceTo(r);
+                if (m.distance >= 0.0f && m.distance < 5000.0f) {
+                    // Head of the remote (pose is the interpolated render position).
+                    const Vec3 t = r.pose ? r.pose->position : r.latestPos;
+                    const float dx = t.x - pos.x, dy = t.y - pos.y, dz = (t.z + 2.1f) - (pos.z + 1.65f);
+                    const float z = dx * fx + dy * fy + dz * fz;
+                    if (z > 0.5f) {
+                        m.marker = true;
+                        m.x = (dx * rx + dy * ry) / (z * tanH);         // NDC, horizontal scale
+                        m.y = (dx * ux + dy * uy + dz * uz) / (z * tanH);  // same scale (aspect applied in the overlay)
+                    }
+                }
+                hud.members.push_back(std::move(m));
+            }
+        }
+        overlay::PublishHud(std::move(hud));
     }
 
     void GameBridge::Detach()
@@ -215,6 +378,7 @@ namespace cosync::plugin
                     if constexpr (std::is_same_v<T, ce::StateChanged>) {
                         log::Info("[game] session state: {} ({})", net::ToString(e.state), e.detail);
                         if (e.state == net::ClientState::Disconnected) {
+                            _groupState = {};
                             RemoveAllRemotes();
                         }
                     } else if constexpr (std::is_same_v<T, ce::Welcomed>) {
@@ -224,6 +388,8 @@ namespace cosync::plugin
                     } else if constexpr (std::is_same_v<T, ce::PeerJoined>) {
                         _remotes[e.player.playerId].name = e.player.name;
                         log::Info("[game] player {} '{}' joined", e.player.playerId, e.player.name);
+                    } else if constexpr (std::is_same_v<T, ce::Groups>) {
+                        _groupState = e.state;
                     } else if constexpr (std::is_same_v<T, ce::NpcCombat>) {
                         ApplyNpcCombat(e.combat, *_worker.load());
                     } else if constexpr (std::is_same_v<T, ce::PeerLeft>) {
@@ -316,8 +482,9 @@ namespace cosync::plugin
                 rotation.x = std::clamp(pitch, -1.6f, 1.6f);
             }
         }
+        UpdateLocalStatus();
         worker.SubmitLocalTransform(sample->locationId, sample->position, rotation, controls, events,
-                                    _opt.controls ? _localWeapon : std::nullopt);
+                                    _opt.controls ? _localWeapon : std::nullopt, _localStatus);
 
         if (now >= _nextLocalLog) {
             _nextLocalLog = now + kLocalLogInterval;
@@ -349,6 +516,7 @@ namespace cosync::plugin
                     r.latestPos = s.transform.position;
                     r.latestReceivedMs = s.transform.receivedMs;
                     if (s.transform.weapon) r.weapon = s.transform.weapon;
+                    if (s.transform.status) r.status = s.transform.status;
                     r.latestSeq = s.transform.sequence;
                     r.haveLatest = true;
                 }
