@@ -67,6 +67,12 @@ namespace cosync::net
         if (_npcCombatOut.size() < 256) _npcCombatOut.emplace_back(npcFormId, targetPlayer);
     }
 
+    void NetworkWorker::SubmitKick(PlayerId player)
+    {
+        std::scoped_lock lock(_localMutex);
+        if (_kickOut.size() < 64) _kickOut.push_back(player);
+    }
+
     std::map<PlayerId, std::string> NetworkWorker::Roster() const
     {
         std::scoped_lock lock(_statusMutex);
@@ -147,6 +153,14 @@ namespace cosync::net
                     combat.swap(_npcCombatOut);
                 }
                 for (const auto& [npc, targetPlayer] : combat) client.SendNpcCombat(npc, targetPlayer);
+                std::vector<PlayerId> kicks;
+                {
+                    std::scoped_lock lock(_localMutex);
+                    kicks.swap(_kickOut);
+                }
+                if (server) {
+                    for (const auto id : kicks) server->Kick(id, "kicked by the host");
+                }
                 if (local) {
                     client.SendTransform(local->locationId, local->position, local->rotation, local->controls, local->events, local->weapon);
                 }

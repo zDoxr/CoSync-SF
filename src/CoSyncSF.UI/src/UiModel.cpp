@@ -115,6 +115,8 @@ namespace cosync::ui
         }
         if (intent == "leave") return cmd::LeaveGame{};
         if (intent == "refreshServers") return cmd::RefreshServers{};
+        if (intent == "invite") return cmd::InviteFriends{};
+        if (intent == "copyJoinCode") return cmd::CopyJoinCode{};
         if (intent == "kick") {
             cmd::KickPlayer c;
             if (!ParseUnsigned(Arg(args, "player"), c.player) || c.player == kInvalidPlayerId) {
@@ -311,6 +313,8 @@ namespace cosync::ui
         o += ']';
         Key(o, "displayName"); Str(o, s.displayName);
         Key(o, "lastError"); Str(o, s.lastError);
+        Key(o, "joinCode"); Str(o, s.joinCode);
+        Key(o, "steamAvailable"); o += s.steamAvailable ? "true" : "false";
         const auto& t = s.theme;
         Key(o, "theme"); o += '{';
         Key(o, "name"); Str(o, t.name);
@@ -403,6 +407,14 @@ namespace cosync::ui
     {
         if (_snapshot.lastError == error) return;
         _snapshot.lastError = std::move(error);
+        Touch();
+    }
+
+    void UiModel::SetJoinCode(std::string code, bool steamAvailable)
+    {
+        if (_snapshot.joinCode == code && _snapshot.steamAvailable == steamAvailable) return;
+        _snapshot.joinCode = std::move(code);
+        _snapshot.steamAvailable = steamAvailable;
         Touch();
     }
 

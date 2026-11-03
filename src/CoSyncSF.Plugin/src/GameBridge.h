@@ -4,6 +4,7 @@
 #include "AnimProbe.h"
 #include "Avatars.h"
 #include "cosync/net/NetworkWorker.h"
+#include "cosync/ui/UiModel.h"
 #include "cosync/shared/Interpolation.h"
 
 #include <atomic>
@@ -28,6 +29,8 @@ namespace cosync::plugin
 
         // Hand over the worker (owned elsewhere, outlives the bridge's use of it).
         void Attach(net::NetworkWorker* worker) noexcept { _worker.store(worker); }
+        // Main thread: despawns every proxy and forgets the worker (before it is stopped).
+        void Detach();
         // Reading the player needs the Address Library; disabled if it is missing.
         void EnableLocalPlayerReads(bool enable) noexcept { _readLocalPlayer = enable; }
         // Experimental: spawn and move a stand-in actor per remote player in the same cell.
@@ -180,6 +183,16 @@ namespace cosync::plugin
         void ApplyWeapon(PlayerId id, RemotePlayer& remote);
         void DrainAnimEvents();
         void LogNpcEnumeration();
+        // In-game UI (Overlay/MetroUi): feed the model, publish snapshots, execute commands.
+        void UpdateUi();
+        ui::UiModel _ui;
+        std::uint64_t _publishedUiVersion = 0;
+        std::chrono::steady_clock::time_point _nextUiUpdate{};
+        std::chrono::steady_clock::time_point _nextSteamCheck{};
+        std::chrono::steady_clock::time_point _nextIpTry{};
+        std::string _localIp;
+        std::string _joinCode;
+        bool _steamAvailable = false;
         // Hostility sync (docs/NPC_SYNC_ARCHITECTURE.md): report NPCs that enter combat against a
         // player, apply reports from others with StartCombat.
         void UpdateNpcCombat(net::NetworkWorker& worker);

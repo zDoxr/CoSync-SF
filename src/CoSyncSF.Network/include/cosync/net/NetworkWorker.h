@@ -84,6 +84,10 @@ namespace cosync::net
                                   const std::optional<proto::WeaponState>& weapon = std::nullopt);
         // Queues an NpcCombat report (sent reliably on the next network tick; bounded).
         void SubmitNpcCombat(std::uint32_t npcFormId, PlayerId targetPlayer);
+        // Host only: removes a player from the session (no resume). Ignored in client mode.
+        void SubmitKick(PlayerId player);
+        [[nodiscard]] bool IsHost() const noexcept { return _config.mode == WorkerMode::Host; }
+        [[nodiscard]] std::uint16_t ListenPort() const noexcept { return _config.listenPort; }
         // True once if events were dropped because the game thread fell behind;
         // the caller should then rebuild its state from Roster().
         bool ConsumeOverflow() noexcept { return _overflow.exchange(false); }
@@ -103,6 +107,7 @@ namespace cosync::net
         };
 
         std::vector<std::pair<std::uint32_t, PlayerId>> _npcCombatOut;  // guarded by _localMutex
+        std::vector<PlayerId> _kickOut;                                 // guarded by _localMutex
         void Run(std::promise<std::string>& ready);
 
         WorkerConfig _config;

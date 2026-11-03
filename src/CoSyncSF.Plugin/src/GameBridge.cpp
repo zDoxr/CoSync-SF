@@ -4,6 +4,9 @@
 #include "AnimProbe.h"
 #include "MoveControls.h"
 #include "NpcSync.h"
+#include "Overlay.h"
+#include "SessionControl.h"
+#include "SteamInvite.h"
 #include "Avatars.h"
 #include "GameState.h"
 
@@ -57,8 +60,103 @@ namespace cosync::plugin
         return instance;
     }
 
+    void GameBridge::UpdateUi()
+    {
+        constexpr std::chrono::steady_clock::time_point kNever{};
+        const auto now = std::chrono::steady_clock::now();
+        auto* worker = _worker.load();
+        if (now >= _nextUiUpdate) {
+            _nextUiUpdate = now + std::chrono::milliseconds(200);
+            if (now >= _nextSteamCheck) {
+                _nextSteamCheck = now + std::chrono::seconds(10);
+                _steamAvailable = steam::Available();
+            }
+            std::string code;
+            if (worker) {
+                const auto st = worker->Status();
+                if (worker->IsHost()) {
+                    if (_localIp.empty() && now >= _nextIpTry) {
+                        _nextIpTry = now + std::chrono::seconds(30);
+                        _localIp = steam::LocalIPv4();
+                    }
+                    if (!_localIp.empty()) code = std::format("{}:{}", _localIp, worker->ListenPort());
+                }
+                _ui.SetConnection(st.state, "", worker->IsHost(), "", code, st.localPlayer, st.rttMs, st.droppedEvents);
+                std::vector<ui::PlayerRow> rows;
+                auto roster = worker->Roster();
+                if (st.localPlayer != kInvalidPlayerId && !roster.contains(st.localPlayer)) roster[st.localPlayer] = "You";
+                for (const auto& [pid, name] : roster) {
+                    ui::PlayerRow r;
+                    r.id = pid;
+                    r.name = name;
+                    r.isLocal = pid == st.localPlayer;
+                    r.isHost = r.isLocal && worker->IsHost();
+                    r.proxy = "none";
+                    if (auto it = _remotes.find(pid); it != _remotes.end() && it->second.avatar.refId != 0) {
+                        r.sameLocation = true;
+                        r.proxy = it->second.avatar.loaded3DAt != kNever ? "valid" : "spawning";
+                    }
+                    rows.push_back(std::move(r));
+                }
+                _ui.SetPlayers(std::move(rows));
+            } else {
+                _ui.SetConnection(net::ClientState::Idle, "", false, "", "", kInvalidPlayerId, 0, 0);
+                _ui.SetPlayers({});
+            }
+            if (code != _joinCode) {
+                _joinCode = code;
+                if (_steamAvailable) steam::SetJoinPresence(code.empty() ? std::string() : "+cosync_join " + code);
+            }
+            _ui.SetJoinCode(_joinCode, _steamAvailable);
+            _ui.SetVersions(std::format("{}.{}", proto::kProtocolMajor, proto::kProtocolMinor), "1.16.244");
+        }
+        if (_ui.Snapshot().version != _publishedUiVersion) {
+            _publishedUiVersion = _ui.Snapshot().version;
+            overlay::Publish(_ui.Snapshot());
+        }
+
+        std::vector<ui::UiCommand> commands;
+        overlay::DrainCommands(commands);
+        for (const auto& c : commands) {
+            if (_ui.ApplyLocal(c)) continue;
+            std::string error;
+            if (const auto* h = std::get_if<ui::cmd::HostGame>(&c)) {
+                log::Info("[ui] host '{}' on port {}", h->serverName, h->port);
+                session::Host(h->serverName, h->port, h->maxPlayers, h->password, error);
+            } else if (const auto* j = std::get_if<ui::cmd::JoinGame>(&c)) {
+                log::Info("[ui] join {}", j->address);
+                session::Join(j->address, j->password, error);
+            } else if (std::holds_alternative<ui::cmd::LeaveGame>(c)) {
+                log::Info("[ui] leave");
+                session::Leave();
+            } else if (const auto* k = std::get_if<ui::cmd::KickPlayer>(&c)) {
+                auto* w = _worker.load();
+                if (w && w->IsHost()) {
+                    log::Info("[ui] kick player {}", k->player);
+                    w->SubmitKick(k->player);
+                } else {
+                    error = "Only the host can kick players.";
+                }
+            } else if (std::holds_alternative<ui::cmd::InviteFriends>(c)) {
+                if (_joinCode.empty()) error = "Host a game first.";
+                else if (!steam::OpenInviteDialog("+cosync_join " + _joinCode)) error = "Steam overlay not available.";
+            } else if (std::holds_alternative<ui::cmd::CopyJoinCode>(c)) {
+                if (_joinCode.empty() || !steam::CopyToClipboard(_joinCode)) error = "No join code to copy.";
+            }
+            _ui.SetError(error);
+            if (!error.empty()) log::Warn("[ui] {}", error);
+        }
+    }
+
+    void GameBridge::Detach()
+    {
+        RemoveAllRemotes();
+        _worker.store(nullptr);
+    }
+
     void GameBridge::Tick()
     {
+        UpdateUi();  // first: a UI host/join/leave replaces the worker
         auto* worker = _worker.load();
         if (!worker) {
             return;

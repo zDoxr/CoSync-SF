@@ -11,6 +11,8 @@
 #include "MoveControls.h"
 #include "MultiInstance.h"
 #include "PluginConfig.h"
+#include "Overlay.h"
+#include "SessionControl.h"
 
 #include "cosync/net/NetworkWorker.h"
 #include "cosync/shared/GameRuntime.h"
@@ -112,6 +114,11 @@ namespace
         case SFSE::MessagingInterface::kPostDataLoad:
             log::Info("game data loaded");
             plugin::SetDataHandler(msg->data);  // TESDataHandler*, per SFSE PluginAPI.h
+            {
+                std::string detail;
+                plugin::overlay::Install(detail);
+                log::Info("{}", detail);
+            }
             StartNetworking();
             break;
         case kMessage_PreLoadGame:
@@ -123,6 +130,44 @@ namespace
         default:
             break;
         }
+    }
+}
+
+namespace cosync::plugin::session
+{
+    void Leave()
+    {
+        if (!g_worker) return;
+        plugin::GameBridge::Get().Detach();  // despawn proxies before the worker goes away
+        g_worker->Stop();
+        delete g_worker;
+        g_worker = nullptr;
+        log::Info("session left (UI)");
+    }
+
+    bool Host(const std::string& serverName, std::uint16_t port, std::uint16_t maxPlayers, const std::string& password,
+              std::string& error)
+    {
+        Leave();
+        g_config.mode = plugin::Mode::Host;
+        g_config.serverName = serverName;
+        g_config.port = port;
+        g_config.maxPlayers = maxPlayers;
+        g_config.password = password;
+        StartNetworking();
+        if (!g_worker) error = "networking failed to start (see the log)";
+        return g_worker != nullptr;
+    }
+
+    bool Join(const std::string& address, const std::string& password, std::string& error)
+    {
+        Leave();
+        g_config.mode = plugin::Mode::Client;
+        g_config.address = address;
+        g_config.password = password;
+        StartNetworking();
+        if (!g_worker) error = "networking failed to start (see the log)";
+        return g_worker != nullptr;
     }
 }
 

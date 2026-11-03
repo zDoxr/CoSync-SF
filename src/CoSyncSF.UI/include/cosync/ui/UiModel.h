@@ -36,9 +36,12 @@ namespace cosync::ui
         struct RefreshServers {};
         struct SelectTab { Tab tab = Tab::Session; };
         struct SetTheme { std::string name; };
+        struct InviteFriends {};   // open the Steam overlay invite dialog with the join code
+        struct CopyJoinCode {};    // put the join code on the clipboard
     }
     using UiCommand = std::variant<cmd::HostGame, cmd::JoinGame, cmd::LeaveGame, cmd::KickPlayer, cmd::SetDisplayName,
-                                   cmd::RefreshServers, cmd::SelectTab, cmd::SetTheme>;
+                                   cmd::RefreshServers, cmd::SelectTab, cmd::SetTheme, cmd::InviteFriends,
+                                   cmd::CopyJoinCode>;
 
     // Arguments arrive from the view as strings (Scaleform/AS3, or any other front end).
     using IntentArgs = std::map<std::string, std::string, std::less<>>;
@@ -121,6 +124,8 @@ namespace cosync::ui
         std::string displayName;
         Theme theme;
         std::string lastError;  // most recent rejected intent / failure, for a toast
+        std::string joinCode;   // what other players enter to join this session (host: address:port)
+        bool steamAvailable = false;  // Steam overlay invites possible
     };
 
     // Serializes a snapshot for the view (strict JSON, UTF-8 passed through).
@@ -143,6 +148,7 @@ namespace cosync::ui
         void SetDisplayName(std::string name);
         void SetTheme(Theme theme);
         void SetError(std::string error);
+        void SetJoinCode(std::string code, bool steamAvailable);
 
         // Applies UI-only commands (tab selection) locally and returns true; returns
         // false for commands the plugin must execute (session actions, theme loading).

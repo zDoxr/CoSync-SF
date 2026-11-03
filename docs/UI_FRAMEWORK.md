@@ -2,9 +2,28 @@
 
 Recommendation, evidence and architecture for the CoSync multiplayer interface (Multiplayer tab, host/join, server browser, player list, diagnostics, settings).
 
-**Status (2026-11-02):**
-- ✅ The **UI core** is implemented: `src/CoSyncSF.UI`, the `UiCommand`/`UiSnapshot`/`UiModel` contract from §3, themes and JSON. It has 10 unit tests in `tests/CoSyncSF.Tests/UiModelTests.cpp`.
-- ⬜ Not yet: the Scaleform movie and its engine integration (blocked on reverse-engineering `IMenu::LoadMovie`), and plugin wiring.
+**Status (2026-11-03):**
+- ✅ **UI core** (`src/CoSyncSF.UI`): `UiCommand`/`UiSnapshot`/`UiModel`, themes, JSON. New commands: `InviteFriends`, `CopyJoinCode`; the snapshot carries `joinCode` and `steamAvailable`.
+- ✅ **In-game Metro-style UI**, decided 2026-11-03: a custom UI in the style of MetroFramework instead of waiting for the Scaleform menu RE.
+  - `Overlay.cpp`:
+    - MinHook trampolines on the real DXGI `Present`/`ResizeBuffers` and D3D12 `ExecuteCommandLists`, so they still fire behind the game's Streamline swapchain wrapper;
+    - the game's direct queue is captured from `ExecuteCommandLists`;
+    - per-back-buffer allocators with fences, and back buffers released before the game resizes;
+    - the WndProc is subclassed: **F7** toggles the UI, and while it is open the game gets no mouse/keyboard input.
+  - `MetroUi.cpp`: flat panels, accent bar, uppercase tabs, tile buttons, all from the `Theme` tokens. Dear ImGui is only the drawing/input layer.
+    - **MULTIPLAYER** tab: status, Host, Join (by join code), Leave.
+    - **LOBBY** tab: player table (you/host badges, where, avatar state), KICK (host only), COPY JOIN CODE, INVITE FRIENDS (STEAM).
+  - Threads: UI commands are queued on the render thread and executed by `GameBridge::UpdateUi` on the main thread. Host/join/leave restart the network worker (`SessionControl`); kick goes to `SessionServer::Kick` on the network thread.
+  - Steam (`SteamInvite.cpp`, the game's own `steam_api64.dll` flat API resolved at runtime):
+    - the invite dialog uses the connect string `+cosync_join <ip:port>`;
+    - rich presence `connect` is set while hosting;
+    - the join code is the host's primary LAN IPv4 plus port.
+- ⬜ Not yet:
+  - accepting a Steam invite automatically (needs the `GameRichPresenceJoinRequested_t` callback; until then the invitee pastes the join code);
+  - Steam relay transport (Steam's `ISteamNetworkingSockets` P2P has the same API as GameNetworkingSockets);
+  - a gamepad UI;
+  - the Scaleform skin.
+- **Untested in game** at the time of writing.
 
 ## 1. What Starfield's UI actually is (evidence)
 
