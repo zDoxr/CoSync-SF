@@ -302,6 +302,28 @@ namespace cosync::plugin::avatars
         return Dispatch(ScriptObjectFor(actor), "StopCombat", [](RE::BSScrapArray<Variable>&) {});
     }
 
+    namespace
+    {
+        // A form's display name via its TESFullName component: RTTI cast through the game's
+        // __RTDynamicCast import (ID 184372); type descriptors TESForm (ID 843049) and TESFullName
+        // (ID 843072) verified against .rdata 2026-11-02. Falls back to the FormID in hex.
+        std::string FullNameOr(RE::TESForm* form, bool idFallback = true)
+        {
+            std::string name;
+            auto* full = starfield_cast<RE::TESFullName*>(form);
+            if (full) {
+                if (const char* n = full->GetFullName()) name = n;
+            }
+            static std::atomic<int> logged{ 0 };
+            if (name.empty() && logged.fetch_add(1) < 4) {
+                log::Info("[status] no full name for form {:08X} type {} ({})", form->GetFormID(),
+                          static_cast<int>(form->GetFormType()), full ? "empty name" : "no TESFullName");
+            }
+            if (name.empty() && idFallback) name = std::format("{:08X}", form->GetFormID());
+            return name;
+        }
+    }
+
     bool RequestStatus(std::uint32_t actorId, std::shared_ptr<StatusQuery> q)
     {
         auto* actor = LookupActor(actorId);
@@ -346,21 +368,35 @@ namespace cosync::plugin::avatars
         const bool d = Dispatch(
             self, "GetCurrentPlanet", [](RE::BSScrapArray<Variable>&) {},
             [q, done](const Variable& v) {
-                if (v.is<RE::BSScript::Object>() && RE::BSScript::get<RE::BSScript::Object>(v)) {
-                    if (auto* form = RE::BSScript::UnpackVariable<RE::TESForm>(v)) {
-                        std::string name;
-                        // RTTI cast via the game's __RTDynamicCast import (ID 184372); type descriptors TESForm
-                        // (ID 843049) and TESFullName (ID 843072) verified against .rdata 2026-11-02.
-                        if (auto* full = starfield_cast<RE::TESFullName*>(form)) {
-                            const char* n = full->GetFullName();
-                            if (n) name = n;
-                        }
-                        if (name.empty()) name = std::format("{:08X}", form->GetFormID());
-                        std::lock_guard lock(q->lock);
-                        q->planet = std::move(name);
-                    }
+                // The planet form (PNDT) has no usable full name (2026-11-02: name lookup came back
+                // empty, planet 0003F5A1). Its Location (planet.pex: location GetLocation()) does.
+                auto* planet = v.is<RE::BSScript::Object>() && RE::BSScript::get<RE::BSScript::Object>(v)
+                                   ? RE::BSScript::UnpackVariable<RE::TESForm>(v)
+                                   : nullptr;
+                if (!planet) {
+                    done();
+                    return;
                 }
-                done();
+                {
+                    std::lock_guard lock(q->lock);
+                    q->planet = FullNameOr(planet);
+                }
+                const bool sent = Dispatch(
+                    RE::BSScript::get<RE::BSScript::Object>(v), "GetLocation", [](RE::BSScrapArray<Variable>&) {},
+                    [q, done](const Variable& loc) {
+                        if (loc.is<RE::BSScript::Object>() && RE::BSScript::get<RE::BSScript::Object>(loc)) {
+                            if (auto* form = RE::BSScript::UnpackVariable<RE::TESForm>(loc)) {
+                                std::string name = FullNameOr(form, false);
+                                if (!name.empty()) {
+                                    std::lock_guard lock(q->lock);
+                                    q->planet = std::move(name);
+                                }
+                            }
+                        }
+                        done();
+                    },
+                    done);
+                if (!sent) done();
             },
             done);
         if (!a) done();

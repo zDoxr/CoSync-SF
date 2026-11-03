@@ -831,12 +831,12 @@ namespace cosync::plugin::metroui
                 }
             }
         }
-        // Party frames, stacked above the player's own health (bottom-left).
+        // Party frames, stacked above the player's own health bar (bottom-right in Starfield's HUD).
         if (!u.settings.partyFrames || hud.members.empty()) return;
         const float w = 280, h = 62, gap = 8;
-        float y = io.DisplaySize.y * 0.80f - h;
+        float y = io.DisplaySize.y * 0.82f - h;
         for (const auto& m : hud.members) {
-            const ImVec2 a{ 40, y };
+            const ImVec2 a{ io.DisplaySize.x - w - 48, y };
             dl->AddRectFilled(a, { a.x + w, a.y + h }, U32(kBg, 0.78f), 14);
             dl->AddRectFilled({ a.x, a.y + 14 }, { a.x + 3, a.y + h - 14 }, U32(Accent(t)), 99);
             Avatar(dl, { a.x + 30, a.y + h * 0.5f }, 15, m.name, Accent(t));

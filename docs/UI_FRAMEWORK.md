@@ -88,7 +88,7 @@ Rules:
   
   Only group members share party frames and overhead markers.
 - **Player status** (transform tag 4): health % (`GetValuePercentage(Game.GetHealthAV())`), `GetLevel`, `IsInSpace`, and `GetCurrentPlanet`. The planet's name comes from its `TESFullName` via the game's `__RTDynamicCast` import (ID 184372); the type descriptors for TESForm (843049) and TESFullName (843072) were checked against `.rdata`. Status is refreshed once a second.
-- **Party frames.** These are drawn bottom-left, stacked above the player's own health bar. Each shows name, level, a health bar, and the member's planet, "In orbit · <planet>" / "In space", or the distance in metres when on the same planet.
+- **Party frames.** These are drawn bottom-right, stacked above the player's own health bar (moved from bottom-left after the first in-game test, 2026-11-02). Each shows name, level, a health bar, and the member's planet, "In orbit · <planet>" / "In space", or the distance in metres when on the same planet.
 - **Overhead markers.** Each shows a diamond icon, the member's name and their distance in metres. Markers appear only when the distance is comparable: the same cell, or both players outdoors on the same named planet. A cross-planet member gets no marker.
   - **Projection is approximate.** It is computed from the player's own view: eye = position + 1.65 m, heading `angle.z`, pitch `angle.x` (assumed positive = looking down), horizontal FOV 85°. It should be close in first person and drift in third person. Reading the engine camera (`NiCamera`, vtable ID 498033) is the next step, and its layout must be verified first.
 
