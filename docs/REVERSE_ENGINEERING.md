@@ -193,6 +193,7 @@ Runtime evidence. Variables were read with Papyrus `GetAnimationVariable*` on th
 - `SetAnimationVariableFloat` writes stick on the proxy, with AI on or off: the readback equals the written value (Speed 4.3–5.2, Direction 0–0.5).
 - **But writing `Speed`/`Direction` does not make the proxy play a walk cycle.** With AI on, it follows the position updates in a standing pose (user observation). NPC locomotion clips are therefore selected by the movement/AI system, not by these variables alone. **UNKNOWN:** which engine path selects NPC locomotion (the movement controller vs. graph events). That is the next RE target for animation.
 - With AI on and no network motion, the proxy's own AI sets `Speed` 0.4–0.9 (it wanders), so the engine owns these variables whenever the AI moves the actor.
+- **Resolved in [ANIMATION_REVERSE_ENGINEERING.md](ANIMATION_REVERSE_ENGINEERING.md):** `Speed`/`Direction`/`TurnDelta` are in the engine's per-frame variable cache (A.3). Stance, aim and jump variables are bound to AI-process memory (A.4). Locomotion is produced by the actor's `MovementControllerNPC` (motion- vs animation-driven, A.5), which `SetPosition` bypasses.
 
 ## 9. Appearance: `Actor.CopyAppearance`
 
@@ -215,4 +216,4 @@ Consequence: an exact copy of a remote player means sending these fields over th
 1. **IDA Pro 9.3** (now available; database being built under `local/ida/`, script `tools/re/ida/analyze_and_save.py`). Decompile `0xCD56E0` (appearance fields), `0x5A0520` (CreateReference), NPC locomotion selection, and `0x23B20F0` (the EnableAI → process path).
 2. **WinDbg/cdb** to analyse the four crash dumps.
 3. The full new-reference descriptor layout, if direct (non-Papyrus) spawning is pursued.
-4. Animation-graph driving for proxies (`IAnimationGraphManagerHolder` at TESObjectREFR+0x60 per CommonLibSF; unverified).
+4. Animation-graph driving for proxies: the holder at `+0x60` is now verified (slots 0x0A/0x0D/0x12). See ANIMATION_REVERSE_ENGINEERING.md §A.9 for the remaining items.
