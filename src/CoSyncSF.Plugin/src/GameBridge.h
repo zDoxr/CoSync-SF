@@ -178,6 +178,13 @@ namespace cosync::plugin
         void ApplyWeapon(PlayerId id, RemotePlayer& remote);
         void DrainAnimEvents();
         void LogNpcEnumeration();
+        // Hostility sync (docs/NPC_SYNC_ARCHITECTURE.md): report NPCs that enter combat against a
+        // player, apply reports from others with StartCombat.
+        void UpdateNpcCombat(net::NetworkWorker& worker);
+        void ApplyNpcCombat(const proto::NpcCombat& c, net::NetworkWorker& worker);
+        std::chrono::steady_clock::time_point _nextCombatScan{};
+        std::map<std::uint32_t, std::shared_ptr<std::atomic<std::uint32_t>>> _combatQueries;  // npc -> target
+        std::map<std::pair<std::uint32_t, PlayerId>, std::chrono::steady_clock::time_point> _combatKnown;
         std::chrono::steady_clock::time_point _nextNpcLog{};
         std::size_t _lastNpcCount = 0;
         std::uint32_t _npcLogs = 0;

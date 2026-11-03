@@ -22,10 +22,11 @@ namespace cosync::proto
 {
     inline constexpr std::uint32_t kMagic = 0x46535343;  // "CSSF" as little-endian bytes
     inline constexpr std::uint16_t kProtocolMajor = 1;   // incompatible changes
-    inline constexpr std::uint16_t kProtocolMinor = 3;   // backward-compatible additions
+    inline constexpr std::uint16_t kProtocolMinor = 4;   // backward-compatible additions
                                                          // 1.1: optional PlayerTransform::controls
                                                          // 1.2: tagged trailing sections, PlayerTransform::events
                                                          // 1.3: PlayerTransform::weapon
+                                                         // 1.4: NpcCombat
 
     inline constexpr std::size_t kMaxMessageBytes = 16 * 1024;
     inline constexpr std::size_t kMaxPlayerNameBytes = 32;
@@ -51,6 +52,7 @@ namespace cosync::proto
         HeartbeatAck = 8,     // S->C reliable
         Disconnect = 9,       // both directions, reliable: graceful leave / shutdown
         PlayerTransform = 10, // C->S then S->C relay, unreliable
+        NpcCombat = 11,       // C->S then S->C relay, reliable (1.4)
     };
 
     enum class RejectReason : std::uint16_t
@@ -208,8 +210,18 @@ namespace cosync::proto
         std::optional<WeaponState> weapon;
     };
 
+    // An NPC (data-file reference, identical FormID on every machine with the same load order)
+    // entered combat against a player on the reporting machine. Clients send playerId = 0; the
+    // server stamps the reporter before relaying. targetPlayer is the player the NPC fights.
+    struct NpcCombat
+    {
+        PlayerId playerId = kInvalidPlayerId;
+        std::uint32_t npcFormId = 0;
+        PlayerId targetPlayer = kInvalidPlayerId;
+    };
+
     using Message = std::variant<Hello, Welcome, Reject, SessionSnapshot, PlayerJoined, PlayerLeft,
-                                 Heartbeat, HeartbeatAck, Disconnect, PlayerTransform>;
+                                 Heartbeat, HeartbeatAck, Disconnect, PlayerTransform, NpcCombat>;
 
     enum class DecodeError
     {

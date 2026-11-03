@@ -82,6 +82,8 @@ namespace cosync::net
                                   const std::optional<proto::PlayerControls>& controls = std::nullopt,
                                   const std::vector<proto::AnimEvent>& events = {},
                                   const std::optional<proto::WeaponState>& weapon = std::nullopt);
+        // Queues an NpcCombat report (sent reliably on the next network tick; bounded).
+        void SubmitNpcCombat(std::uint32_t npcFormId, PlayerId targetPlayer);
         // True once if events were dropped because the game thread fell behind;
         // the caller should then rebuild its state from Roster().
         bool ConsumeOverflow() noexcept { return _overflow.exchange(false); }
@@ -100,6 +102,7 @@ namespace cosync::net
             std::optional<proto::WeaponState> weapon;
         };
 
+        std::vector<std::pair<std::uint32_t, PlayerId>> _npcCombatOut;  // guarded by _localMutex
         void Run(std::promise<std::string>& ready);
 
         WorkerConfig _config;

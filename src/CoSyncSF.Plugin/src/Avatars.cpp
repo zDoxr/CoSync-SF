@@ -268,6 +268,33 @@ namespace cosync::plugin::avatars
         return Dispatch(self, drawn ? "DrawWeapon" : "SheatheWeapon", [](RE::BSScrapArray<Variable>&) {});
     }
 
+    bool RequestCombatTarget(std::uint32_t actorId, std::shared_ptr<std::atomic<std::uint32_t>> result)
+    {
+        auto* actor = LookupActor(actorId);
+        if (!actor) return false;
+        return Dispatch(
+            ScriptObjectFor(actor), "GetCombatTarget", [](RE::BSScrapArray<Variable>&) {},
+            [result](const Variable& v) {
+                std::uint32_t id = 1;
+                if (v.is<RE::BSScript::Object>() && RE::BSScript::get<RE::BSScript::Object>(v)) {
+                    if (auto* t = RE::BSScript::UnpackVariable<RE::Actor>(v)) id = t->GetFormID();
+                }
+                result->store(id);
+            },
+            [result] { result->store(1); });
+    }
+
+    bool StartCombat(std::uint32_t actorId, std::uint32_t targetRefId)
+    {
+        auto* actor = LookupActor(actorId);
+        auto* target = LookupActor(targetRefId);
+        if (!actor || !target) return false;
+        return Dispatch(ScriptObjectFor(actor), "StartCombat", [target](RE::BSScrapArray<Variable>& a) {
+            Push(a, static_cast<RE::TESObjectREFR*>(target));
+            Push(a, true);  // abPreferredTarget
+        });
+    }
+
     bool RequestTemplateActor(std::shared_ptr<std::atomic<std::uint32_t>> result, std::string& error)
     {
         auto* player = RE::PlayerCharacter::GetSingleton();

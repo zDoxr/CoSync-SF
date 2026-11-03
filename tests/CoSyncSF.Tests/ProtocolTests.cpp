@@ -55,6 +55,7 @@ namespace
             HeartbeatAck{ 42, 123456789 },
             Disconnect{ DisconnectReason::Quit, "bye" },
             t,
+            NpcCombat{ 4, 0x00015062, 2 },
         };
     }
 
@@ -251,6 +252,13 @@ TEST(Protocol, TransformWeaponRoundTrip)
     auto bytes = Encode(PlayerTransform{ .weapon = WeaponState{ 5, false } });
     bytes.back() = 2;
     EXPECT_FALSE(Decode(bytes).Ok());
+}
+
+TEST(Protocol, NpcCombatRejectsZeroNpcOrInvalidTarget)
+{
+    EXPECT_TRUE(Decode(Encode(NpcCombat{ 0, 0x15062, 3 })).Ok());
+    EXPECT_FALSE(Decode(Encode(NpcCombat{ 0, 0, 3 })).Ok());
+    EXPECT_FALSE(Decode(Encode(NpcCombat{ 0, 0x15062, kInvalidPlayerId })).Ok());
 }
 
 TEST(Protocol, RejectsNonFiniteOrHugeTransforms)

@@ -61,6 +61,12 @@ namespace cosync::net
         _localTransform = LocalTransform{ locationId, position, rotation, controls, events, weapon };
     }
 
+    void NetworkWorker::SubmitNpcCombat(std::uint32_t npcFormId, PlayerId targetPlayer)
+    {
+        std::scoped_lock lock(_localMutex);
+        if (_npcCombatOut.size() < 256) _npcCombatOut.emplace_back(npcFormId, targetPlayer);
+    }
+
     std::map<PlayerId, std::string> NetworkWorker::Roster() const
     {
         std::scoped_lock lock(_statusMutex);
@@ -135,6 +141,12 @@ namespace cosync::net
                     std::scoped_lock lock(_localMutex);
                     local.swap(_localTransform);
                 }
+                std::vector<std::pair<std::uint32_t, PlayerId>> combat;
+                {
+                    std::scoped_lock lock(_localMutex);
+                    combat.swap(_npcCombatOut);
+                }
+                for (const auto& [npc, targetPlayer] : combat) client.SendNpcCombat(npc, targetPlayer);
                 if (local) {
                     client.SendTransform(local->locationId, local->position, local->rotation, local->controls, local->events, local->weapon);
                 }

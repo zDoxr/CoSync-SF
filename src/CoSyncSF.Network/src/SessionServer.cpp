@@ -243,6 +243,18 @@ namespace cosync::net
         case proto::MessageType::PlayerTransform:
             OnTransform(conn, player, std::get<proto::PlayerTransform>(msg));
             break;
+        case proto::MessageType::NpcCombat: {
+            auto m = std::get<proto::NpcCombat>(msg);
+            if (m.playerId != kInvalidPlayerId && m.playerId != player.id) {
+                ++_stats.protocolViolations;
+                DropConnection(id, CloseCode::ProtocolViolation, "NpcCombat for another player",
+                               proto::LeaveReason::ProtocolViolation);
+                break;
+            }
+            m.playerId = player.id;  // server stamps the reporter
+            Broadcast(m, player.id, Delivery::Reliable);
+            break;
+        }
         case proto::MessageType::Disconnect:
             log::Info("player {} '{}' left", player.id, player.name);
             DropConnection(id, CloseCode::Normal, "client quit", proto::LeaveReason::Quit);

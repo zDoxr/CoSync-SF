@@ -145,6 +145,13 @@ namespace cosync::proto
             }
         }
 
+        void Encode(ByteWriter& w, const NpcCombat& m)
+        {
+            w.U32(m.playerId);
+            w.U32(m.npcFormId);
+            w.U32(m.targetPlayer);
+        }
+
         bool ValidReject(std::uint16_t v) { return v >= 1 && v <= static_cast<std::uint16_t>(RejectReason::RateLimited); }
         bool ValidLeave(std::uint8_t v) { return v >= 1 && v <= static_cast<std::uint8_t>(LeaveReason::ServerShutdown); }
         bool ValidDisconnect(std::uint16_t v) { return v >= 1 && v <= static_cast<std::uint16_t>(DisconnectReason::Kicked); }
@@ -309,6 +316,14 @@ namespace cosync::proto
                 }
                 return m;
             }
+            case MessageType::NpcCombat: {
+                NpcCombat m;
+                m.playerId = r.U32();
+                m.npcFormId = r.U32();
+                m.targetPlayer = r.U32();
+                if (r.Ok() && (m.npcFormId == 0 || m.targetPlayer == kInvalidPlayerId)) r.Fail();
+                return m;
+            }
             }
             return std::nullopt;
         }
@@ -316,7 +331,7 @@ namespace cosync::proto
         bool IsKnownType(std::uint16_t t)
         {
             return t >= static_cast<std::uint16_t>(MessageType::Hello) &&
-                   t <= static_cast<std::uint16_t>(MessageType::PlayerTransform);
+                   t <= static_cast<std::uint16_t>(MessageType::NpcCombat);
         }
 
         bool IsFiniteBounded(const Vec3& v, float bound)
@@ -345,6 +360,7 @@ namespace cosync::proto
                 else if constexpr (std::is_same_v<T, HeartbeatAck>) return MessageType::HeartbeatAck;
                 else if constexpr (std::is_same_v<T, Disconnect>) return MessageType::Disconnect;
                 else if constexpr (std::is_same_v<T, PlayerTransform>) return MessageType::PlayerTransform;
+                else if constexpr (std::is_same_v<T, NpcCombat>) return MessageType::NpcCombat;
                 else static_assert(kAlwaysFalse<T>, "unhandled message type");
             },
             message);
@@ -480,6 +496,7 @@ namespace cosync::proto
         case MessageType::HeartbeatAck: return "HeartbeatAck";
         case MessageType::Disconnect: return "Disconnect";
         case MessageType::PlayerTransform: return "PlayerTransform";
+        case MessageType::NpcCombat: return "NpcCombat";
         }
         return "Unknown";
     }

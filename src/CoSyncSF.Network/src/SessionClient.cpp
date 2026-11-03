@@ -226,6 +226,8 @@ namespace cosync::net
                         it->second = m.sequence;
                     }
                     events.emplace_back(client_event::RemoteTransform{ m });
+                } else if constexpr (std::is_same_v<T, proto::NpcCombat>) {
+                    if (_roster.contains(m.playerId)) events.emplace_back(client_event::NpcCombat{ m });
                 } else if constexpr (std::is_same_v<T, proto::Disconnect>) {
                     _resumeToken = {};
                     CloseConnection(CloseCode::Normal, "server closed session", false);
@@ -289,6 +291,13 @@ namespace cosync::net
         _resumeToken = {};
         _state = ClientState::Disconnected;
         _stateSince = _clock();
+    }
+
+    bool SessionClient::SendNpcCombat(std::uint32_t npcFormId, PlayerId targetPlayer)
+    {
+        if (_state != ClientState::InSession || npcFormId == 0 || targetPlayer == kInvalidPlayerId) return false;
+        Send(proto::NpcCombat{ kInvalidPlayerId, npcFormId, targetPlayer }, Delivery::Reliable);
+        return true;
     }
 
     bool SessionClient::SendTransform(std::uint32_t locationId, const Vec3& position, const Vec3& rotation,

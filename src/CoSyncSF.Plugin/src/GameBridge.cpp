@@ -88,6 +88,8 @@ namespace cosync::plugin
                     } else if constexpr (std::is_same_v<T, ce::PeerJoined>) {
                         _remotes[e.player.playerId].name = e.player.name;
                         log::Info("[game] player {} '{}' joined", e.player.playerId, e.player.name);
+                    } else if constexpr (std::is_same_v<T, ce::NpcCombat>) {
+                        ApplyNpcCombat(e.combat, *_worker.load());
                     } else if constexpr (std::is_same_v<T, ce::PeerLeft>) {
                         RemoveRemote(e.playerId);
                         log::Info("[game] player {} left ({})", e.playerId, proto::ToString(e.reason));
@@ -100,6 +102,7 @@ namespace cosync::plugin
             SampleLocalPlayer(*worker);
         }
         UpdateRemotePlayers(*worker);
+        if (_avatarsEnabled) UpdateNpcCombat(*worker);
         LogSummary(*worker);
     }
 
@@ -803,6 +806,72 @@ namespace cosync::plugin
                       (a.formId >> 24) == 0xFF ? " (runtime)" : "", a.baseId, std::sqrt(dx * dx + dy * dy + dz * dz),
                       a.position.x, a.position.y, a.position.z, a.yaw);
         }
+    }
+
+    void GameBridge::UpdateNpcCombat(net::NetworkWorker& worker)
+    {
+        const auto now = std::chrono::steady_clock::now();
+        std::erase_if(_combatKnown, [&](const auto& kv) { return kv.second < now; });
+        const PlayerId self = worker.Status().localPlayer;
+        // Completed GetCombatTarget queries: map the target to a player and report new pairs.
+        for (auto it = _combatQueries.begin(); it != _combatQueries.end();) {
+            const auto target = it->second->load();
+            if (target == 0) {
+                ++it;
+                continue;
+            }
+            const std::uint32_t npc = it->first;
+            it = _combatQueries.erase(it);
+            PlayerId targetPlayer = kInvalidPlayerId;
+            if (target == avatars::PlayerRefId()) {
+                targetPlayer = self;
+            } else {
+                for (const auto& [pid, r] : _remotes) {
+                    if (r.avatar.refId == target) targetPlayer = pid;
+                }
+            }
+            if (targetPlayer == kInvalidPlayerId) continue;  // NPC vs NPC: each machine's own AI
+            const auto key = std::make_pair(npc, targetPlayer);
+            if (_combatKnown.contains(key)) continue;  // already reported or applied (no echo)
+            _combatKnown[key] = now + std::chrono::seconds(30);
+            worker.SubmitNpcCombat(npc, targetPlayer);
+            log::Info("[combat] NPC {:08X} entered combat against player {}; reported", npc, targetPlayer);
+        }
+        if (!_inWorld || !_vmSettled || now < _nextCombatScan) return;
+        _nextCombatScan = now + std::chrono::milliseconds(250);
+        // Candidates: data-file NPCs (same FormID everywhere) that have a combat controller
+        // (Actor+0x250, read by the engine's own NPC checks, RE A.12). Proxies excluded.
+        const auto e = npcsync::EnumerateHighActors();
+        if (!e.ok) return;
+        for (const auto& a : e.actors) {
+            if ((a.formId >> 24) == 0xFF || _combatQueries.size() >= 16 || _combatQueries.contains(a.formId)) continue;
+            auto* form = RE::TESForm::LookupByID(a.formId);
+            if (!form) continue;
+            const auto combat = *reinterpret_cast<void* const*>(reinterpret_cast<std::byte*>(form) + 0x250);
+            if (!combat) continue;
+            auto slot = std::make_shared<std::atomic<std::uint32_t>>(0);
+            if (avatars::RequestCombatTarget(a.formId, slot)) _combatQueries.emplace(a.formId, std::move(slot));
+        }
+    }
+
+    void GameBridge::ApplyNpcCombat(const proto::NpcCombat& c, net::NetworkWorker& worker)
+    {
+        const PlayerId self = worker.Status().localPlayer;
+        std::uint32_t targetRef = 0;
+        if (c.targetPlayer == self) {
+            targetRef = avatars::PlayerRefId();
+        } else if (auto it = _remotes.find(c.targetPlayer); it != _remotes.end()) {
+            targetRef = it->second.avatar.refId;
+        }
+        _combatKnown[{ c.npcFormId, c.targetPlayer }] = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        if (targetRef == 0) {
+            log::Info("[combat] player {} reports NPC {:08X} fighting player {}; no local target (not spawned here)",
+                      c.playerId, c.npcFormId, c.targetPlayer);
+            return;
+        }
+        const bool ok = avatars::StartCombat(c.npcFormId, targetRef);
+        log::Info("[combat] player {} reports NPC {:08X} fighting player {}: StartCombat(-> {:08X}) {}", c.playerId,
+                  c.npcFormId, c.targetPlayer, targetRef, ok ? "dispatched" : "failed (NPC not loaded here?)");
     }
 
     void GameBridge::UpdateAnimDiag()

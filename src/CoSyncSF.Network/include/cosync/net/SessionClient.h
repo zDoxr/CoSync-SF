@@ -46,11 +46,12 @@ namespace cosync::net
         struct PeerLeft { PlayerId playerId; proto::LeaveReason reason; };
         struct RemoteTransform { proto::PlayerTransform transform; };
         struct RttSample { std::uint32_t rttMs; };
+        struct NpcCombat { proto::NpcCombat combat; };
     }
 
     using ClientEvent = std::variant<client_event::StateChanged, client_event::Welcomed, client_event::Rejected,
                                      client_event::PeerJoined, client_event::PeerLeft, client_event::RemoteTransform,
-                                     client_event::RttSample>;
+                                     client_event::RttSample, client_event::NpcCombat>;
 
     // Client side of the session protocol. Single-threaded; see ITransport.
     class SessionClient
@@ -68,6 +69,8 @@ namespace cosync::net
         void Disconnect();
 
         // Sends the local player's transform (unreliable). Only valid InSession.
+        // Reports an NPC that entered combat against `targetPlayer` here (reliable).
+        bool SendNpcCombat(std::uint32_t npcFormId, PlayerId targetPlayer);
         bool SendTransform(std::uint32_t locationId, const Vec3& position, const Vec3& rotation,
                            const std::optional<proto::PlayerControls>& controls = std::nullopt,
                            const std::vector<proto::AnimEvent>& events = {},

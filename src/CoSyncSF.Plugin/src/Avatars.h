@@ -111,6 +111,11 @@ namespace cosync::plugin::avatars
     // relaxing it (2026-11-03: drawn by DrawWeapon alone, it was put away again within ~1 s).
     bool SetWeaponDrawn(std::uint32_t actorId, bool drawn);
 
+    // ---- Combat (actor.pex: Actor GetCombatTarget(); Bool StartCombat(ObjectReference, Bool)) ----
+    // *result = target FormID, 1 = no target, 0 = in flight.
+    bool RequestCombatTarget(std::uint32_t actorId, std::shared_ptr<std::atomic<std::uint32_t>> result);
+    bool StartCombat(std::uint32_t actorId, std::uint32_t targetRefId);
+
     // Papyrus ObjectReference.SetScale(Float) (1 param, registered in the exe). Debug aid.
     bool SetScale(std::uint32_t refId, float scale);
 
