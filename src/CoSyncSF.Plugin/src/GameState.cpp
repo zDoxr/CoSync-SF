@@ -81,14 +81,15 @@ namespace cosync::plugin
         const auto pos = player->GetPosition();
         const auto ang = player->GetAngle();
 
-        // Location key: the worldspace outdoors (players stay visible to each other across exterior
-        // cell borders; keying by cell despawned proxies at every border, 2026-11-03), the cell indoors.
-        // GetParentWorldSpace = 0xB4EB40 (ID 63417), the call PlaceActorAtMe makes (RE Â§2); null in
-        // interiors.
+        // Location key: the cell (a data-file form, identical on every machine). Starfield's
+        // worldspaces can be runtime-created per process (FF010D3F vs FF010C84 for the same place,
+        // 2026-11-03), so they cannot be the key. Bit 31 marks an exterior cell (the engine reports a
+        // parent worldspace: GetParentWorldSpace = 0xB4EB40, ID 63417, RE section 2; null in
+        // interiors) so the game layer can keep players visible across exterior cell borders.
         LocalPlayerSample sample;
-        auto* world = player->GetParentWorldSpace();
-        ResolveLocation(world ? world->GetFormID() : cell->GetFormID(), sample);
-        sample.cellFormId = cell->GetFormID();
+        ResolveLocation(cell->GetFormID(), sample);
+        const bool exterior = player->GetParentWorldSpace() != nullptr;
+        sample.locationId = exterior ? (sample.locationId | 0x80000000u) : (sample.locationId & 0x7FFFFFFFu);
         sample.position = { pos.x, pos.y, pos.z };
         sample.rotation = { ang.x, ang.y, ang.z };
         return sample;

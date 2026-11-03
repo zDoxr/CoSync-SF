@@ -389,8 +389,19 @@ namespace cosync::plugin
             }
         }
 
-        const bool visibleHere = _inWorld && remote.pose && !remote.pose->stale && _localLocationId != 0 &&
-                                 remote.pose->locationId == _localLocationId;
+        // Same cell, or both outdoors (bit 31 of the location key) and close: exterior cell borders
+        // must not despawn the proxy.
+        bool visibleHere = false;
+        if (_inWorld && remote.pose && !remote.pose->stale && _localLocationId != 0) {
+            visibleHere = remote.pose->locationId == _localLocationId;
+            if (!visibleHere && (remote.pose->locationId & _localLocationId & 0x80000000u) != 0) {
+                if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+                    const auto p = player->GetPosition();
+                    const float dx = remote.pose->position.x - p.x, dy = remote.pose->position.y - p.y;
+                    visibleHere = dx * dx + dy * dy < 1000.0f * 1000.0f;
+                }
+            }
+        }
         if (!visibleHere) {
             ReleaseAvatar(id, avatar, "not in your cell");
             return;
