@@ -173,6 +173,7 @@ namespace cosync::plugin::overlay
             IMGUI_CHECKVERSION();
             ImGui::CreateContext();
             ImGui::GetIO().IniFilename = nullptr;  // no imgui.ini next to the game
+            metroui::LoadFonts();
             ImGui_ImplWin32_Init(g.hwnd);
             ImGui_ImplDX12_InitInfo info;
             info.Device = g.device;
@@ -215,10 +216,11 @@ namespace cosync::plugin::overlay
             ImGui_ImplWin32_NewFrame();
             ImGui::NewFrame();
             ImGui::GetIO().MouseDrawCursor = true;
-            metroui::Draw(snapshot, [](ui::UiCommand c) {
+            const bool close = metroui::Draw(snapshot, [](ui::UiCommand c) {
                 std::lock_guard lock(g_lock);
                 if (g_commands.size() < 64) g_commands.push_back(std::move(c));
             });
+            if (close) g_open = false;
             ImGui::Render();
 
             auto& frame = g.frames[g.swap->GetCurrentBackBufferIndex()];

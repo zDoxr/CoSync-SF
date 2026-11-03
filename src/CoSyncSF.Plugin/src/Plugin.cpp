@@ -22,6 +22,7 @@
 #include <SFSE/SFSE.h>
 
 #include <chrono>
+#include <format>
 #include <fstream>
 #include <memory>
 
@@ -60,14 +61,15 @@ namespace
         });
     }
 
-    void StartNetworking()
+    // Returns "" on success, else the reason.
+    std::string StartNetworking()
     {
         if (g_config.mode == plugin::Mode::Off) {
             log::Info("networking disabled (Mode=off)");
-            return;
+            return "networking is off";
         }
         if (g_worker) {
-            return;
+            return {};
         }
 
         net::WorkerConfig wc;
@@ -88,7 +90,7 @@ namespace
             const auto endpoint = net::Endpoint::Parse(g_config.address, 37015);
             if (!endpoint) {
                 log::Error("invalid Address '{}' in config; networking not started", g_config.address);
-                return;
+                return std::format("invalid address '{}'", g_config.address);
             }
             wc.mode = net::WorkerMode::Client;
             wc.connectTo = *endpoint;
@@ -98,11 +100,12 @@ namespace
         std::string error;
         if (!worker->Start(error)) {
             log::Error("networking failed to start: {}", error);
-            return;
+            return error;
         }
         g_worker = worker.release();
         plugin::GameBridge::Get().Attach(g_worker);
         log::Info("networking started in {} mode", g_config.mode == plugin::Mode::Host ? "host" : "client");
+        return {};
     }
 
     void OnSfseMessage(SFSE::MessagingInterface::Message* msg)
@@ -158,8 +161,12 @@ namespace cosync::plugin::session
         g_config.port = port;
         g_config.maxPlayers = maxPlayers;
         g_config.password = password;
-        StartNetworking();
-        if (!g_worker) error = "networking failed to start (see the log)";
+        for (std::uint16_t attempt = 0; attempt < 10 && !g_worker; ++attempt) {
+            g_config.port = static_cast<std::uint16_t>(port + attempt);
+            error = StartNetworking();
+            if (!error.empty() && error.find("in use") == std::string::npos) break;  // not a port clash
+        }
+        if (g_worker) error.clear();
         return g_worker != nullptr;
     }
 
@@ -169,8 +176,7 @@ namespace cosync::plugin::session
         g_config.mode = plugin::Mode::Client;
         g_config.address = address;
         g_config.password = password;
-        StartNetworking();
-        if (!g_worker) error = "networking failed to start (see the log)";
+        error = StartNetworking();
         return g_worker != nullptr;
     }
 }
