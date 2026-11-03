@@ -27,7 +27,8 @@ namespace cosync::plugin::overlay
         std::uint8_t placeKind = 0;  // proto::PlaceKind (2 = in space / orbit)
         float distance = -1.0f;     // meters; -1 = not in the same area
         bool marker = false;        // overhead marker on screen at (x, y) pixels
-        float x = 0.0f, y = 0.0f;
+        float x = 0.0f, y = 0.0f;   // NDC: -1..1, y up
+        float alpha = 1.0f;         // fades with distance
     };
     struct HudState
     {

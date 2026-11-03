@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <format>
@@ -808,25 +809,37 @@ namespace cosync::plugin::metroui
         // Overhead markers: icon, name, distance (same planet / area only).
         if (u.settings.overheadNames) {
             for (const auto& m : hud.members) {
-                if (!m.marker) continue;
-                // NDC from the bridge (both axes scaled by the horizontal FOV): pixels.
-                const ImVec2 c{ io.DisplaySize.x * 0.5f * (1.0f + m.x), io.DisplaySize.y * 0.5f - m.y * io.DisplaySize.x * 0.5f };
-                if (c.x < 0 || c.y < 0 || c.x > io.DisplaySize.x || c.y > io.DisplaySize.y) continue;
-                // Diamond icon.
-                const float r = 7.0f;
-                dl->AddQuadFilled({ c.x, c.y - r }, { c.x + r, c.y }, { c.x, c.y + r }, { c.x - r, c.y }, U32(Accent(t)));
-                dl->AddQuad({ c.x, c.y - r - 3 }, { c.x + r + 3, c.y }, { c.x, c.y + r + 3 }, { c.x - r - 3, c.y }, U32(Accent(t), 0.4f), 1.5f);
-                Font(g_semibold, 15);
+                if (!m.marker || m.alpha <= 0.01f) continue;
+                // NDC (y up) from the game's camera -> pixels; whole pixels so the label never shimmers.
+                const ImVec2 c{ std::round(io.DisplaySize.x * 0.5f * (1.0f + m.x)),
+                                std::round(io.DisplaySize.y * 0.5f * (1.0f - m.y)) };
+                if (c.x < -50 || c.y < -50 || c.x > io.DisplaySize.x + 50 || c.y > io.DisplaySize.y + 50) continue;
+                const float al = m.alpha;
+                // Anchor = a point just above the head: pointer diamond there, label above it.
+                const float r = 5.5f;
+                const ImVec2 d{ c.x, c.y - r };
+                dl->AddQuadFilled({ d.x, d.y - r }, { d.x + r, d.y }, { d.x, d.y + r }, { d.x - r, d.y }, U32(Accent(t), al));
+                Font(g_semibold, 14.5f);
                 const auto ns = ImGui::CalcTextSize(m.name.c_str());
-                const ImVec2 a{ c.x - ns.x * 0.5f - 10, c.y - r - 34 };
-                dl->AddRectFilled(a, { a.x + ns.x + 20, a.y + 24 }, U32(kBg, 0.72f), 99);
-                dl->AddText({ a.x + 10, a.y + 12 - ns.y * 0.5f }, U32(kText), m.name.c_str());
                 PopFont();
+                std::string dist;
+                ImVec2 dsz{ 0, 0 };
                 if (u.settings.overheadDistance && m.distance >= 0.0f) {
+                    dist = std::format("{:.0f} m", m.distance);
                     Font(g_semibold, 12.5f);
-                    const std::string d = std::format("{:.0f} m", m.distance);
-                    const auto ds = ImGui::CalcTextSize(d.c_str());
-                    dl->AddText({ c.x - ds.x * 0.5f, c.y + r + 6 }, U32(Accent(t)), d.c_str());
+                    dsz = ImGui::CalcTextSize(dist.c_str());
+                    PopFont();
+                }
+                const float pad = 10, gapTxt = dist.empty() ? 0.0f : 8.0f;
+                const float pw = ns.x + gapTxt + dsz.x + pad * 2, ph = 24;
+                const ImVec2 a{ std::round(c.x - pw * 0.5f), d.y - r - 6 - ph };
+                dl->AddRectFilled(a, { a.x + pw, a.y + ph }, U32(kBg, 0.72f * al), 99);
+                Font(g_semibold, 14.5f);
+                dl->AddText({ a.x + pad, std::round(a.y + (ph - ns.y) * 0.5f) }, U32(kText, al), m.name.c_str());
+                PopFont();
+                if (!dist.empty()) {
+                    Font(g_semibold, 12.5f);
+                    dl->AddText({ a.x + pad + ns.x + gapTxt, std::round(a.y + (ph - dsz.y) * 0.5f) }, U32(Accent(t), al), dist.c_str());
                     PopFont();
                 }
             }

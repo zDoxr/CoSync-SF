@@ -10,6 +10,7 @@ add_library(cosync_plugin SHARED
     src/Avatars.cpp
     src/GameBridge.cpp
     src/GameState.cpp
+    src/GameCamera.cpp
     src/MultiInstance.cpp
     src/Plugin.cpp
     src/PluginConfig.cpp

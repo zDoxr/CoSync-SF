@@ -90,7 +90,12 @@ Rules:
 - **Player status** (transform tag 4): health % (`GetValuePercentage(Game.GetHealthAV())`), `GetLevel`, `IsInSpace`, and `GetCurrentPlanet`. The planet's name comes from its `TESFullName` via the game's `__RTDynamicCast` import (ID 184372); the type descriptors for TESForm (843049) and TESFullName (843072) were checked against `.rdata`. Status is refreshed once a second.
 - **Party frames.** These are drawn bottom-right, stacked above the player's own health bar (moved from bottom-left after the first in-game test, 2026-11-02). Each shows name, level, a health bar, and the member's planet, "In orbit · <planet>" / "In space", or the distance in metres when on the same planet.
 - **Overhead markers.** Each shows a diamond icon, the member's name and their distance in metres. Markers appear only when the distance is comparable: the same cell, or both players outdoors on the same named planet. A cross-planet member gets no marker.
-  - **Projection is approximate.** It is computed from the player's own view: eye = position + 1.65 m, heading `angle.z`, pitch `angle.x` (assumed positive = looking down), horizontal FOV 85°. It should be close in first person and drift in third person. Reading the engine camera (`NiCamera`, vtable ID 498033) is the next step, and its layout must be verified first.
+  - **Projection uses the game's camera** (`GameCamera.cpp`):
+    - Matrix: NiCamera's 4x4 world-to-clip at +0x180. `UpdateWorldData` (0x2BE4750) builds it through 0x2BE50F0 from the world rotation (+0x80), the translate (+0xB0) and the frustum (+0x1C0).
+    - Finding it: the camera instance is found from `PlayerCamera` (ID 937788, vtable ID 459725) by matching the NiCamera vtable (ID 498033).
+    - Self-check every frame: finite values, a unit view row, and w(camera) ≈ 0. If it fails, markers are hidden instead of drawn wrong.
+    - Anchor: the marker sits 2.05 m above the remote's spawned character, so it follows what is drawn.
+    - Visibility: it fades out between 60 and 110 m, and is hidden while the character is not loaded.
 
 ## 4. Multiplayer tab: information architecture
 

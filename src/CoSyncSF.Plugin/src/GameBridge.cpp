@@ -9,6 +9,7 @@
 #include "SteamInvite.h"
 #include "Avatars.h"
 #include "GameState.h"
+#include "GameCamera.h"
 
 #include "cosync/net/Util.h"
 #include "cosync/shared/Log.h"
@@ -299,25 +300,21 @@ namespace cosync::plugin
         return _menuOpen;
     }
 
-    // Party frames (group members) and overhead markers. Markers are projected from the local
-    // view: eye = player position + 1.65 m, heading data.angle.z (0 = +Y, clockwise), pitch
-    // data.angle.x (positive = down), horizontal FOV 85 deg. First-person accurate; in third person
-    // the marker sits slightly off (the engine camera is not read yet - see docs/UI_FRAMEWORK.md).
+    // Party frames (group members) and overhead markers. Markers are anchored above the remote's
+    // spawned character (its reference position, so they move with what is drawn) and projected
+    // with the game's own camera matrix (GameCamera). They fade out with distance and are hidden
+    // while the character is not loaded (out of range, other cell or planet).
     void GameBridge::PublishHud()
     {
+        constexpr float kHeadClearance = 2.05f;               // meters above the feet
+        constexpr float kFadeStart = 60.0f, kFadeEnd = 110.0f;  // meters
+        constexpr std::chrono::steady_clock::time_point kNever{};
         overlay::HudState hud;
         hud.gameMenuOpen = GameMenuOpen();
         const auto* g = MyGroup();
-        auto* player = RE::PlayerCharacter::GetSingleton();
-        if (g && _inWorld && player) {
-            const auto pos = player->GetPosition();
-            const auto ang = player->GetAngle();
-            const float yaw = ang.z, pitch = ang.x;
-            const float fx = std::sin(yaw) * std::cos(pitch), fy = std::cos(yaw) * std::cos(pitch), fz = -std::sin(pitch);
-            const float rx = std::cos(yaw), ry = -std::sin(yaw);  // right, rz = 0
-            // up = right x forward
-            const float ux = ry * fz, uy = -rx * fz, uz = rx * fy - ry * fx;
-            const float tanH = std::tan(85.0f * 0.5f * std::numbers::pi_v<float> / 180.0f);
+        gamecamera::View view;
+        const bool haveCamera = g && _inWorld && gamecamera::Read(view);
+        if (g) {
             for (const auto pid : g->members) {
                 if (pid == _localPlayerId) continue;
                 const auto it = _remotes.find(pid);
@@ -332,15 +329,17 @@ namespace cosync::plugin
                     m.placeKind = static_cast<std::uint8_t>(r.status->kind);
                 }
                 m.distance = DistanceTo(r);
-                if (m.distance >= 0.0f && m.distance < 5000.0f) {
-                    // Head of the remote (pose is the interpolated render position).
-                    const Vec3 t = r.pose ? r.pose->position : r.latestPos;
-                    const float dx = t.x - pos.x, dy = t.y - pos.y, dz = (t.z + 2.1f) - (pos.z + 1.65f);
-                    const float z = dx * fx + dy * fy + dz * fz;
-                    if (z > 0.5f) {
-                        m.marker = true;
-                        m.x = (dx * rx + dy * ry) / (z * tanH);         // NDC, horizontal scale
-                        m.y = (dx * ux + dy * uy + dz * uz) / (z * tanH);  // same scale (aspect applied in the overlay)
+                const auto& av = r.avatar;
+                if (haveCamera && m.distance >= 0.0f && m.distance < kFadeEnd && av.refId != 0 && av.loaded3DAt != kNever) {
+                    if (auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(av.refId)) {
+                        const auto p = ref->GetPosition();
+                        float x = 0.0f, y = 0.0f;
+                        if (gamecamera::Project(view, { p.x, p.y, p.z + kHeadClearance }, x, y)) {
+                            m.marker = true;
+                            m.x = x;
+                            m.y = y;
+                            m.alpha = std::clamp((kFadeEnd - m.distance) / (kFadeEnd - kFadeStart), 0.0f, 1.0f);
+                        }
                     }
                 }
                 hud.members.push_back(std::move(m));
