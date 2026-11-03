@@ -339,6 +339,7 @@ namespace cosync::plugin::metroui
             const std::string sub = online ? std::format("{} players · {} ms", s.players.size(), s.rttMs) : std::string("Not in a session");
             dl->AddText({ p.x + 38, p.y + 31 }, U32(kDim), sub.c_str());
             PopFont();
+            ImGui::Dummy({ w, 58 });  // ImGui: an item must follow a cursor move
             ImGui::EndChild();
             ImGui::PopStyleColor();
             return close;
@@ -698,17 +699,21 @@ namespace cosync::plugin::metroui
         auto& io = ImGui::GetIO();
         auto exists = [](const char* path) { return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES; };
         auto load = [&](const char* path) -> ImFont* { return exists(path) ? io.Fonts->AddFontFromFileTTF(path, 16.0f) : nullptr; };
-        g_body = load("C:\\Windows\\Fonts\\segoeui.ttf");
-        if (g_body) {
+        const char* icons = exists("C:\\Windows\\Fonts\\SegoeIcons.ttf") ? "C:\\Windows\\Fonts\\SegoeIcons.ttf"
+                            : exists("C:\\Windows\\Fonts\\segmdl2.ttf") ? "C:\\Windows\\Fonts\\segmdl2.ttf"
+                                                                         : nullptr;
+        // Icon glyphs merged into the body and semibold fonts (buttons draw with semibold).
+        auto mergeIcons = [&] {
+            if (!icons) return;
             ImFontConfig merge;
             merge.MergeMode = true;
             merge.GlyphOffset = { 0, 2 };
-            const char* icons = exists("C:\\Windows\\Fonts\\SegoeIcons.ttf") ? "C:\\Windows\\Fonts\\SegoeIcons.ttf"
-                                : exists("C:\\Windows\\Fonts\\segmdl2.ttf") ? "C:\\Windows\\Fonts\\segmdl2.ttf"
-                                                                             : nullptr;
-            if (icons) io.Fonts->AddFontFromFileTTF(icons, 16.0f, &merge);
-        }
+            io.Fonts->AddFontFromFileTTF(icons, 16.0f, &merge);
+        };
+        g_body = load("C:\\Windows\\Fonts\\segoeui.ttf");
+        if (g_body) mergeIcons();
         g_semibold = load("C:\\Windows\\Fonts\\seguisb.ttf");
+        if (g_semibold) mergeIcons();
         g_heading = load("C:\\Windows\\Fonts\\bahnschrift.ttf");
         g_mono = load("C:\\Windows\\Fonts\\consola.ttf");
         if (!g_body) g_body = io.Fonts->AddFontDefault();
