@@ -197,6 +197,77 @@ namespace cosync::plugin::avatars
         return dispatched;
     }
 
+    bool RequestWeaponState(std::uint32_t actorId, std::shared_ptr<WeaponQuery> q)
+    {
+        auto* actor = LookupActor(actorId);
+        if (!actor) return false;
+        const auto self = ScriptObjectFor(actor);
+        const bool a = Dispatch(
+            self, "GetEquippedWeapon", [](RE::BSScrapArray<Variable>& args) { Push(args, static_cast<std::int32_t>(0)); },
+            [q](const Variable& v) {
+                std::uint32_t id = 0;
+                if (v.is<RE::BSScript::Object>() && RE::BSScript::get<RE::BSScript::Object>(v)) {
+                    if (auto* w = RE::BSScript::UnpackVariable<RE::TESObjectWEAP>(v)) id = w->GetFormID();
+                }
+                q->formId.store(id);
+                q->pending.fetch_sub(1);
+            },
+            [q] { q->pending.fetch_sub(1); });
+        const bool b = Dispatch(
+            self, "IsWeaponDrawn", [](RE::BSScrapArray<Variable>&) {},
+            [q](const Variable& v) {
+                q->drawn.store(v.is<bool>() ? (RE::BSScript::get<bool>(v) ? 1 : 0) : -1);
+                q->pending.fetch_sub(1);
+            },
+            [q] { q->pending.fetch_sub(1); });
+        if (!a) q->pending.fetch_sub(1);
+        if (!b) q->pending.fetch_sub(1);
+        return a || b;
+    }
+
+    bool EquipWeapon(std::uint32_t actorId, std::uint32_t weaponFormId)
+    {
+        auto* actor = LookupActor(actorId);
+        auto* weapon = RE::TESForm::LookupByID(weaponFormId);
+        if (!actor || !weapon || !weapon->Is(RE::FormType::kWEAP)) return false;
+        const auto self = ScriptObjectFor(actor);
+        return Dispatch(
+            self, "AddItem",
+            [weapon](RE::BSScrapArray<Variable>& a) {
+                Push(a, weapon);
+                Push(a, static_cast<std::int32_t>(1));
+                Push(a, true);  // abSilent
+            },
+            [self, weapon](const Variable&) {
+                Dispatch(self, "EquipItem", [weapon](RE::BSScrapArray<Variable>& a) {
+                    Push(a, weapon);
+                    Push(a, true);  // abPreventRemoval
+                    Push(a, true);  // abSilent
+                });
+            });
+    }
+
+    bool UnequipWeapon(std::uint32_t actorId, std::uint32_t weaponFormId)
+    {
+        auto* actor = LookupActor(actorId);
+        auto* weapon = RE::TESForm::LookupByID(weaponFormId);
+        if (!actor || !weapon || !weapon->Is(RE::FormType::kWEAP)) return false;
+        return Dispatch(ScriptObjectFor(actor), "UnequipItem", [weapon](RE::BSScrapArray<Variable>& a) {
+            Push(a, weapon);
+            Push(a, false);  // abPreventEquip
+            Push(a, true);   // abSilent
+        });
+    }
+
+    bool SetWeaponDrawn(std::uint32_t actorId, bool drawn)
+    {
+        auto* actor = LookupActor(actorId);
+        if (!actor) return false;
+        const auto self = ScriptObjectFor(actor);
+        Dispatch(self, "SetAlert", [drawn](RE::BSScrapArray<Variable>& a) { Push(a, drawn); });
+        return Dispatch(self, drawn ? "DrawWeapon" : "SheatheWeapon", [](RE::BSScrapArray<Variable>&) {});
+    }
+
     bool RequestTemplateActor(std::shared_ptr<std::atomic<std::uint32_t>> result, std::string& error)
     {
         auto* player = RE::PlayerCharacter::GetSingleton();
@@ -363,6 +434,96 @@ namespace cosync::plugin::avatars
         });
     }
 
+    namespace
+    {
+        constexpr std::uint32_t kXMarkerId = 0x0000003B;
+
+        RE::TESObjectREFR* LookupRef(std::uint32_t refId)
+        {
+            auto* form = RE::TESForm::LookupByID(refId);
+            if (!form || !(form->Is(RE::FormType::kREFR) || form->Is(RE::FormType::kACHR))) return nullptr;
+            return static_cast<RE::TESObjectREFR*>(form);
+        }
+    }
+
+    bool RequestMarker(std::shared_ptr<std::atomic<std::uint32_t>> result, std::string& error)
+    {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        auto* marker = RE::TESForm::LookupByID(kXMarkerId);
+        if (!player || !marker) {
+            error = !player ? "no player" : "XMarker 0000003B not found";
+            return false;
+        }
+        if (!marker->Is(RE::FormType::kSTAT)) {
+            error = std::format("form 0000003B is type {}, not STAT", static_cast<int>(marker->GetFormType()));
+            return false;
+        }
+        const bool ok = Dispatch(
+            ScriptObjectFor(static_cast<RE::Actor*>(player)), "PlaceAtMe",
+            [marker](RE::BSScrapArray<Variable>& a) {
+                Push(a, marker);
+                Push(a, static_cast<std::int32_t>(1));  // aiCount
+                Push(a, false);                         // abForcePersist
+                Push(a, false);                         // abInitiallyDisabled
+                Push(a, true);                          // abDeleteWhenAble
+                PushNone(a);                            // akOffsetValues
+                PushNone(a);                            // akAliasToFill
+                Push(a, false);                         // abSnapOffsetToNavmesh
+            },
+            [result](const Variable& v) {
+                std::uint32_t id = kSpawnReturnedNone;
+                if (v.is<RE::BSScript::Object>() && RE::BSScript::get<RE::BSScript::Object>(v)) {
+                    auto* ref = RE::BSScript::UnpackVariable<RE::TESObjectREFR>(v);
+                    id = ref ? ref->GetFormID() : kSpawnUnpackFailed;
+                }
+                result->store(id);
+            },
+            [result] { result->store(kSpawnCanceled); });
+        if (!ok) error = "VM refused PlaceAtMe dispatch";
+        return ok;
+    }
+
+    bool MoveRef(std::uint32_t refId, const Vec3& position, const Vec3& rotationRadians)
+    {
+        auto* ref = LookupRef(refId);
+        if (!ref) return false;
+        const auto self = ScriptObjectFor(ref);
+        const bool moved = Dispatch(self, "SetPosition", [position](RE::BSScrapArray<Variable>& a) {
+            Push(a, position.x);
+            Push(a, position.y);
+            Push(a, position.z);
+        });
+        const float yaw = Degrees(rotationRadians.z);
+        Dispatch(self, "SetAngle", [yaw](RE::BSScrapArray<Variable>& a) {
+            Push(a, 0.0f);
+            Push(a, 0.0f);
+            Push(a, yaw);
+        });
+        return moved;
+    }
+
+    bool RequestPathTo(std::uint32_t actorId, std::uint32_t targetId, float normalizedSpeed, float targetRadius,
+                       std::shared_ptr<std::atomic<std::uint32_t>> done)
+    {
+        auto* actor = LookupActor(actorId);
+        auto* target = LookupRef(targetId);
+        if (!actor || !target) return false;
+        return Dispatch(
+            ScriptObjectFor(actor), "PathToReference",
+            [target, normalizedSpeed, targetRadius](RE::BSScrapArray<Variable>& a) {
+                Push(a, target);
+                Push(a, normalizedSpeed);     // afNormalizedSpeed (1 = run)
+                Push(a, 1.0f);                // afNormalizedRotationSpeed
+                Push(a, targetRadius);        // afTargetRadius
+                Push(a, false);               // abHardRadius
+            },
+            [done](const Variable& v) {
+                const auto r = v.is<std::int32_t>() ? RE::BSScript::get<std::int32_t>(v) : -1;
+                done->store(static_cast<std::uint32_t>(r + 1) == 0 ? 0xFFFFFFF1u : static_cast<std::uint32_t>(r + 1));
+            },
+            [done] { done->store(0xFFFFFFF0u); });
+    }
+
     bool Move(std::uint32_t refId, const Vec3& position, const Vec3& rotationRadians)
     {
         auto* actor = LookupActor(refId);
@@ -524,7 +685,7 @@ namespace cosync::plugin::avatars
 
     void Despawn(std::uint32_t refId)
     {
-        auto* actor = LookupActor(refId);
+        auto* actor = LookupRef(refId);  // actors and plain refs (path markers)
         if (!actor) return;
         const auto self = ScriptObjectFor(actor);
         Dispatch(self, "Disable", [](RE::BSScrapArray<Variable>& a) { Push(a, false); });

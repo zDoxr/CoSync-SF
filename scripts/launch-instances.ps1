@@ -39,9 +39,13 @@ param(
     [ValidateSet(0, 1, 2)]
     [int]$AvatarFreezeAI = 0,        # proxy AI: 0 on, 1 off at spawn (semi-transparent), 2 off after 3D load + delay
     [double]$AvatarFreezeDelay = 3,
+    [ValidateSet('teleport', 'path', 'motion', 'mirror', 'controls')]
+    [string]$AvatarMoveMode = 'teleport',
     [ValidateSet('player', 'nearby')]
     [string]$AvatarBase = 'player',  # proxy base NPC
-    [switch]$AvatarAnimDiag,         # log locomotion graph variables of player and proxies
+    [switch]$AvatarAnimDiag,         # native animation probe (transitions) + player animation events
+    [ValidateSet(0, 1, 2)]
+    [int]$AvatarAnimDiagLevel = 0,  # 1 = same as -AvatarAnimDiag; 2 = also float variables at 2 Hz
     [switch]$AvatarAnimate,          # drive proxy locomotion variables from network velocity
     [switch]$AvatarNoMove,           # experiment: do not SetPosition/SetAngle stand-ins
     [double]$RenderScale = 0.5,      # test instances share one GPU: render at this scale (DLSS/FSR upscales)
@@ -213,7 +217,8 @@ function Write-InstanceConfig([int]$n) {
         "AvatarFreezeAI=$AvatarFreezeAI"
         "AvatarFreezeDelay=$($AvatarFreezeDelay.ToString([Globalization.CultureInfo]::InvariantCulture))"
         "AvatarBase=$AvatarBase"
-        "AvatarAnimDiag=$(if ($AvatarAnimDiag) { 1 } else { 0 })"
+        "AvatarMoveMode=$AvatarMoveMode"
+        "AvatarAnimDiag=$(if ($AvatarAnimDiagLevel -gt 0) { $AvatarAnimDiagLevel } elseif ($AvatarAnimDiag) { 1 } else { 0 })"
         "AvatarAnimate=$(if ($AvatarAnimate) { 1 } else { 0 })"
         "AvatarMove=$(if ($AvatarNoMove) { 0 } else { 1 })"
         '[Debug]'

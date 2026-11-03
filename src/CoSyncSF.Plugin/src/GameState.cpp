@@ -8,6 +8,8 @@
 
 #include <RE/P/PlayerCharacter.h>
 #include <RE/T/TESDataHandler.h>
+#include <RE/T/TESObjectCELL.h>
+#include <RE/T/TESWorldSpace.h>
 #include <RE/T/TESFile.h>
 #include <RE/T/TESObjectCELL.h>
 
@@ -79,8 +81,14 @@ namespace cosync::plugin
         const auto pos = player->GetPosition();
         const auto ang = player->GetAngle();
 
+        // Location key: the worldspace outdoors (players stay visible to each other across exterior
+        // cell borders; keying by cell despawned proxies at every border, 2026-11-03), the cell indoors.
+        // GetParentWorldSpace = 0xB4EB40 (ID 63417), the call PlaceActorAtMe makes (RE Â§2); null in
+        // interiors.
         LocalPlayerSample sample;
-        ResolveLocation(cell->GetFormID(), sample);
+        auto* world = player->GetParentWorldSpace();
+        ResolveLocation(world ? world->GetFormID() : cell->GetFormID(), sample);
+        sample.cellFormId = cell->GetFormID();
         sample.position = { pos.x, pos.y, pos.z };
         sample.rotation = { ang.x, ang.y, ang.z };
         return sample;

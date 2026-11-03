@@ -7,6 +7,8 @@
 
 #include "GameBridge.h"
 #include "GameState.h"
+#include "AnimEvents.h"
+#include "MoveControls.h"
 #include "MultiInstance.h"
 #include "PluginConfig.h"
 
@@ -187,9 +189,34 @@ SFSE_PLUGIN_LOAD(const SFSE::LoadInterface* a_sfse)
     plugin::GameBridge::Get().EnableLocalPlayerReads(haveAddressLibrary);
     plugin::GameBridge::Get().EnableAvatars(haveAddressLibrary && g_config.remoteAvatars);
     plugin::GameBridge::Get().SetAvatarScale(g_config.avatarScale);
+    if (haveAddressLibrary && g_config.remoteAvatars && g_config.avatarAnimDiag > 0) {
+        std::string capture;
+        plugin::animevents::InstallPlayerCapture(capture);
+        log::Info("{}", capture);
+        plugin::animevents::InstallPlayerInputCapture(capture);
+        log::Info("{}", capture);
+    }
+    if (haveAddressLibrary && g_config.remoteAvatars && g_config.avatarControls && g_config.avatarAnimDiag == 0) {
+        std::string capture;  // controls mode replays the player's graph input events on its proxies
+        plugin::animevents::InstallPlayerInputCapture(capture);
+        log::Info("{}", capture);
+    }
+    if (haveAddressLibrary && g_config.remoteAvatars && (g_config.avatarMirror || g_config.avatarControls)) {
+        std::string capture;
+        plugin::movecontrols::InstallCapture(capture);
+        log::Info("{}", capture);
+        plugin::movecontrols::InstallJumpHook(capture);
+        log::Info("{}", capture);
+    }
     plugin::GameBridge::Get().SetAvatarOptions({ g_config.avatarFreezeMode, g_config.avatarFreezeDelay,
                                                  g_config.avatarMove, g_config.avatarAnimDiag, g_config.avatarAnimate,
-                                                 g_config.avatarNearbyBase });
+                                                 g_config.avatarNearbyBase, g_config.avatarPath, g_config.avatarMotion,
+                                                 g_config.avatarMirror, g_config.avatarControls });
+    log::Info("avatar movement: {}", g_config.avatarPath     ? "engine pathing to a marker"
+                                     : g_config.avatarControls ? "controls: proxies replay the remote player's engine movement input, snap on drift"
+                                     : g_config.avatarMirror ? "mirror: proxies replay the local player's controls, no teleport (experiment)"
+                                     : g_config.avatarMotion ? "teleport with a motion-driven movement controller (experiment)"
+                                                             : "teleport (SetPosition)");
     log::Info("avatar base: {}", g_config.avatarNearbyBase ? "random nearby NPC" : "player base NPC 00000007");
     log::Info("avatar options: freezeAI={} (delay {:.1f} s) move={} animDiag={} animate={} scale={:.2f}",
               g_config.avatarFreezeMode, g_config.avatarFreezeDelay, g_config.avatarMove, g_config.avatarAnimDiag,

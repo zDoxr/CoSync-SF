@@ -1,5 +1,9 @@
 #include "GameBridge.h"
 
+#include "AnimEvents.h"
+#include "AnimProbe.h"
+#include "MoveControls.h"
+#include "NpcSync.h"
 #include "Avatars.h"
 #include "GameState.h"
 
@@ -10,13 +14,15 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <format>
 
 namespace cosync::plugin
 {
     namespace
     {
         constexpr std::size_t kMaxEventsPerFrame = 256;  // bounds per-frame work
-        constexpr auto kSampleInterval = std::chrono::milliseconds(50);  // 20 Hz
+        constexpr auto kSampleInterval = std::chrono::milliseconds(33);  // ~30 Hz
         constexpr auto kLocalLogInterval = std::chrono::seconds(5);
         constexpr auto kSummaryInterval = std::chrono::seconds(5);
         constexpr auto kAvatarMoveInterval = std::chrono::milliseconds(100);  // Papyrus calls; 10 Hz
@@ -25,6 +31,24 @@ namespace cosync::plugin
         constexpr std::uint32_t kAvatarLoggedAttempts = 6;              // keep retrying, but quietly
         constexpr auto kVmSettleTime = std::chrono::seconds(2);           // VM must be running this long first
         constexpr std::uint32_t kTemplateMaxTries = 16;  // FindRandomActor may return the player or leveled NPCs
+
+        // Graph input events replayed on proxies (names observed on the player's graph in game,
+        // 2026-11-03, docs/ANIMATION_REVERSE_ENGINEERING.md A.11). Equip/Unequip are left out until
+        // equipment is synchronised: the proxy holds different gear.
+        constexpr std::string_view kReplayedEvents[] = {
+            "JumpStart",    "JumpLand",          "SneakStart",      "SneakStop",  "MeleeAttackStart",
+            "FireSingleStart", "FireRelease",    "SightedStart",    "SightedEnd", "SightedStopRequest",
+            "blockStart",   "blockStop",         "RelaxedStart",    "MeleeAttackFinisherStart",
+        };
+        bool Replayed(std::string_view name)
+        {
+            return std::ranges::find(kReplayedEvents, name) != std::end(kReplayedEvents);
+        }
+        // Wrapping u16 sequence comparison.
+        bool Newer16(std::uint16_t candidate, std::uint16_t last)
+        {
+            return candidate != last && static_cast<std::int16_t>(candidate - last) > 0;
+        }
     }
 
     GameBridge& GameBridge::Get()
@@ -82,7 +106,8 @@ namespace cosync::plugin
     void GameBridge::SampleLocalPlayer(net::NetworkWorker& worker)
     {
         const auto now = std::chrono::steady_clock::now();
-        if (now < _nextSample) {
+        const bool newEvent = !_outEvents.empty() && _outEvents.back().sendsLeft == 3;
+        if (now < _nextSample && !newEvent) {
             return;
         }
         _nextSample = now + kSampleInterval;
@@ -101,7 +126,59 @@ namespace cosync::plugin
             log::Info("[game] local location: {} (id {:08X}, cell FormID {:08X})", sample->locationName,
                       sample->locationId, sample->cellFormId);
         }
-        worker.SubmitLocalTransform(sample->locationId, sample->position, sample->rotation);
+        // Engine movement input of the local player (captured by MoveControls), only while it keeps
+        // updating: a stale capture (menus, loading) must not keep a remote proxy walking.
+        std::optional<proto::PlayerControls> controls;
+        if (_avatarsEnabled && (_opt.controls || _opt.mirror)) {
+            const auto c = movecontrols::LatestPlayerControls();
+            if (c.seq != _sentControlsSeq) {
+                _sentControlsSeq = c.seq;
+                _sentControlsAt = now;
+            }
+            if (c.seq != 0 && now - _sentControlsAt < std::chrono::milliseconds(250)) {
+                proto::PlayerControls pc;
+                std::memcpy(pc.values.data(), c.data, sizeof(float) * proto::kControlFloats);
+                // Not written by the engine's producers (RE A.10): +0x0C, +0x20..+0x2F, +0x38, +0x3C,
+                // +0x44, +0x4C, +0x50 carry stale stack bytes (2026-11-03: 1.4e31 at +0x38).
+                for (int i : { 3, 8, 9, 10, 11, 14, 15, 17, 19, 20 }) pc.values[i] = 0.0f;
+                pc.flag = static_cast<std::uint8_t>(c.data[proto::kControlFloats * sizeof(float)]) ? 1 : 0;
+                if (proto::IsValidControls(pc)) controls = pc;
+            }
+        }
+        if (_avatarsEnabled && _opt.controls && _vmSettled) {
+            if (_weaponQuery && _weaponQuery->pending.load() <= 0) {
+                const int drawn = _weaponQuery->drawn.load();
+                if (drawn >= 0) {
+                    const proto::WeaponState ws{ _weaponQuery->formId.load(), drawn == 1 };
+                    if (!_localWeapon || _localWeapon->formId != ws.formId || _localWeapon->drawn != ws.drawn) {
+                        log::Info("[weapon] local: {:08X} {}", ws.formId, ws.drawn ? "drawn" : "holstered");
+                    }
+                    _localWeapon = ws;
+                }
+                _weaponQuery.reset();
+            }
+            if (!_weaponQuery && now >= _nextWeaponQuery) {
+                _nextWeaponQuery = now + std::chrono::milliseconds(500);
+                auto q = std::make_shared<avatars::WeaponQuery>();
+                if (avatars::RequestWeaponState(avatars::PlayerRefId(), q)) _weaponQuery = std::move(q);
+            }
+        }
+        std::vector<proto::AnimEvent> events;
+        for (auto& e : _outEvents) {
+            if (events.size() >= proto::kMaxAnimEventsPerTransform) break;
+            events.push_back({ e.sequence, e.name });
+            --e.sendsLeft;
+        }
+        while (!_outEvents.empty() && _outEvents.front().sendsLeft <= 0) _outEvents.pop_front();
+        Vec3 rotation = sample->rotation;
+        if (_opt.controls) {
+            float pitch = 0.0f;  // fCameraPitch: the player's look pitch (radians, -0.76..1.18 observed)
+            if (animprobe::ReadFloat(avatars::PlayerRefId(), "fCameraPitch", pitch) && std::isfinite(pitch)) {
+                rotation.x = std::clamp(pitch, -1.6f, 1.6f);
+            }
+        }
+        worker.SubmitLocalTransform(sample->locationId, sample->position, rotation, controls, events,
+                                    _opt.controls ? _localWeapon : std::nullopt);
 
         if (now >= _nextLocalLog) {
             _nextLocalLog = now + kLocalLogInterval;
@@ -119,6 +196,36 @@ namespace cosync::plugin
                 if (it->second.interpolator.Push(s.transform)) {
                     ++it->second.samplesReceived;
                 }
+                auto& r = it->second;
+                if (!r.haveLatest || proto::SequenceNewer(s.transform.sequence, r.latestSeq)) {
+                    r.latestYaw = s.transform.rotation.z;
+                    r.latestPitch = s.transform.rotation.x;
+                    if (r.haveLatest && s.transform.receivedMs > r.latestReceivedMs + 10) {
+                        const float dt = static_cast<float>(s.transform.receivedMs - r.latestReceivedMs) / 1000.0f;
+                        const float k = 0.5f;  // light smoothing
+                        r.velX += ((s.transform.position.x - r.latestPos.x) / dt - r.velX) * k;
+                        r.velY += ((s.transform.position.y - r.latestPos.y) / dt - r.velY) * k;
+                        r.velZ += ((s.transform.position.z - r.latestPos.z) / dt - r.velZ) * k;
+                    }
+                    r.latestPos = s.transform.position;
+                    r.latestReceivedMs = s.transform.receivedMs;
+                    if (s.transform.weapon) r.weapon = s.transform.weapon;
+                    r.latestSeq = s.transform.sequence;
+                    r.haveLatest = true;
+                }
+                if (s.transform.controls &&
+                    (r.controlsReceived == 0 || proto::SequenceNewer(s.transform.sequence, r.controlsSeq))) {
+                    r.controls = s.transform.controls;
+                    r.controlsSeq = s.transform.sequence;
+                    r.controlsAt = std::chrono::steady_clock::now();
+                    ++r.controlsReceived;
+                }
+                for (const auto& e : s.transform.events) {
+                    if (r.anyEventSeen && !Newer16(e.sequence, r.lastEventSeq)) continue;
+                    r.anyEventSeen = true;
+                    r.lastEventSeq = e.sequence;
+                    if (r.pendingReplays.size() < 16) r.pendingReplays.push_back(e.name);
+                }
             }
         }
 
@@ -127,6 +234,8 @@ namespace cosync::plugin
         if (_avatarsEnabled) {
             UpdateVmState();
             UpdateTemplate();
+            DrainAnimEvents();
+            LogNpcEnumeration();
             if (_opt.animDiag) UpdateAnimDiag();
         }
         for (auto& [id, remote] : _remotes) {
@@ -229,6 +338,8 @@ namespace cosync::plugin
     {
         auto& avatar = remote.avatar;
         const auto now = std::chrono::steady_clock::now();
+        // Graph events that arrive while no prepared proxy exists are dropped, never replayed late.
+        if (avatar.refId == 0 || !avatar.motionApplied) remote.pendingReplays.clear();
 
         // Spawn result published by the VM thread?
         if (avatar.pending) {
@@ -254,6 +365,14 @@ namespace cosync::plugin
                     avatar.sentSpeed = -1.0f;
                     avatar.sentDirection = -1.0f;
                     avatar.nextAnimWrite = {};
+                    avatar.probed = false;
+                    avatar.motionApplied = false;
+                    avatar.stateFixes = 0;
+                    avatar.snaps = 0;
+                    avatar.haveBodyYaw = false;
+                    avatar.appliedWeapon = 0;
+                    avatar.appliedDrawn = -1;
+                    avatar.lastPathResult = 0;
                     if (_avatarScale != 1.0f) avatars::SetScale(avatar.refId, _avatarScale);
                     log::Info("[avatar] player {} '{}': spawned ref {:08X} (AI {}); right after spawn: {}", id,
                               remote.name, avatar.refId,
@@ -329,7 +448,77 @@ namespace cosync::plugin
                       avatar.refId, _opt.freezeDelay);
         }
 
-        if (_opt.move && avatar.refId != 0 && now >= avatar.nextMove) {
+        // Experiment (AvatarMoveMode=motion): once the 3D has loaded, re-initialise the proxy's
+        // movement controller through the engine's own path with motionDriven=true, the mode the
+        // engine forces on the player (RE A.5). Applied once; the probe logs any later reversion.
+        if (_opt.motion && avatar.refId != 0 && !avatar.motionApplied && avatar.loaded3DAt != kNever &&
+            now - avatar.loaded3DAt >= std::chrono::seconds(1)) {
+            avatar.motionApplied = true;
+            std::string detail;
+            const bool ok = animprobe::ReinitMovementController(avatar.refId, true, detail);
+            log::Info("[avatar] player {} '{}': motion-driven controller {}: {}", id, remote.name,
+                      ok ? "requested" : "NOT applied", detail);
+        }
+
+        // Experiment (AvatarMoveMode=mirror): the proxy's controller serves the local player's
+        // captured IMovementPlayerControls data, so the engine moves and animates it as if it were
+        // the player (RE A.10). No teleporting in this mode.
+        if ((_opt.mirror || _opt.controls) && avatar.refId != 0 && !avatar.motionApplied &&
+            avatar.loaded3DAt != kNever &&
+            now - avatar.loaded3DAt >= std::chrono::seconds(1)) {
+            avatar.motionApplied = true;
+            std::string state;
+            const bool entered = movecontrols::EnterPlayerControlsState(avatar.refId, state);
+            log::Info("[avatar] player {} '{}': player-controls movement state {}: {}; registry now {}", id,
+                      remote.name, entered ? "entered" : "NOT entered", state,
+                      movecontrols::DescribeRegistry(avatar.refId));
+            std::string detail;
+            const bool ok = _opt.controls ? movecontrols::AttachReplay(avatar.refId, id, detail)
+                                          : movecontrols::AttachMirror(avatar.refId, detail);
+            log::Info("[avatar] player {} '{}': {} controls {}: {}; now {}", id, remote.name,
+                      _opt.controls ? "replay" : "mirror",
+                      ok ? "attached" : "NOT attached", detail, movecontrols::DescribeRegistry(avatar.refId));
+        }
+
+        if ((_opt.mirror || _opt.controls) && avatar.refId != 0) {
+            if (_opt.controls) DriveControls(id, remote);
+            if (_opt.controls && avatar.motionApplied) ApplyWeapon(id, remote);
+            if (_opt.controls && avatar.motionApplied) {
+                for (const auto& name : remote.pendingReplays) {
+                    if (!Replayed(name)) continue;  // only allow-listed events are ever sent into a graph
+                    const bool ok = animevents::Notify(avatar.refId, name.c_str());
+                    // The graph event only animates; the lift comes from the engine's actor jump,
+                    // which its JumpAnimEventHandler performs for the player (RE A.12).
+                    if (name == "JumpStart") {
+                        std::string why;
+                        const bool jumped = movecontrols::Jump(avatar.refId, &why);
+                        if (_opt.animDiag >= 1) {
+                            log::Info("[anim-replay] proxy {:08X}: engine jump {} ({})", avatar.refId,
+                                      jumped ? "started" : "refused", why);
+                        }
+                    }
+                    if (_opt.animDiag >= 1) {
+                        log::Info("[anim-replay] proxy {:08X} ({}): {}{}", avatar.refId, remote.name, name,
+                                  ok ? "" : " (refused by graph)");
+                    }
+                }
+            }
+            remote.pendingReplays.clear();
+            // Engine-driven only. If the controller leaves movement state 1, re-enter it at most
+            // every 2 s and count it.
+            if (avatar.motionApplied && now >= avatar.nextStateFix &&
+                movecontrols::ControllerState(avatar.refId) != 1) {
+                avatar.nextStateFix = now;  // check every frame; the AI can reset the state at any time
+                std::string state;
+                movecontrols::EnterPlayerControlsState(avatar.refId, state);
+                if (++avatar.stateFixes <= 10) {
+                    log::Info("[avatar] player {} '{}': controller left state 1; re-entered ({}), #{}", id,
+                              remote.name, state, avatar.stateFixes);
+                }
+            }
+        } else if (_opt.path && avatar.refId != 0) {
+            DrivePath(id, remote);
+        } else if (_opt.move && avatar.refId != 0 && now >= avatar.nextMove) {
             avatar.nextMove = now + kAvatarMoveInterval;
             if (_opt.animate) DriveLocomotion(avatar, *remote.pose);
             if (!avatars::Move(avatar.refId, remote.pose->position, remote.pose->rotation)) {
@@ -339,11 +528,203 @@ namespace cosync::plugin
         }
     }
 
+    // AvatarMoveMode=controls: serve the remote player's newest engine movement input to the proxy's
+    // replay object, and correct drift between the engine-moved proxy and the authoritative pose.
+    void GameBridge::DriveControls(PlayerId id, RemotePlayer& remote)
+    {
+        constexpr auto kControlsTimeout = std::chrono::milliseconds(300);  // then stand still
+        constexpr auto kSnapCooldown = std::chrono::milliseconds(1000);
+        auto& a = remote.avatar;
+        const auto now = std::chrono::steady_clock::now();
+        const bool fresh = remote.controls && now - remote.controlsAt < kControlsTimeout;
+        movecontrols::Controls c;
+        if (remote.controls) {
+            std::memcpy(c.data, remote.controls->values.data(), sizeof(float) * proto::kControlFloats);
+            c.data[proto::kControlFloats * sizeof(float)] = static_cast<std::byte>(remote.controls->flag);
+            c.seq = remote.controlsSeq;
+        }
+        movecontrols::SetReplay(id, c, fresh);
+
+        // Yaw, closed-loop: turn the proxy by its heading error to the remote player's interpolated
+        // yaw, through the engine's own turn input. No accumulation of the sender's deltas.
+        if (a.motionApplied && remote.pose) {
+            auto* form = RE::TESForm::LookupByID(a.refId);
+            if (form && form->Is(RE::FormType::kACHR)) {
+                const auto angle = static_cast<RE::Actor*>(form)->GetAngle();
+                // Facing like the remote's visible body (2026-11-03: copying the aim yaw made the proxy
+                // backpedal where the player turns around and runs toward the camera):
+                //   weapon drawn      -> aim yaw (combat stance strafes and backpedals)
+                //   holstered, moving -> direction of travel (the body turns into the run)
+                //   standing          -> the remote's view yaw
+                const bool drawn = remote.weapon && remote.weapon->drawn;
+                const float rs = std::sqrt(remote.velX * remote.velX + remote.velY * remote.velY);
+                float targetYaw = remote.haveLatest ? remote.latestYaw : remote.pose->rotation.z;
+                if (drawn) {
+                    a.bodyYaw = targetYaw;
+                } else if (rs > 0.5f) {
+                    a.bodyYaw = std::atan2(remote.velX, remote.velY);  // forward = (sin yaw, cos yaw)
+                    targetYaw = a.bodyYaw;
+                } else {
+                    a.bodyYaw = targetYaw;  // standing: turn with the remote's view (in-game: idle turning expected)
+                }
+                a.haveBodyYaw = true;
+                const float err = TransformInterpolator::AngleDelta(angle.z, targetYaw);
+                // +0x18 behaves as a turn RATE, not a per-frame angle: the player's own input reads
+                // about +-1.8 during fast mouse turns (2026-11-03), and a small per-frame step made the
+                // proxy turn "really really slow". Proportional rate, capped at the player's range.
+                constexpr float kTurnGain = 10.0f;  // 1/s
+                constexpr float kMaxTurnRate = 3.0f;
+                a.lastTurnAt = now;
+                const float delta = std::clamp(err * kTurnGain, -kMaxTurnRate, kMaxTurnRate);
+                movecontrols::SetReplayTurn(id, delta, angle.z + err);
+                if (_opt.animDiag >= 2 && now >= a.nextLookLog) {
+                    a.nextLookLog = now + std::chrono::milliseconds(500);
+                    log::Info("[look] player {}: proxy yaw {:.2f} remote yaw {:.2f} err {:+.2f} | pitch proxy {:.2f} "
+                              "remote {:.2f}",
+                              id, angle.z, targetYaw, err, angle.x, remote.pose->rotation.x);
+                }
+            }
+        }
+
+        if (!a.motionApplied || !remote.haveLatest) return;
+
+        // Look pitch: the proxy graph's fCameraPitch (unused by NPC code, so the value sticks; the
+        // player's graph reads its own, RE A.13). Papyrus write, at most 30 Hz, only on change.
+        if (now >= a.nextPitchWrite && std::abs(remote.latestPitch - a.sentPitch) > 0.003f) {
+            a.nextPitchWrite = now + std::chrono::milliseconds(33);
+            if (avatars::SetAnimFloat(a.refId, "fCameraPitch", remote.latestPitch)) a.sentPitch = remote.latestPitch;
+        }
+
+        // NPC aim path (RE A.4/A.13): write the remote look pitch into the proxy's bound DirectAt
+        // fields every frame (its AI leaves them at 0 while it is not fighting). Sign convention
+        // relative to fCameraPitch: +1 assumed, to be confirmed in game.
+        {
+            constexpr float kAimPitchSign = 1.0f;
+            const bool drawn = remote.weapon && remote.weapon->drawn;
+            movecontrols::SetAim(a.refId, kAimPitchSign * remote.latestPitch, drawn);
+        }
+
+        // Position: compare with the newest received position extrapolated by the remote velocity
+        // (not the 100 ms-delayed interpolation, which pulled a moving proxy backwards: 2026-11-03).
+        const auto state = avatars::Probe(a.refId);
+        if (!state.exists) return;
+        const float age = std::clamp(static_cast<float>(net::SteadyNowMs() - remote.latestReceivedMs) / 1000.0f, 0.0f, 0.25f);
+        const Vec3 target{ remote.latestPos.x + remote.velX * age, remote.latestPos.y + remote.velY * age,
+                           remote.latestPos.z + remote.velZ * age };
+        const float dx = target.x - state.position.x, dy = target.y - state.position.y, dz = target.z - state.position.z;
+        const float gap = std::sqrt(dx * dx + dy * dy + dz * dz);
+        const float remoteSpeed = std::sqrt(remote.velX * remote.velX + remote.velY * remote.velY);
+
+        // Closed-loop movement: desired velocity = remote velocity + Kp * position error, turned into
+        // the engine's own move input (direction relative to facing + magnitude). The engine then
+        // moves and animates the proxy at that speed: no open-loop drift, and slow movement walks.
+        {
+            constexpr float kGain = 2.0f;           // 1/s: closes a 1-unit error at 2 u/s extra
+            constexpr float kRunSpeed = 5.5f;       // u/s at magnitude 2.0 (measured: Speed 5.49)
+            constexpr float kMaxMagnitude = 2.0f;
+            float vx = remote.velX + kGain * dx, vy = remote.velY + kGain * dy;
+            float speed = std::sqrt(vx * vx + vy * vy);
+            const float planarGap = std::sqrt(dx * dx + dy * dy);
+            float angle = 0.0f, magnitude = 0.0f;
+            if (!(remoteSpeed < 0.2f && planarGap < 0.25f) && speed > 0.05f) {
+                auto* form = RE::TESForm::LookupByID(a.refId);
+                const float yaw = form ? static_cast<RE::TESObjectREFR*>(form)->GetAngle().z : 0.0f;
+                // Engine convention: forward = (sin yaw, cos yaw), right = (cos yaw, -sin yaw).
+                const float fwd = vx * std::sin(yaw) + vy * std::cos(yaw);
+                const float right = vx * std::cos(yaw) - vy * std::sin(yaw);
+                angle = std::atan2(right, fwd);
+                magnitude = std::clamp(speed / kRunSpeed * 2.0f, 0.0f, kMaxMagnitude);
+            }
+            movecontrols::SetReplayMove(id, angle, magnitude);
+            if (_opt.animDiag >= 2 && now >= a.nextMoveLog) {
+                a.nextMoveLog = now + std::chrono::milliseconds(500);
+                log::Info("[move] player {}: gap {:.2f} remote {:.2f} u/s -> desired {:.2f} u/s angle {:+.2f} mag {:.2f}",
+                          id, gap, remoteSpeed, speed, angle, magnitude);
+            }
+        }
+        constexpr std::chrono::steady_clock::time_point kNever{};
+        // Large error that persists: snap.
+        if (gap > 3.0f) {
+            if (a.bigErrorSince == kNever) a.bigErrorSince = now;
+        } else {
+            a.bigErrorSince = kNever;
+        }
+        // Small error while the remote stands still: settle onto the exact spot (not noticeable).
+        if (gap > 0.5f && remoteSpeed < 0.3f) {
+            if (a.smallErrorSince == kNever) a.smallErrorSince = now;
+        } else {
+            a.smallErrorSince = kNever;
+        }
+        const bool snapBig = a.bigErrorSince != kNever && now - a.bigErrorSince > std::chrono::milliseconds(400);
+        const bool settle = a.smallErrorSince != kNever && now - a.smallErrorSince > std::chrono::milliseconds(500);
+        if ((snapBig || settle) && now >= a.nextSnapAt) {
+            a.nextSnapAt = now + kSnapCooldown;
+            a.bigErrorSince = a.smallErrorSince = kNever;
+            Vec3 rot{ 0.0f, 0.0f, remote.latestYaw };
+            avatars::MoveRef(a.refId, target, rot);
+            if (++a.snaps <= 20 || a.snaps % 50 == 0) {
+                log::Info("[avatar] player {} '{}': proxy {} {:.2f} from the remote position (#{}, remote {:.2f} u/s)",
+                          id, remote.name, snapBig ? "snapped" : "settled", gap, a.snaps, remoteSpeed);
+            }
+        }
+    }
+
+    void GameBridge::ApplyWeapon(PlayerId id, RemotePlayer& remote)
+    {
+        auto& a = remote.avatar;
+        const auto now = std::chrono::steady_clock::now();
+        if (!remote.weapon || now < a.nextWeaponApply) return;
+        const auto& w = *remote.weapon;
+        if (w.formId != a.appliedWeapon) {
+            a.nextWeaponApply = now + std::chrono::milliseconds(500);
+            bool ok = true;
+            if (a.appliedWeapon != 0) avatars::UnequipWeapon(a.refId, a.appliedWeapon);
+            if (w.formId != 0) ok = avatars::EquipWeapon(a.refId, w.formId);
+            log::Info("[weapon] player {} '{}': proxy weapon {:08X} -> {:08X}{}", id, remote.name, a.appliedWeapon,
+                      w.formId, ok ? "" : " (not a weapon here / refused)");
+            a.appliedWeapon = w.formId;
+            a.appliedDrawn = -1;  // re-apply the drawn state after the equip
+            return;
+        }
+        const int drawn = w.drawn ? 1 : 0;
+        // Read the proxy's actual drawn state once a second; if its AI changed it, re-apply.
+        if (a.proxyWeaponQuery && a.proxyWeaponQuery->pending.load() <= 0) {
+            const int actual = a.proxyWeaponQuery->drawn.load();
+            a.proxyWeaponQuery.reset();
+            if (actual >= 0 && actual != drawn && a.appliedDrawn == drawn) {
+                a.appliedDrawn = -1;  // force re-apply below
+                if (++a.weaponReasserts <= 20) {
+                    log::Info("[weapon] player {} '{}': proxy weapon was {} by its AI; re-applying (#{})", id,
+                              remote.name, actual ? "drawn" : "put away", a.weaponReasserts);
+                }
+            }
+        }
+        if (!a.proxyWeaponQuery && now >= a.nextProxyWeaponCheck) {
+            a.nextProxyWeaponCheck = now + std::chrono::seconds(1);
+            auto q = std::make_shared<avatars::WeaponQuery>();
+            if (avatars::RequestWeaponState(a.refId, q)) a.proxyWeaponQuery = std::move(q);
+        }
+        if (drawn != a.appliedDrawn) {
+            a.nextWeaponApply = now + std::chrono::milliseconds(500);
+            avatars::SetWeaponDrawn(a.refId, w.drawn);
+            log::Info("[weapon] player {} '{}': proxy weapon {}", id, remote.name, w.drawn ? "drawn" : "holstered");
+            a.appliedDrawn = drawn;
+        }
+    }
+
     void GameBridge::ReleaseAvatar(PlayerId id, Avatar& avatar, const char* why)
     {
+        movecontrols::SetReplay(id, {}, false);
         if (avatar.pending) {
             _orphans.push_back(std::move(avatar.pending));
         }
+        if (avatar.markerPending) _orphans.push_back(std::move(avatar.markerPending));
+        if (avatar.markerRef != 0) {
+            avatars::Despawn(avatar.markerRef);
+            avatar.markerRef = 0;
+        }
+        avatar.pathDone.reset();
+        avatar.pathWalkRun = -1.0f;
         if (avatar.refId != 0) {
             log::Info("[avatar] player {}: despawn ref {:08X} ({})", id, avatar.refId, why);
             avatars::Despawn(avatar.refId);
@@ -382,18 +763,46 @@ namespace cosync::plugin
         });
     }
 
-    namespace
+    // Once per frame: take the player's captured graph events (diagnostics use them too) and queue
+    // the replayable inputs for the network; each is sent in 3 consecutive transforms.
+    void GameBridge::DrainAnimEvents()
     {
-        using avatars::AnimVarKind;
-        // Locomotion graph variable candidates (strings found in Starfield.exe 1.16.244).
-        // Locomotion graph variables that exist on humanoid graphs (runtime check 2026-11-02:
-        // SpeedSampled, SpeedSmoothed, IsMoving, IsRunning, IsSprinting, LocomotionBlend,
-        // LocomotionType, bInJumpState are "cannot fetch" on both player and NPC graphs).
-        constexpr avatars::AnimVar kDiagVars[] = {
-            { "Speed", AnimVarKind::kFloat },
-            { "Direction", AnimVarKind::kFloat },
-            { "TurnDelta", AnimVarKind::kFloat },
-        };
+        _frameEvents.clear();
+        animevents::Drain(_frameEvents, _frameEventsDropped);
+        if (!_opt.controls) return;
+        for (const auto& e : _frameEvents) {
+            if (!e.input || !e.accepted || !Replayed(e.tag)) continue;
+            if (_outEvents.size() >= 32) _outEvents.pop_front();
+            _outEvents.push_back({ _nextEventSeq++, e.tag, 3 });
+        }
+    }
+
+    // NPC sync step 1 (docs/NPC_SYNC_ARCHITECTURE.md): the engine's high-process actors, with the
+    // runtime layout check. Every 5 s; the full list the first three times, then on count changes.
+    void GameBridge::LogNpcEnumeration()
+    {
+        const auto now = std::chrono::steady_clock::now();
+        if (!_inWorld || now < _nextNpcLog) return;
+        _nextNpcLog = now + std::chrono::seconds(5);
+        const auto e = npcsync::EnumerateHighActors();
+        const bool full = _npcLogs < 3 || e.actors.size() != _lastNpcCount || !e.ok;
+        _lastNpcCount = e.actors.size();
+        if (!full) return;
+        ++_npcLogs;
+        log::Info("[npc] {} high-process actors besides the player; {}", e.actors.size(), e.check);
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        const auto pp = player ? player->GetPosition() : RE::NiPoint3{};
+        std::size_t shown = 0;
+        for (const auto& a : e.actors) {
+            if (++shown > 25) {
+                log::Info("[npc]   ... {} more", e.actors.size() - 25);
+                break;
+            }
+            const float dx = a.position.x - pp.x, dy = a.position.y - pp.y, dz = a.position.z - pp.z;
+            log::Info("[npc]   {:08X}{} base {:08X} dist {:.1f} pos ({:.1f}, {:.1f}, {:.1f}) yaw {:.2f}", a.formId,
+                      (a.formId >> 24) == 0xFF ? " (runtime)" : "", a.baseId, std::sqrt(dx * dx + dy * dy + dz * dz),
+                      a.position.x, a.position.y, a.position.z, a.yaw);
+        }
     }
 
     void GameBridge::UpdateAnimDiag()
@@ -416,29 +825,75 @@ namespace cosync::plugin
             }
         }
 
-        // Log reads that have completed.
-        if (_playerAnim && _playerAnim->remaining.load() <= 0) {
-            log::Info("[anim] player: measured {:.2f} u/s yaw {:.2f} | {}", _playerSpeed,
-                      player ? player->GetAngle().z : 0.0f, avatars::FormatReadout(*_playerAnim, kDiagVars));
-            _playerAnim.reset();
-        }
-        for (auto& [id, remote] : _remotes) {
-            auto& a = remote.avatar;
-            if (a.anim && a.anim->remaining.load() <= 0) {
-                log::Info("[anim] proxy {:08X} ({}): {}", a.refId, remote.name,
-                          avatars::FormatReadout(*a.anim, kDiagVars));
-                a.anim.reset();
+        // Animation graph events captured on the local player (AnimEvents hook), in order.
+        {
+            const auto& events = _frameEvents;
+            const std::uint64_t dropped = _frameEventsDropped;
+            std::size_t logged = 0;
+            for (const auto& e : events) {
+                if (++logged > 40) {
+                    log::Info("[anim-event] player: ... {} more this frame", events.size() - 40);
+                    break;
+                }
+                if (e.input) {
+                    log::Info("[anim-in] player: {}{} (speed {:.2f})", e.tag, e.accepted ? "" : " (refused)",
+                              _playerSpeed);
+                    continue;
+                }
+                log::Info("[anim-event] player: {}{}{} (speed {:.2f})", e.tag, e.payload.empty() ? "" : " | ", e.payload,
+                          _playerSpeed);
+            }
+            if (dropped != _animEventsDropped) {
+                log::Warn("[anim-event] {} events dropped (buffer full)", dropped - _animEventsDropped);
+                _animEventsDropped = dropped;
             }
         }
 
-        if (now < _nextAnimDiag || !_vmSettled || !_inWorld) return;
-        _nextAnimDiag = now + std::chrono::seconds(1);
-        if (!_playerAnim) _playerAnim = avatars::RequestAnimVars(avatars::PlayerRefId(), kDiagVars);
+        // Native animation probe (main thread, same frame as the engine's own update), 20 Hz.
+        // Discrete changes (controller mode/config, int/bool graph variables) are logged as they
+        // happen; floats only at level 2, at most twice per second and only when they moved.
+        if (now < _nextAnimDiag || !_inWorld) return;
+        _nextAnimDiag = now + std::chrono::milliseconds(50);
+        auto probeOne = [&](std::uint32_t refId, std::string_view who, animprobe::Snapshot& last, bool& probed,
+                            std::chrono::steady_clock::time_point& nextFloatLog) {
+            auto snap = animprobe::Read(refId);
+            if (!probed) {
+                log::Info("[anim-state] {}: {}", who, animprobe::DescribeState(snap));
+                log::Info("[anim-state] {}: {}", who, movecontrols::DescribeRegistry(refId));
+                log::Info("[anim-state] {}: {}", who, animprobe::DescribeFloats(snap));
+            } else if (auto t = animprobe::DescribeTransitions(last, snap); !t.empty()) {
+                log::Info("[anim-state] {}: {} (speed {:.2f})", who, t, _playerSpeed);
+            }
+            if (_opt.animDiag >= 2 && now >= nextFloatLog && animprobe::FloatsChanged(last, snap, 0.05f)) {
+                nextFloatLog = now + std::chrono::milliseconds(500);
+                log::Info("[anim-float] {}: {}", who, animprobe::DescribeFloats(snap));
+            }
+            probed = true;
+            last = std::move(snap);
+        };
+        if (player) {
+            probeOne(avatars::PlayerRefId(), "player", _playerProbe, _playerProbed, _nextPlayerFloatLog);
+            if (!_probeSelfChecked && _playerProbe.graphPresent) {
+                _probeSelfChecked = true;
+                bool passed = false;
+                const auto verdict = animprobe::SelfCheckPlayer(_playerProbe, passed);
+                if (passed) log::Info("[anim-state] {}", verdict);
+                else log::Warn("[anim-state] {}", verdict);
+            }
+        }
+        if ((_opt.mirror || _opt.controls) && _opt.animDiag >= 2 && now >= _nextControlsLog) {
+            _nextControlsLog = now + std::chrono::milliseconds(250);
+            const auto c = movecontrols::LatestPlayerControls();
+            if (c.seq != _loggedControlsSeq) {
+                log::Info("[controls] player: {}", movecontrols::Describe(c));
+                _loggedControlsSeq = c.seq;
+            }
+        }
         for (auto& [id, remote] : _remotes) {
             auto& a = remote.avatar;
-            if (a.refId != 0 && !a.anim && a.loaded3DAt != kNever) {
-                a.anim = avatars::RequestAnimVars(a.refId, kDiagVars);
-            }
+            if (a.refId == 0 || a.loaded3DAt == kNever) continue;
+            probeOne(a.refId, std::format("proxy {:08X} ({})", a.refId, remote.name), a.probe, a.probed,
+                     a.nextFloatLog);
         }
     }
 
@@ -490,6 +945,138 @@ namespace cosync::plugin
         if (speed > 0.0f || avatar.sentDirection < 0.0f) {
             avatars::SetAnimFloat(avatar.refId, "Direction", direction);
             avatar.sentDirection = direction;
+        }
+    }
+
+    // Engine-driven movement: keep a marker on the remote pose and let the proxy path to it.
+    void GameBridge::DrivePath(PlayerId id, RemotePlayer& remote)
+    {
+        constexpr std::chrono::steady_clock::time_point kNever{};
+        constexpr float kRunSpeed = 5.0f;        // world units/s at normalized speed 1 (calibrated jog 5.0)
+        constexpr float kArrive = 0.5f;          // target radius: stand and face the remote yaw
+        constexpr float kRepathMove = 0.75f;     // re-path when the target moved this far since the last call
+        constexpr float kTeleport = 8.0f;        // too far behind (load, teleport): snap
+        constexpr float kLeadSeconds = 0.25f;    // aim ahead of the (delayed) interpolated pose
+        constexpr auto kRepathInterval = std::chrono::milliseconds(250);
+        constexpr auto kSnapCooldown = std::chrono::milliseconds(1500);
+        auto& a = remote.avatar;
+        const auto& pose = *remote.pose;
+        const auto now = std::chrono::steady_clock::now();
+        if (a.loaded3DAt == kNever) return;
+
+        // 1. Marker.
+        if (a.markerRef == 0) {
+            if (a.markerPending) {
+                const auto r = a.markerPending->load();
+                if (r == 0) return;
+                a.markerPending.reset();
+                if (avatars::IsSpawnError(r)) {
+                    log::Warn("[avatar] player {}: marker spawn failed: {}; using teleport", id,
+                              avatars::DescribeSpawnError(r));
+                    _opt.path = false;
+                    return;
+                }
+                a.markerRef = r;
+                log::Info("[avatar] player {}: path marker {:08X}", id, r);
+            } else {
+                auto slot = std::make_shared<std::atomic<std::uint32_t>>(0);
+                std::string error;
+                if (avatars::RequestMarker(slot, error)) {
+                    a.markerPending = std::move(slot);
+                } else {
+                    log::Warn("[avatar] player {}: marker not dispatched: {}; using teleport", id, error);
+                    _opt.path = false;
+                }
+                return;
+            }
+        }
+
+        // 2. Remote velocity from the pose stream (smoothed).
+        if (a.lastPosAt != kNever) {
+            const float dt = std::chrono::duration<float>(now - a.lastPosAt).count();
+            if (dt >= 0.05f) {
+                const float vx = (pose.position.x - a.lastPos.x) / dt, vy = (pose.position.y - a.lastPos.y) / dt;
+                a.velX += (vx - a.velX) * 0.5f;
+                a.velY += (vy - a.velY) * 0.5f;
+                a.speed = std::sqrt(a.velX * a.velX + a.velY * a.velY);
+                a.lastPos = pose.position;
+                a.lastPosAt = now;
+            }
+        } else {
+            a.lastPos = pose.position;
+            a.lastPosAt = now;
+        }
+        const bool moving = a.speed > 0.3f;
+        Vec3 target = pose.position;
+        if (moving) {
+            target.x += a.velX * kLeadSeconds;
+            target.y += a.velY * kLeadSeconds;
+        }
+
+        // 3. Keep the marker on the (led) remote pose, 20 Hz.
+        if (now >= a.nextMove) {
+            a.nextMove = now + std::chrono::milliseconds(50);
+            avatars::MoveRef(a.markerRef, target, pose.rotation);
+        }
+
+        // 4. Where is the proxy?
+        const auto state = avatars::Probe(a.refId);
+        if (!state.exists) return;
+        const float gx = pose.position.x - state.position.x, gy = pose.position.y - state.position.y;
+        const float gap = std::sqrt(gx * gx + gy * gy);
+
+        if (_opt.animDiag && now >= a.nextAnimWrite) {
+            a.nextAnimWrite = now + std::chrono::seconds(1);
+            log::Info("[path] player {}: gap {:.2f} remote {:.2f} u/s path speed {:.2f} calls {}", id, gap, a.speed,
+                      a.pathWalkRun, a.pathCalls);
+        }
+        if (gap > kTeleport && now >= a.nextSnapAt) {
+            avatars::MoveRef(a.refId, pose.position, pose.rotation);
+            a.pathDone.reset();
+            a.nextSnapAt = now + kSnapCooldown;
+            log::Info("[avatar] player {}: {:.1f} units behind; snapped", id, gap);
+            return;
+        }
+        if (!moving && gap < kArrive) {
+            if (!a.pathIdleSnapped) {  // face where the remote faces once it stops
+                avatars::MoveRef(a.refId, state.position, pose.rotation);
+                a.pathIdleSnapped = true;
+            }
+            return;
+        }
+        a.pathIdleSnapped = false;
+
+        // 5. Speed: the remote's own speed plus catch-up proportional to the gap.
+        const float speed = std::clamp(a.speed / kRunSpeed + gap * 0.15f, 0.25f, 1.0f);
+
+        // Log PathToReference results when they change (2026-11-02: the proxy stalled while calls
+        // returned at ~10/s, so the returned value is needed to tell refusal from arrival).
+        if (a.pathDone) {
+            const auto v = a.pathDone->load();
+            if (v != 0 && v != a.lastPathResult) {
+                a.lastPathResult = v;
+                log::Info("[path] player {}: PathToReference returned {} after {} ms (gap {:.2f})", id,
+                          v == 0xFFFFFFF0u ? std::string("<cancelled>")
+                          : v == 0xFFFFFFF1u ? std::string("-1")
+                                             : std::to_string(static_cast<std::int64_t>(v) - 1),
+                          std::chrono::duration_cast<std::chrono::milliseconds>(now - a.pathStartedAt).count(), gap);
+            }
+        }
+
+        // 6. Re-path when idle, or every 250 ms if the target moved or the speed changed.
+        const bool inFlight = a.pathDone && a.pathDone->load() == 0;
+        const float mx = target.x - a.pathTarget.x, my = target.y - a.pathTarget.y;
+        const bool targetMoved = std::sqrt(mx * mx + my * my) > kRepathMove;
+        const bool speedChanged = std::abs(speed - a.pathWalkRun) > 0.2f;
+        if (inFlight && (now - a.pathStartedAt < kRepathInterval || (!targetMoved && !speedChanged))) return;
+        if (!inFlight && a.pathDone && now - a.pathStartedAt < std::chrono::milliseconds(100)) return;
+        auto done = std::make_shared<std::atomic<std::uint32_t>>(0);
+        if (avatars::RequestPathTo(a.refId, a.markerRef, speed, kArrive, done)) {
+            a.pathDone = std::move(done);
+            a.pathStartedAt = now;
+            a.pathWalkRun = speed;
+            a.pathTarget = target;
+            ++a.pathCalls;
         }
     }
 

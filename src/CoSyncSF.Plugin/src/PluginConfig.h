@@ -35,9 +35,15 @@ namespace cosync::plugin
         // [Experimental] AvatarBase: "player" = the player character's own base NPC (00000007);
         // "nearby" = the data-file base of a random nearby NPC (old behaviour).
         bool avatarNearbyBase = false;
-        bool avatarAnimDiag = false;  // [Experimental] AvatarAnimDiag: log graph variables 1/s
+        // [Experimental] AvatarAnimDiag: 0 off; 1 = native animation probe, transition-based
+        // (player + proxies) and player animation events; 2 = also float variables at 2 Hz.
+        int avatarAnimDiag = 0;
         bool avatarAnimate = false;   // [Experimental] AvatarAnimate: drive locomotion variables
         bool avatarMove = true;       // [Experimental] AvatarMove (SetPosition/SetAngle at 10 Hz)
+        bool avatarPath = false;      // [Experimental] AvatarMoveMode=path: engine pathing to a marker
+        bool avatarMotion = false;    // [Experimental] AvatarMoveMode=motion: motion-driven controller + teleport
+        bool avatarMirror = false;    // [Experimental] AvatarMoveMode=mirror: proxies replay the local player's controls
+        bool avatarControls = false;  // [Experimental] AvatarMoveMode=controls: proxies replay the remote player's controls
         float avatarScale = 1.0f;     // [Experimental] AvatarScale (debug: >1 makes proxies easy to spot)
     };
 

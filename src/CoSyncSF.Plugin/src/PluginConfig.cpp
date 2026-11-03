@@ -98,9 +98,24 @@ namespace cosync::plugin
             c.avatarFreezeDelay = 3.0f;
         }
         c.avatarNearbyBase = ReadString(iniPath, L"Experimental", L"AvatarBase", "player") == "nearby";
-        c.avatarAnimDiag = ReadString(iniPath, L"Experimental", L"AvatarAnimDiag", "0") == "1";
+        {
+            const auto diag = ReadString(iniPath, L"Experimental", L"AvatarAnimDiag", "0");
+            c.avatarAnimDiag = diag == "2" ? 2 : diag == "1" ? 1 : 0;
+        }
         c.avatarAnimate = ReadString(iniPath, L"Experimental", L"AvatarAnimate", "0") == "1";
         c.avatarMove = ReadString(iniPath, L"Experimental", L"AvatarMove", "1") == "1";
+        {
+            const auto moveMode = ReadString(iniPath, L"Experimental", L"AvatarMoveMode", "teleport");
+            c.avatarPath = moveMode == "path";
+            c.avatarMotion = moveMode == "motion";
+            c.avatarMirror = moveMode == "mirror";
+            c.avatarControls = moveMode == "controls";
+            if (moveMode != "teleport" && moveMode != "path" && moveMode != "motion" && moveMode != "mirror" &&
+                moveMode != "controls") {
+                warn(std::format("unknown AvatarMoveMode '{}' (teleport | path | motion | mirror | controls)",
+                                 moveMode));
+            }
+        }
         try {
             c.avatarScale = std::clamp(std::stof(ReadString(iniPath, L"Experimental", L"AvatarScale", "1.0")), 0.1f, 10.0f);
         } catch (...) {
