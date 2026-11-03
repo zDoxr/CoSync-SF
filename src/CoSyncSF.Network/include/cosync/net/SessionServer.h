@@ -1,5 +1,6 @@
 #pragma once
 
+#include "cosync/net/GroupManager.h"
 #include "cosync/net/Transport.h"
 #include "cosync/net/Util.h"
 #include "cosync/shared/Protocol.h"
@@ -128,6 +129,7 @@ namespace cosync::net
         ServerStats _stats;
         std::unordered_map<ConnectionId, Connection> _connections;
         std::unordered_map<PlayerId, Player> _players;
+        GroupManager _groups;
         std::vector<TransportEvent> _events;
     };
 }

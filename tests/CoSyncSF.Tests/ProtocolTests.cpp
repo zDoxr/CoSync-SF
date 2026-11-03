@@ -56,6 +56,8 @@ namespace
             Disconnect{ DisconnectReason::Quit, "bye" },
             t,
             NpcCombat{ 4, 0x00015062, 2 },
+            GroupRequest{ GroupAction::Invite, 3, 0 },
+            GroupState{ 7, { GroupInfo{ 1, 2, { 2, 3 }, { 4 } } } },
         };
     }
 
@@ -259,6 +261,21 @@ TEST(Protocol, NpcCombatRejectsZeroNpcOrInvalidTarget)
     EXPECT_TRUE(Decode(Encode(NpcCombat{ 0, 0x15062, 3 })).Ok());
     EXPECT_FALSE(Decode(Encode(NpcCombat{ 0, 0, 3 })).Ok());
     EXPECT_FALSE(Decode(Encode(NpcCombat{ 0, 0x15062, kInvalidPlayerId })).Ok());
+}
+
+TEST(Protocol, TransformStatusRoundTripAndValidation)
+{
+    PlayerTransform t;
+    t.status = PlayerStatus{ 73, 21, PlaceKind::Surface, "Jemison" };
+    auto r = Decode(Encode(t));
+    ASSERT_TRUE(r.Ok());
+    const auto& st = *std::get<PlayerTransform>(*r.message).status;
+    EXPECT_EQ(st.healthPercent, 73);
+    EXPECT_EQ(st.level, 21);
+    EXPECT_EQ(st.kind, PlaceKind::Surface);
+    EXPECT_EQ(st.place, "Jemison");
+    t.status->healthPercent = 101;
+    EXPECT_FALSE(Decode(Encode(t)).Ok());
 }
 
 TEST(Protocol, RejectsNonFiniteOrHugeTransforms)

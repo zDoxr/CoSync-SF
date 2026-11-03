@@ -243,6 +243,18 @@ namespace cosync::net
         case proto::MessageType::PlayerTransform:
             OnTransform(conn, player, std::get<proto::PlayerTransform>(msg));
             break;
+        case proto::MessageType::GroupRequest: {
+            std::string why;
+            if (_groups.Apply(player.id, std::get<proto::GroupRequest>(msg), why)) {
+                auto state = _groups.State();
+                for (const auto& [pid, p] : _players) {
+                    if (p.connection != kInvalidConnection) Send(p.connection, state);
+                }
+            } else {
+                log::Info("group request from player {} refused: {}", player.id, why);
+            }
+            break;
+        }
         case proto::MessageType::NpcCombat: {
             auto m = std::get<proto::NpcCombat>(msg);
             if (m.playerId != kInvalidPlayerId && m.playerId != player.id) {
@@ -361,6 +373,7 @@ namespace cosync::net
         }
         std::ranges::sort(snapshot.players, {}, &proto::PlayerEntry::playerId);
         Send(conn.id, snapshot);
+        Send(conn.id, _groups.State());
     }
 
     void SessionServer::OnTransform(Connection&, Player& player, proto::PlayerTransform transform)
@@ -473,6 +486,7 @@ namespace cosync::net
         if (wasConnected) {
             Broadcast(proto::PlayerLeft{ id, reason }, id);
         }
+        if (_groups.RemovePlayer(id)) Broadcast(_groups.State(), id);
     }
 
     void SessionServer::ReservePlayer(Player& player)
@@ -481,6 +495,7 @@ namespace cosync::net
         player.connection = kInvalidConnection;
         player.reservedUntil = _clock() + _config.resumeWindowMs;
         Broadcast(proto::PlayerLeft{ id, proto::LeaveReason::ConnectionLost }, id);
+        if (_groups.RemovePlayer(id)) Broadcast(_groups.State(), id);
         if (_config.resumeWindowMs == 0) {
             _players.erase(id);
         }

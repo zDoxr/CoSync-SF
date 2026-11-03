@@ -28,6 +28,7 @@ namespace cosync
         std::optional<proto::PlayerControls> controls;  // sender's engine movement input, if sent
         std::vector<proto::AnimEvent> events;           // sender's recent graph input events
         std::optional<proto::WeaponState> weapon;       // sender's weapon, if sent
+        std::optional<proto::PlayerStatus> status;      // sender's vitals and whereabouts, if sent
     };
 
     struct InterpolatedPose

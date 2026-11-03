@@ -84,11 +84,13 @@ namespace cosync::net
         void SubmitLocalTransform(std::uint32_t locationId, const Vec3& position, const Vec3& rotation,
                                   const std::optional<proto::PlayerControls>& controls = std::nullopt,
                                   const std::vector<proto::AnimEvent>& events = {},
-                                  const std::optional<proto::WeaponState>& weapon = std::nullopt);
+                                  const std::optional<proto::WeaponState>& weapon = std::nullopt,
+                                  const std::optional<proto::PlayerStatus>& status = std::nullopt);
         // Queues an NpcCombat report (sent reliably on the next network tick; bounded).
         void SubmitNpcCombat(std::uint32_t npcFormId, PlayerId targetPlayer);
         // Host only: removes a player from the session (no resume). Ignored in client mode.
         void SubmitKick(PlayerId player);
+        void SubmitGroupRequest(const proto::GroupRequest& request);
         [[nodiscard]] bool IsHost() const noexcept { return _config.mode == WorkerMode::Host; }
         [[nodiscard]] std::uint16_t ListenPort() const noexcept { return _config.listenPort; }
         // True once if events were dropped because the game thread fell behind;
@@ -107,10 +109,12 @@ namespace cosync::net
             std::optional<proto::PlayerControls> controls;
             std::vector<proto::AnimEvent> events;
             std::optional<proto::WeaponState> weapon;
+            std::optional<proto::PlayerStatus> status;
         };
 
         std::vector<std::pair<std::uint32_t, PlayerId>> _npcCombatOut;  // guarded by _localMutex
         std::vector<PlayerId> _kickOut;                                 // guarded by _localMutex
+        std::vector<proto::GroupRequest> _groupOut;                     // guarded by _localMutex
         void Run(std::promise<std::string>& ready);
 
         WorkerConfig _config;

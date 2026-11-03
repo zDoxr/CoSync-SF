@@ -3,6 +3,7 @@
 add_library(cosync_network STATIC
     src/Endpoint.cpp
     src/GnsTransport.cpp
+    src/GroupManager.cpp
     src/LanDiscovery.cpp
     src/LoopbackTransport.cpp
     src/NetworkWorker.cpp

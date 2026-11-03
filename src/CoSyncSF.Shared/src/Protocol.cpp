@@ -143,6 +143,49 @@ namespace cosync::proto
                 w.U32(m.weapon->formId);
                 w.Bool(m.weapon->drawn);
             }
+            if (m.status) {
+                w.U8(4);
+                w.U8(m.status->healthPercent);
+                w.U16(m.status->level);
+                w.U8(static_cast<std::uint8_t>(m.status->kind));
+                w.String(m.status->place);
+            }
+        }
+
+        void WriteIds(ByteWriter& w, const std::vector<PlayerId>& ids)
+        {
+            w.U8(static_cast<std::uint8_t>(ids.size()));
+            for (auto id : ids) w.U32(id);
+        }
+        std::vector<PlayerId> ReadIds(ByteReader& r, std::size_t max)
+        {
+            const std::size_t n = r.U8();
+            if (n > max) {
+                r.Fail();
+                return {};
+            }
+            std::vector<PlayerId> ids;
+            for (std::size_t i = 0; i < n && r.Ok(); ++i) ids.push_back(r.U32());
+            return ids;
+        }
+
+        void Encode(ByteWriter& w, const GroupRequest& m)
+        {
+            w.U8(static_cast<std::uint8_t>(m.action));
+            w.U32(m.target);
+            w.U32(m.groupId);
+        }
+
+        void Encode(ByteWriter& w, const GroupState& m)
+        {
+            w.U32(m.version);
+            w.U8(static_cast<std::uint8_t>(m.groups.size()));
+            for (const auto& g : m.groups) {
+                w.U32(g.id);
+                w.U32(g.leader);
+                WriteIds(w, g.members);
+                WriteIds(w, g.invited);
+            }
         }
 
         void Encode(ByteWriter& w, const NpcCombat& m)
@@ -302,6 +345,15 @@ namespace cosync::proto
                             e.name = ReadText(r, kMaxAnimEventNameBytes);
                             m.events.push_back(std::move(e));
                         }
+                    } else if (tag == 4 && !m.status) {  // 1.5 status
+                        PlayerStatus st;
+                        st.healthPercent = r.U8();
+                        st.level = r.U16();
+                        const auto kind = r.U8();
+                        st.place = ReadText(r, kMaxPlaceBytes);
+                        if (st.healthPercent > 100 || kind > 2) r.Fail();
+                        st.kind = static_cast<PlaceKind>(kind);
+                        m.status = std::move(st);
                     } else if (tag == 3 && !m.weapon) {  // 1.3 weapon
                         WeaponState ws;
                         ws.formId = r.U32();
@@ -313,6 +365,33 @@ namespace cosync::proto
                 }
                 if (r.Ok() && !IsValidTransform(m)) {
                     r.Fail();
+                }
+                return m;
+            }
+            case MessageType::GroupRequest: {
+                GroupRequest m;
+                const auto action = r.U8();
+                m.target = r.U32();
+                m.groupId = r.U32();
+                if (action < 1 || action > 6) r.Fail();
+                m.action = static_cast<GroupAction>(action);
+                return m;
+            }
+            case MessageType::GroupState: {
+                GroupState m;
+                m.version = r.U32();
+                const std::size_t n = r.U8();
+                if (n > kMaxGroups) {
+                    r.Fail();
+                    return m;
+                }
+                for (std::size_t i = 0; i < n && r.Ok(); ++i) {
+                    GroupInfo g;
+                    g.id = r.U32();
+                    g.leader = r.U32();
+                    g.members = ReadIds(r, kMaxGroupMembers);
+                    g.invited = ReadIds(r, 64);
+                    m.groups.push_back(std::move(g));
                 }
                 return m;
             }
@@ -331,7 +410,7 @@ namespace cosync::proto
         bool IsKnownType(std::uint16_t t)
         {
             return t >= static_cast<std::uint16_t>(MessageType::Hello) &&
-                   t <= static_cast<std::uint16_t>(MessageType::NpcCombat);
+                   t <= static_cast<std::uint16_t>(MessageType::GroupState);
         }
 
         bool IsFiniteBounded(const Vec3& v, float bound)
@@ -361,6 +440,8 @@ namespace cosync::proto
                 else if constexpr (std::is_same_v<T, Disconnect>) return MessageType::Disconnect;
                 else if constexpr (std::is_same_v<T, PlayerTransform>) return MessageType::PlayerTransform;
                 else if constexpr (std::is_same_v<T, NpcCombat>) return MessageType::NpcCombat;
+                else if constexpr (std::is_same_v<T, GroupRequest>) return MessageType::GroupRequest;
+                else if constexpr (std::is_same_v<T, GroupState>) return MessageType::GroupState;
                 else static_assert(kAlwaysFalse<T>, "unhandled message type");
             },
             message);
@@ -478,6 +559,7 @@ namespace cosync::proto
         constexpr float kMaxRotation = 1000.0f;  // radians; generous, only rejects garbage
         return IsFiniteBounded(t.position, kMaxCoordinate) && IsFiniteBounded(t.rotation, kMaxRotation) &&
                (!t.controls || IsValidControls(*t.controls)) && t.events.size() <= kMaxAnimEventsPerTransform &&
+               (!t.status || (t.status->healthPercent <= 100 && IsValidText(t.status->place, kMaxPlaceBytes))) &&
                std::ranges::all_of(t.events, [](const AnimEvent& e) {
                    return !e.name.empty() && IsValidText(e.name, kMaxAnimEventNameBytes);
                });
@@ -497,6 +579,8 @@ namespace cosync::proto
         case MessageType::Disconnect: return "Disconnect";
         case MessageType::PlayerTransform: return "PlayerTransform";
         case MessageType::NpcCombat: return "NpcCombat";
+        case MessageType::GroupRequest: return "GroupRequest";
+        case MessageType::GroupState: return "GroupState";
         }
         return "Unknown";
     }

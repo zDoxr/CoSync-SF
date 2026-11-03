@@ -5,6 +5,7 @@ add_executable(cosync_tests
     DiscoveryTests.cpp
     EndpointTests.cpp
     GnsIntegrationTests.cpp
+    GroupTests.cpp
     InterpolationTests.cpp
     ProtocolTests.cpp
     SessionTests.cpp

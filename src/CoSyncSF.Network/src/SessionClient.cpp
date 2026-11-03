@@ -226,6 +226,8 @@ namespace cosync::net
                         it->second = m.sequence;
                     }
                     events.emplace_back(client_event::RemoteTransform{ m });
+                } else if constexpr (std::is_same_v<T, proto::GroupState>) {
+                    events.emplace_back(client_event::Groups{ m });
                 } else if constexpr (std::is_same_v<T, proto::NpcCombat>) {
                     if (_roster.contains(m.playerId)) events.emplace_back(client_event::NpcCombat{ m });
                 } else if constexpr (std::is_same_v<T, proto::Disconnect>) {
@@ -293,6 +295,13 @@ namespace cosync::net
         _stateSince = _clock();
     }
 
+    bool SessionClient::SendGroupRequest(const proto::GroupRequest& request)
+    {
+        if (_state != ClientState::InSession) return false;
+        Send(request, Delivery::Reliable);
+        return true;
+    }
+
     bool SessionClient::SendNpcCombat(std::uint32_t npcFormId, PlayerId targetPlayer)
     {
         if (_state != ClientState::InSession || npcFormId == 0 || targetPlayer == kInvalidPlayerId) return false;
@@ -303,7 +312,8 @@ namespace cosync::net
     bool SessionClient::SendTransform(std::uint32_t locationId, const Vec3& position, const Vec3& rotation,
                                       const std::optional<proto::PlayerControls>& controls,
                                       const std::vector<proto::AnimEvent>& events,
-                                      const std::optional<proto::WeaponState>& weapon)
+                                      const std::optional<proto::WeaponState>& weapon,
+                                      const std::optional<proto::PlayerStatus>& status)
     {
         if (_state != ClientState::InSession) {
             return false;
@@ -316,6 +326,7 @@ namespace cosync::net
         t.controls = controls;
         t.events = events;
         t.weapon = weapon;
+        t.status = status;
         if (!proto::IsValidTransform(t)) {
             return false;
         }

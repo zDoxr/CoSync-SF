@@ -22,11 +22,12 @@ namespace cosync::proto
 {
     inline constexpr std::uint32_t kMagic = 0x46535343;  // "CSSF" as little-endian bytes
     inline constexpr std::uint16_t kProtocolMajor = 1;   // incompatible changes
-    inline constexpr std::uint16_t kProtocolMinor = 4;   // backward-compatible additions
+    inline constexpr std::uint16_t kProtocolMinor = 5;   // backward-compatible additions
                                                          // 1.1: optional PlayerTransform::controls
                                                          // 1.2: tagged trailing sections, PlayerTransform::events
                                                          // 1.3: PlayerTransform::weapon
                                                          // 1.4: NpcCombat
+                                                         // 1.5: PlayerTransform::status, groups
 
     inline constexpr std::size_t kMaxMessageBytes = 16 * 1024;
     inline constexpr std::size_t kMaxPlayerNameBytes = 32;
@@ -53,6 +54,8 @@ namespace cosync::proto
         Disconnect = 9,       // both directions, reliable: graceful leave / shutdown
         PlayerTransform = 10, // C->S then S->C relay, unreliable
         NpcCombat = 11,       // C->S then S->C relay, reliable (1.4)
+        GroupRequest = 12,    // C->S reliable (1.5)
+        GroupState = 13,      // S->C reliable, authoritative group list (1.5)
     };
 
     enum class RejectReason : std::uint16_t
@@ -194,6 +197,17 @@ namespace cosync::proto
         bool drawn = false;
     };
 
+    // The sender's vitals and whereabouts, for party frames and overhead markers (1.5).
+    inline constexpr std::size_t kMaxPlaceBytes = 64;
+    enum class PlaceKind : std::uint8_t { Unknown = 0, Surface = 1, Space = 2 };
+    struct PlayerStatus
+    {
+        std::uint8_t healthPercent = 100;  // 0..100
+        std::uint16_t level = 1;
+        PlaceKind kind = PlaceKind::Unknown;
+        std::string place;                 // planet name (or empty)
+    };
+
     struct PlayerTransform
     {
         PlayerId playerId = kInvalidPlayerId;
@@ -205,9 +219,11 @@ namespace cosync::proto
         //   tag 1 (1.1+): controls = 21 x f32, u8 flag
         //   tag 2 (1.2+): events   = u8 count (1..8), count x { u16 sequence, string name }
         //   tag 3 (1.3+): weapon   = u32 formId, u8 drawn (0/1)
+        //   tag 4 (1.5+): status   = u8 health%, u16 level, u8 kind, string place
         std::optional<PlayerControls> controls;
         std::vector<AnimEvent> events;
         std::optional<WeaponState> weapon;
+        std::optional<PlayerStatus> status;
     };
 
     // An NPC (data-file reference, identical FormID on every machine with the same load order)
@@ -220,8 +236,33 @@ namespace cosync::proto
         PlayerId targetPlayer = kInvalidPlayerId;
     };
 
+    // Groups (1.5): who shares party frames and overhead markers. The server owns the state.
+    inline constexpr std::size_t kMaxGroups = 32;
+    inline constexpr std::size_t kMaxGroupMembers = 8;
+    enum class GroupAction : std::uint8_t { Create = 1, Invite = 2, Accept = 3, Decline = 4, Leave = 5, Kick = 6 };
+    struct GroupRequest
+    {
+        GroupAction action = GroupAction::Create;
+        PlayerId target = kInvalidPlayerId;  // Invite / Kick
+        std::uint32_t groupId = 0;           // Accept / Decline
+    };
+    struct GroupInfo
+    {
+        std::uint32_t id = 0;
+        PlayerId leader = kInvalidPlayerId;
+        std::vector<PlayerId> members;  // includes the leader
+        std::vector<PlayerId> invited;
+        bool operator==(const GroupInfo&) const = default;
+    };
+    struct GroupState
+    {
+        std::uint32_t version = 0;
+        std::vector<GroupInfo> groups;
+    };
+
     using Message = std::variant<Hello, Welcome, Reject, SessionSnapshot, PlayerJoined, PlayerLeft,
-                                 Heartbeat, HeartbeatAck, Disconnect, PlayerTransform, NpcCombat>;
+                                 Heartbeat, HeartbeatAck, Disconnect, PlayerTransform, NpcCombat, GroupRequest,
+                                 GroupState>;
 
     enum class DecodeError
     {

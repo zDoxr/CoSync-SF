@@ -58,16 +58,23 @@ namespace cosync::net
     void NetworkWorker::SubmitLocalTransform(std::uint32_t locationId, const Vec3& position, const Vec3& rotation,
                                              const std::optional<proto::PlayerControls>& controls,
                                              const std::vector<proto::AnimEvent>& events,
-                                             const std::optional<proto::WeaponState>& weapon)
+                                             const std::optional<proto::WeaponState>& weapon,
+                                             const std::optional<proto::PlayerStatus>& status)
     {
         std::scoped_lock lock(_localMutex);
-        _localTransform = LocalTransform{ locationId, position, rotation, controls, events, weapon };
+        _localTransform = LocalTransform{ locationId, position, rotation, controls, events, weapon, status };
     }
 
     void NetworkWorker::SubmitNpcCombat(std::uint32_t npcFormId, PlayerId targetPlayer)
     {
         std::scoped_lock lock(_localMutex);
         if (_npcCombatOut.size() < 256) _npcCombatOut.emplace_back(npcFormId, targetPlayer);
+    }
+
+    void NetworkWorker::SubmitGroupRequest(const proto::GroupRequest& request)
+    {
+        std::scoped_lock lock(_localMutex);
+        if (_groupOut.size() < 64) _groupOut.push_back(request);
     }
 
     void NetworkWorker::SubmitKick(PlayerId player)
@@ -176,6 +183,12 @@ namespace cosync::net
                     combat.swap(_npcCombatOut);
                 }
                 for (const auto& [npc, targetPlayer] : combat) client.SendNpcCombat(npc, targetPlayer);
+                std::vector<proto::GroupRequest> groupRequests;
+                {
+                    std::scoped_lock lock(_localMutex);
+                    groupRequests.swap(_groupOut);
+                }
+                for (const auto& g : groupRequests) client.SendGroupRequest(g);
                 std::vector<PlayerId> kicks;
                 {
                     std::scoped_lock lock(_localMutex);
@@ -185,7 +198,7 @@ namespace cosync::net
                     for (const auto id : kicks) server->Kick(id, "kicked by the host");
                 }
                 if (local) {
-                    client.SendTransform(local->locationId, local->position, local->rotation, local->controls, local->events, local->weapon);
+                    client.SendTransform(local->locationId, local->position, local->rotation, local->controls, local->events, local->weapon, local->status);
                 }
             }
 
@@ -195,7 +208,7 @@ namespace cosync::net
                 if (auto* t = std::get_if<client_event::RemoteTransform>(&ev)) {
                     const auto& m = t->transform;
                     _remoteTransforms.PushDropOldest(
-                        { m.playerId, { SteadyNowMs(), m.sequence, m.locationId, m.position, m.rotation, m.controls, m.events, m.weapon } });
+                        { m.playerId, { SteadyNowMs(), m.sequence, m.locationId, m.position, m.rotation, m.controls, m.events, m.weapon, m.status } });
                     continue;
                 }
                 if (!_events.TryPush(std::move(ev))) {
