@@ -115,6 +115,7 @@ namespace cosync::plugin::avatars
     // *result = target FormID, 1 = no target, 0 = in flight.
     bool RequestCombatTarget(std::uint32_t actorId, std::shared_ptr<std::atomic<std::uint32_t>> result);
     bool StartCombat(std::uint32_t actorId, std::uint32_t targetRefId);
+    bool StopCombat(std::uint32_t actorId);  // Papyrus Actor.StopCombat()
 
     // Papyrus ObjectReference.SetScale(Float) (1 param, registered in the exe). Debug aid.
     bool SetScale(std::uint32_t refId, float scale);

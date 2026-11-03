@@ -295,6 +295,13 @@ namespace cosync::plugin::avatars
         });
     }
 
+    bool StopCombat(std::uint32_t actorId)
+    {
+        auto* actor = LookupActor(actorId);
+        if (!actor) return false;
+        return Dispatch(ScriptObjectFor(actor), "StopCombat", [](RE::BSScrapArray<Variable>&) {});
+    }
+
     bool RequestTemplateActor(std::shared_ptr<std::atomic<std::uint32_t>> result, std::string& error)
     {
         auto* player = RE::PlayerCharacter::GetSingleton();

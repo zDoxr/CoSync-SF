@@ -481,22 +481,37 @@ namespace cosync::plugin
             avatar.loaded3DAt != kNever &&
             now - avatar.loaded3DAt >= std::chrono::seconds(1)) {
             avatar.motionApplied = true;
-            std::string state;
-            const bool entered = movecontrols::EnterPlayerControlsState(avatar.refId, state);
-            log::Info("[avatar] player {} '{}': player-controls movement state {}: {}; registry now {}", id,
-                      remote.name, entered ? "entered" : "NOT entered", state,
-                      movecontrols::DescribeRegistry(avatar.refId));
+            // Replay object first: the player-controls agent that state 1 creates registers the actor
+            // with whatever IMovementPlayerControls is installed. With ours that is a no-op; with
+            // PlayerControls::Manager it left a dangling entry that crashed the game after the proxy
+            // was deleted (see movecontrols::PurgeFromPlayerControls).
             std::string detail;
             const bool ok = _opt.controls ? movecontrols::AttachReplay(avatar.refId, id, detail)
                                           : movecontrols::AttachMirror(avatar.refId, detail);
-            log::Info("[avatar] player {} '{}': {} controls {}: {}; now {}", id, remote.name,
-                      _opt.controls ? "replay" : "mirror",
-                      ok ? "attached" : "NOT attached", detail, movecontrols::DescribeRegistry(avatar.refId));
+            std::string state;
+            const bool entered = movecontrols::EnterPlayerControlsState(avatar.refId, state);
+            log::Info("[avatar] player {} '{}': {} controls {} ({}); player-controls state {} ({}); registry {}", id,
+                      remote.name, _opt.controls ? "replay" : "mirror", ok ? "attached" : "NOT attached", detail,
+                      entered ? "entered" : "NOT entered", state, movecontrols::DescribeRegistry(avatar.refId));
         }
 
         if ((_opt.mirror || _opt.controls) && avatar.refId != 0) {
             if (_opt.controls) DriveControls(id, remote);
             if (_opt.controls && avatar.motionApplied) ApplyWeapon(id, remote);
+            // The proxy is an NPC: when attacked, its own combat AI fought back and fired on its
+            // own (2026-11-03). Its actions come only from the remote player's replayed input, so
+            // any combat it enters is stopped (combat controller at Actor+0x250, RE A.12).
+            if (_opt.controls && avatar.motionApplied && now >= avatar.nextStopCombat) {
+                if (auto* form = RE::TESForm::LookupByID(avatar.refId);
+                    form && *reinterpret_cast<void* const*>(reinterpret_cast<std::byte*>(form) + 0x250)) {
+                    avatar.nextStopCombat = now + std::chrono::milliseconds(500);
+                    avatars::StopCombat(avatar.refId);
+                    if (++avatar.combatStops <= 10) {
+                        log::Info("[avatar] player {} '{}': proxy entered combat on its own; stopped (#{})", id,
+                                  remote.name, avatar.combatStops);
+                    }
+                }
+            }
             if (_opt.controls && avatar.motionApplied) {
                 for (const auto& name : remote.pendingReplays) {
                     if (!Replayed(name)) continue;  // only allow-listed events are ever sent into a graph
@@ -740,6 +755,10 @@ namespace cosync::plugin
         avatar.pathDone.reset();
         avatar.pathWalkRun = -1.0f;
         if (avatar.refId != 0) {
+            if (const int purged = movecontrols::PurgeFromPlayerControls(avatar.refId); purged > 0) {
+                log::Info("[avatar] player {}: removed {} PlayerControls entr{} for ref {:08X}", id, purged,
+                          purged == 1 ? "y" : "ies", avatar.refId);
+            }
             log::Info("[avatar] player {}: despawn ref {:08X} ({})", id, avatar.refId, why);
             avatars::Despawn(avatar.refId);
             _despawnChecks.emplace_back(avatar.refId, std::chrono::steady_clock::now() + std::chrono::seconds(2));

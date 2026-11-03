@@ -6,6 +6,7 @@
 #include <cstring>
 #include <format>
 #include <mutex>
+#include <vector>
 
 namespace cosync::plugin::movecontrols
 {
@@ -338,6 +339,31 @@ namespace cosync::plugin::movecontrols
         *reinterpret_cast<float*>(mid + 0x530) = pitch;  // DirectAtPitchVar
         *reinterpret_cast<std::uint8_t*>(mid + 0x587) = aimActive ? 1 : 0;  // bAimActive
         return true;
+    }
+
+    int PurgeFromPlayerControls(std::uint32_t refId)
+    {
+        auto* iface = static_cast<std::byte*>(ManagerPlayerControls());
+        if (!iface) return 0;
+        // Controlled-actor list as 0x12C6350/0x12C6440/0x12C6F10 use it: BSTArray<u32 handle> at
+        // iface+440 (size +0, capacity +4, data +8).
+        const auto size = *reinterpret_cast<std::uint32_t*>(iface + 440);
+        const auto* data = *reinterpret_cast<std::uint32_t* const*>(iface + 448);
+        if (size == 0 || size > 1024 || !data) return 0;
+        std::vector<std::uint32_t> handles(data, data + size);
+        using RemoveEntry_t = void (*)(void*, const std::uint32_t*);
+        const auto vtbl = *reinterpret_cast<void* const* const*>(iface);
+        int removed = 0;
+        for (const auto raw : handles) {
+            RE::BSPointerHandle<RE::Actor> handle;
+            std::memcpy(&handle, &raw, sizeof(raw));
+            const auto ptr = handle.get();
+            auto* actor = ptr.get();
+            if (actor && actor->GetFormID() != refId) continue;  // someone else's live entry
+            reinterpret_cast<RemoveEntry_t>(vtbl[3])(iface, &raw);
+            ++removed;
+        }
+        return removed;
     }
 
     int ControllerState(std::uint32_t refId)

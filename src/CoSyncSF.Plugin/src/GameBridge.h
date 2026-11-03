@@ -69,6 +69,8 @@ namespace cosync::plugin
             std::chrono::steady_clock::time_point nextStateFix{};  // mirror: re-enter state 1 if the AI leaves it
             std::uint32_t stateFixes = 0;
             std::uint32_t snaps = 0;  // controls mode: drift corrections
+            std::chrono::steady_clock::time_point nextStopCombat{};
+            std::uint32_t combatStops = 0;
             std::chrono::steady_clock::time_point nextLookLog{};
             std::chrono::steady_clock::time_point lastTurnAt{};
             float bodyYaw = 0.0f;

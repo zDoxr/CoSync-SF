@@ -74,6 +74,13 @@ namespace cosync::plugin::movecontrols
     // the actor's AI process (process->+0x08: +0x530 / +0x52C / +0x587; RE A.4), so the graph reads
     // these fields directly. Writes pitch (radians), heading offset 0 and aimActive. MAIN THREAD.
     bool SetAim(std::uint32_t refId, float pitch, bool aimActive);
+    // Removes every entry for `refId` (and any dead entry) from PlayerControls::Manager's list of
+    // controlled actors (Manager+0x20 interface slot 3 = 0x12C6440, the engine's own remove). A
+    // proxy's player-controls agent may have registered there; once the proxy is deleted the
+    // engine's input dispatch 0x12C6F10 dereferences the dead entry and crashes (2026-11-03 dump:
+    // Starfield.exe+0x12C70D8 reading null+0x2E). Call before despawning a proxy. Returns the count
+    // removed. MAIN THREAD.
+    int PurgeFromPlayerControls(std::uint32_t refId);
     // MovementControllerNPC state (+0xC0) of the actor, or -1. MAIN THREAD.
     int ControllerState(std::uint32_t refId);
 
