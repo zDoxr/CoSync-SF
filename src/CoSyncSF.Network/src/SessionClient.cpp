@@ -230,6 +230,24 @@ namespace cosync::net
                     events.emplace_back(client_event::Groups{ m });
                 } else if constexpr (std::is_same_v<T, proto::NpcCombat>) {
                     if (_roster.contains(m.playerId)) events.emplace_back(client_event::NpcCombat{ m });
+                } else if constexpr (std::is_same_v<T, proto::NpcAuthority>) {
+                    if (m.authority != _npcAuthority) _haveNpcSequence = false;  // a new sender's numbering
+                    _npcAuthority = m.authority;
+                    events.emplace_back(client_event::NpcAuthority{ m.authority });
+                } else if constexpr (std::is_same_v<T, proto::NpcStates>) {
+                    if (m.playerId != _npcAuthority) return;  // from before an ownership change
+                    if (_haveNpcSequence && !proto::SequenceNewer(m.sequence, _lastNpcSequence)) return;
+                    _lastNpcSequence = m.sequence;
+                    _haveNpcSequence = true;
+                    events.emplace_back(client_event::NpcStates{ m });
+                } else if constexpr (std::is_same_v<T, proto::NpcDeath>) {
+                    events.emplace_back(client_event::NpcDeath{ m });
+                } else if constexpr (std::is_same_v<T, proto::NpcDamage>) {
+                    events.emplace_back(client_event::NpcDamage{ m });
+                } else if constexpr (std::is_same_v<T, proto::NpcEvents>) {
+                    if (m.playerId == _npcAuthority) events.emplace_back(client_event::NpcEvents{ m });
+                } else if constexpr (std::is_same_v<T, proto::NpcOutfits>) {
+                    if (m.playerId == _npcAuthority) events.emplace_back(client_event::NpcOutfits{ m });
                 } else if constexpr (std::is_same_v<T, proto::Disconnect>) {
                     _resumeToken = {};
                     CloseConnection(CloseCode::Normal, "server closed session", false);
@@ -299,6 +317,42 @@ namespace cosync::net
     {
         if (_state != ClientState::InSession) return false;
         Send(request, Delivery::Reliable);
+        return true;
+    }
+
+    bool SessionClient::SendNpcStates(std::uint32_t locationId, std::vector<proto::NpcState> npcs)
+    {
+        if (_state != ClientState::InSession) return false;
+        Send(proto::NpcStates{ kInvalidPlayerId, ++_npcStatesSequence, locationId, std::move(npcs) }, Delivery::Unreliable);
+        return true;
+    }
+
+    bool SessionClient::SendNpcDeath(std::uint32_t npcFormId)
+    {
+        if (_state != ClientState::InSession || !proto::IsReplicatedNpcId(npcFormId)) return false;
+        Send(proto::NpcDeath{ kInvalidPlayerId, npcFormId }, Delivery::Reliable);
+        return true;
+    }
+
+    bool SessionClient::SendNpcDamage(std::uint32_t npcFormId, float amount)
+    {
+        if (_state != ClientState::InSession || !proto::IsReplicatedNpcId(npcFormId)) return false;
+        Send(proto::NpcDamage{ kInvalidPlayerId, npcFormId, amount }, Delivery::Reliable);
+        return true;
+    }
+
+    bool SessionClient::SendNpcEvents(std::vector<proto::NpcEvent> events)
+    {
+        if (_state != ClientState::InSession || events.empty()) return false;
+        Send(proto::NpcEvents{ kInvalidPlayerId, std::move(events) }, Delivery::Reliable);
+        return true;
+    }
+
+    bool SessionClient::SendNpcOutfits(std::vector<proto::NpcOutfit> outfits)
+    {
+        if (_state != ClientState::InSession || outfits.empty()) return false;
+        // Full state on a timer: a lost message is replaced by the next one.
+        Send(proto::NpcOutfits{ kInvalidPlayerId, std::move(outfits) }, Delivery::Unreliable);
         return true;
     }
 

@@ -3,6 +3,8 @@
 #include "AnimEvents.h"
 #include "AnimProbe.h"
 #include "MoveControls.h"
+#include "MenuPause.h"
+#include "SelfTest.h"
 #include "NpcSync.h"
 #include "Overlay.h"
 #include "SessionControl.h"
@@ -350,6 +352,8 @@ namespace cosync::plugin
 
     void GameBridge::Detach()
     {
+        _npcs.Reset("session closed");
+        menupause::SetActive(false);
         RemoveAllRemotes();
         _worker.store(nullptr);
     }
@@ -378,6 +382,7 @@ namespace cosync::plugin
                         log::Info("[game] session state: {} ({})", net::ToString(e.state), e.detail);
                         if (e.state == net::ClientState::Disconnected) {
                             _groupState = {};
+                            _npcs.Reset("disconnected");
                             RemoveAllRemotes();
                         }
                     } else if constexpr (std::is_same_v<T, ce::Welcomed>) {
@@ -391,6 +396,16 @@ namespace cosync::plugin
                         _groupState = e.state;
                     } else if constexpr (std::is_same_v<T, ce::NpcCombat>) {
                         ApplyNpcCombat(e.combat, *_worker.load());
+                    } else if constexpr (std::is_same_v<T, ce::NpcAuthority>) {
+                        if (_npcSyncEnabled) _npcs.OnAuthority(e.authority);
+                    } else if constexpr (std::is_same_v<T, ce::NpcDeath>) {
+                        if (_npcSyncEnabled) _npcs.OnDeath(e.death.npcFormId);
+                    } else if constexpr (std::is_same_v<T, ce::NpcDamage>) {
+                        if (_npcSyncEnabled) _npcs.OnDamage(e.damage);
+                    } else if constexpr (std::is_same_v<T, ce::NpcEvents>) {
+                        if (_npcSyncEnabled) _npcs.OnEvents(e.events);
+                    } else if constexpr (std::is_same_v<T, ce::NpcOutfits>) {
+                        if (_npcSyncEnabled) _npcs.OnOutfits(e.outfits);
                     } else if constexpr (std::is_same_v<T, ce::PeerLeft>) {
                         RemoveRemote(e.playerId);
                         log::Info("[game] player {} left ({})", e.playerId, proto::ToString(e.reason));
@@ -404,6 +419,16 @@ namespace cosync::plugin
         }
         UpdateRemotePlayers(*worker);
         if (_avatarsEnabled) UpdateNpcCombat(*worker);
+        if (_npcSyncEnabled) {
+            std::vector<std::uint32_t> proxies;
+            for (const auto& [id, remote] : _remotes) {
+                if (remote.avatar.refId != 0) proxies.push_back(remote.avatar.refId);
+            }
+            _npcs.Tick(*worker, { _inWorld, _vmSettled, _localLocationId, worker->Status().localPlayer, std::move(proxies) });
+            // Only with the player in the world: a load has stages with no LoadingMenu open.
+            menupause::SetActive(_menuPatch && _inWorld && _vmSettled && worker->Status().state == net::ClientState::InSession);
+            selftest::Tick(_inWorld && _vmSettled && worker->Status().state == net::ClientState::InSession);
+        }
         LogSummary(*worker);
     }
 
@@ -537,8 +562,8 @@ namespace cosync::plugin
 
         // Same clock domain as RemoteSample::receivedMs (stamped on the network thread).
         const auto nowMs = net::SteadyNowMs();
+        if (_avatarsEnabled || _npcSyncEnabled) UpdateVmState();
         if (_avatarsEnabled) {
-            UpdateVmState();
             UpdateTemplate();
             DrainAnimEvents();
             LogNpcEnumeration();

@@ -6,6 +6,7 @@
 #include "cosync/shared/Protocol.h"
 
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -23,8 +24,8 @@ namespace cosync::net
         std::uint32_t idleTimeoutMs = 10000;   // no message from a player for this long => dropped
         std::uint32_t resumeWindowMs = 30000;  // how long a dropped player's slot is reserved
         std::uint32_t maxPendingConnections = 16;
-        double maxMessagesPerSecond = 120.0;
-        double messageBurst = 240.0;
+        double maxMessagesPerSecond = 240.0;
+        double messageBurst = 480.0;
     };
 
     struct ServerStats
@@ -36,6 +37,7 @@ namespace cosync::net
         std::uint64_t staleTransformsDropped = 0;
         std::uint64_t rateLimitDisconnects = 0;
         std::uint64_t rejections = 0;
+        std::uint64_t npcMessagesRefused = 0;  // NPC state or damage from a player without the right
     };
 
     struct PlayerInfo
@@ -73,6 +75,7 @@ namespace cosync::net
         [[nodiscard]] std::size_t PendingConnectionCount() const;
         [[nodiscard]] SessionId Id() const noexcept { return _sessionId; }
         [[nodiscard]] const ServerStats& Stats() const noexcept { return _stats; }
+        [[nodiscard]] PlayerId NpcAuthority() const noexcept { return _npcAuthority; }
         [[nodiscard]] const ServerConfig& Config() const noexcept { return _config; }
 
     private:
@@ -116,6 +119,10 @@ namespace cosync::net
         void ReservePlayer(Player& player);
 
         void Welcome(Connection& conn, Player& player, bool resumed);
+        // Keeps the current NPC authority while it stays connected, otherwise picks the lowest
+        // connected game client, and tells everyone if that changed.
+        void ElectNpcAuthority();
+        void OnNpcMessage(Connection& conn, Player& player, proto::Message& msg);
         [[nodiscard]] Player* FindByToken(const ResumeToken& token);
         [[nodiscard]] bool NameTaken(std::string_view name) const;
         [[nodiscard]] ResumeToken NewToken();
@@ -130,6 +137,8 @@ namespace cosync::net
         std::unordered_map<ConnectionId, Connection> _connections;
         std::unordered_map<PlayerId, Player> _players;
         GroupManager _groups;
+        PlayerId _npcAuthority = kInvalidPlayerId;
+        std::set<std::uint32_t> _deadNpcs;  // replayed to late joiners
         std::vector<TransportEvent> _events;
     };
 }

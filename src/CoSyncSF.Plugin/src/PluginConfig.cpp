@@ -88,6 +88,7 @@ namespace cosync::plugin
         }
 
         c.remoteAvatars = ReadString(iniPath, L"Experimental", L"RemoteAvatars", "0") == "1";
+        c.npcSync = ReadString(iniPath, L"Experimental", L"NpcSync", "0") == "1";
         {
             const auto freeze = ReadString(iniPath, L"Experimental", L"AvatarFreezeAI", "0");
             c.avatarFreezeMode = freeze == "1" ? 1 : freeze == "2" ? 2 : 0;
@@ -125,6 +126,9 @@ namespace cosync::plugin
         try {
             c.fakeSteamId = static_cast<std::uint32_t>(
                 std::clamp(std::stoi(ReadString(iniPath, L"Dev", L"FakeSteamId", "0")), 0, 999));
+            c.selfTest = static_cast<std::uint32_t>(
+                std::clamp(std::stoi(ReadString(iniPath, L"Dev", L"SelfTest", "0")), 0, 3600));
+            c.menuPatch = ReadString(iniPath, L"Dev", L"MenuPatch", "1") != "0";
         } catch (...) {
             c.fakeSteamId = 0;
         }

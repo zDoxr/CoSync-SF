@@ -211,7 +211,168 @@ Consequence: an exact copy of a remote player means sending these fields over th
 
 - Four crash dumps from 2026-10-27, from the cell-walking experiment: `Starfield_10-28-03-{07,13,20,24}.dmp` (~150 MB each) in the game folder. The commit history attributes the 22:20/22:24 silent exits to iterating `TESObjectCELL::references` and reading `Actor::boolBits` with unverified layouts. That code was removed. The dumps have **not** been analysed (no WinDbg/cdb installed). **UNKNOWN** until analysed.
 
-## 11. Open items (what is needed and why)
+## 12. NPC state, actor update and control handover
+
+All findings below come from disassembly and decompilation (`tools/re/sfre.py`, `tools/re/ida/decompile_list.py`). **None has been exercised at runtime yet** unless marked VERIFIED-RT. All of these run on the game's main thread in CoSync (`GameBridge::Tick`), and only their readers and callers were examined, not every thread that touches these fields, so concurrent access is UNKNOWN.
+
+### 12.1 State reads, from the Papyrus natives
+
+Natives were found at their registration sites, where the pointer is loaded into `r9`. `natives.py` misses this template family. Actor natives are registered around `0x1FCC740`. A second block of same-named natives near `0x1F2xxxx` appears to belong to SpaceshipReference (INFERRED).
+
+| Script function | Native | What it does | Confidence |
+|---|---|---|---|
+| `Actor.IsDead` | `0x1FC7FB0` | Actor vfunc 269 (`vtbl+2152`) with `dl=1` | VERIFIED |
+| `Actor.GetCombatState` | `0x1FC6DE0` | vfunc 363 (`vtbl+2904`) false: 0. Then vfunc 351, field `+128` non-zero: 2, else 1 | VERIFIED |
+| `Actor.IsWeaponDrawn` | `0x1FD1490` | `(byte[actor+252] & 7) >= 3` | VERIFIED |
+| `Actor.IsInScene` | `0x1FD1330` | `dword[actor+520] & 8` | VERIFIED |
+| `Actor.IsSneaking` | `0x1FD1420` | `0x18E7660` (ID 100547) | VERIFIED |
+| `Actor.GetSitState` | `0x1FC81F0` | vfunc 52 of the subobject at `actor+240`, returns 0..4 | VERIFIED |
+| `ObjectReference.IsInDialogueWithPlayer` | `0x20761F0` | For an actor, `dword[actor+892] & 8` | VERIFIED |
+| `ObjectReference.GetValuePercentage` | `0x20737C0` | `actor+112` ActorValueOwner: slot 1 / slot 2, or 1.0 when slot 2 is 0 | VERIFIED |
+| `ObjectReference.DamageValue` | `0x206B300` | Owner `vtbl+56` (slot 7) with modifier 2 and a negative delta, then type-5 handling on reaching 0 | VERIFIED |
+| `Actor.SetRestrained` | `0x1FCA3C0` | Refuses if dead. `0x191C2F0`: vfunc 367 with life state 6 | VERIFIED |
+| `Actor.SetUnconscious` | `0x1FCA5F0` | Life state field `dword[actor+248] & 0x1E0000`; `0x60000` means unconscious | VERIFIED (meaning from the function name) |
+
+- Health: `ActorValue::GetSingleton` (ID 43134) is `0x49A430`, the function `DamageValue` compares against, and its `+264` matches CommonLibSF's `health` at `+0x108`. Two independent sources agree. VERIFIED.
+- CommonLibSF declares two overloads of `ModActorValue` at slots 6 and 7. CoSync calls slot 7 through the vtable, because MSVC can order overloads differently from the source. Only the slot used by `DamageValue` is relied on.
+- **Correction to A.12:** vfunc 363 is the "is in combat" test: `GetCombatState` uses it as the first check. A.12 described only what it reads. Its behaviour is unchanged.
+
+### 12.2 The AI bit gates the whole actor update
+
+`0x18E8E50` is the actor's per-tick update (INFERRED from its body; 9 call sites, among them `0xB4B02F` and `0x1A59819`). Its entry reads, abridged:
+
+```
+if (formFlags & 0x800 /*disabled*/ || !(actor[+520] & 2) /*AI enabled*/ || ...) { ...; goto end; }
+```
+
+- Everything else in the function sits behind that test (VERIFIED), including calls into the process object (`0x19B28C0`, `0x19C9950`, `0x19C3B50`, `0x1A107B0`) and `0x1911510`, `0x1911E70`. That these are the AI, package and movement updates is INFERRED; each call has not been traced.
+- `Actor::EnableAI` (`0x1959170`) also calls `0x23B20F0` on the character controller (`process+8 -> +0x458`) with the flag, and re-registers something at `process+0x10 -> +640`. VERIFIED instruction-level; purpose UNKNOWN.
+- **Consequence:** this explains the frozen 3D of §5, though it is not separately proven which of the two causes it. Either way, the AI bit cannot separate "decide" from "move and render". A client cannot keep an NPC visible with AI off. INFERRED.
+- Other readers of the bit: `0x1A83C40`, `0x195ACD0`, `0x1939630`, and the native at `0x1FD1181` (`IsAIEnabled`-shaped). Roles UNKNOWN.
+- **Package evaluation:** `Actor.EvaluatePackage` is native `0x1FC5E70` -> `0x1914750(actor, 0, flag)`, refused when the form is deleted or disabled, and calling `0x19146F0`. It is the candidate hook if NPC decisions must be suppressed. Not tested, and whether all evaluation goes through it is UNKNOWN.
+
+### 12.3 Reversing the player-controls state
+
+`MovementControllerNPC` vtable: ID 452731, `0x4CC0DB0`.
+
+| Slot | Function | Effect |
+|---|---|---|
+| 7 | `0x1AB7D80` (ID 103566) | Selects the default: mode 2 gives state 7, 8, 12 or 2 by flags `+197/+198/+199`; otherwise state 10 |
+| 8 | `0x1AB7E60` | State 3 or 11 |
+| 9 | `0x1AB7EB0` (ID 103568) | State 1, player controls |
+| 11 | `0x1AB7F00` | State 0 |
+| 12 | `0x1AB7F90` | State 0 |
+| 10 | `0x1AB8040` | State 13 |
+
+All VERIFIED by decompilation. Slot 7 is the reverse of slot 9 at the state level. That it fully restores an NPC, including agents and any registrations made while in state 1, is **UNVERIFIED** until tests 11 and 12 of the status doc.
+
+Runtime 2026-11-04 (VERIFIED-RT): real NPCs leave state 1 by themselves, mostly into state 4. Slot 13 (`0x1AB7FC0`) sets 4 or 9 and slot 14 (`0x1AB8110`) sets 5. CoSync's controller hold hooks slots 7, 8 and 10 to 14 and returns 0 for held controllers, the value of a failed `0x2735FB0`. Whether callers cope with that refusal is UNVERIFIED. `0x1AB80D0` also writes state 4 and is not one of the hooked slots, so it may bypass the hold.
+
+`LeavePlayerControlsState` also restores `IMovementPlayerControls` to `PlayerControls::Manager+0x20` when the controller is motion-driven, because vfunc 16 registers exactly that (A.5).
+
+### 12.4 Dialogue, scenes, quests, faces: first survey
+
+Static survey only: class names come from RTTI, so they prove a system exists, not how it behaves. Nothing here has been tested.
+
+| Area | Found | Confidence |
+|---|---|---|
+| Dialogue classes | `MenuTopicManager` (vtables `0x4CA81D0/E8`, `0x4CA8200`; singleton ID 938421 per CommonLibSF), `DialogueMenu`, `DialogueMenu_OnDialogueSelect` (`0x4D08378`), `TESTopic`, `TESTopicInfo`, `DialogueCameraState`, `SubtitleManager`, `BGSProcedureForceGreet` | VERIFIED (RTTI) |
+| `ObjectReference.Say` | `0x207EF20`: refuses a None topic info, then `0x205EC50(self, topicInfo, 0, speakAs, target)`. Argument meanings INFERRED | VERIFIED |
+| `Actor.IsTalking` | `0x1FD1450`: Actor vfunc 104 (`vtbl+832`) | VERIFIED |
+| Scene classes | `SceneManager`, `BGSScene`; actions `Dialogue`, `PlayerDialogue`, `Animation`, `Camera`, `FX`, `Move`, `Package`, `Radio`, `StartScene`, `Timeline`, `Timer`, `List` | VERIFIED (RTTI) |
+| `Scene.Start` | `0x1FFD320`: refuses unless the parent quest (`scene+168`) is running (`quest+276` bit 0 set, bit 7 clear, `+824` null, `+812` zero), then sets `scene+80` bit 0 and calls `0xCB6010`. The native name is INFERRED from its neighbours and its error text | VERIFIED |
+| `Quest.IsStageDone` | `0x20CB530`: stage index must fit 16 bits, then `0xD0DBD0(quest, stage)` | VERIFIED |
+| Story manager | `BGSStoryManager*` tree classes, `BGSStoryTeller`. The singleton ID is unresolved in CommonLibSF | VERIFIED (RTTI) |
+| Faces | `BSFaceGenAnimationData`, `BSFaceFX`, `BGSFaceFX`, `BGSFacialExpressionData`, `PerformanceMorphWeights` | VERIFIED (RTTI) |
+| Expression override | `ClearExpressionOverride` `0x1FC5660`: needs a process and face data from `0x19FA160`, then `0x18E0650` | VERIFIED |
+| Look at | `ClearLookAt` `0x1FC56F0`, which writes the invalid handle to `process+0x10 -> +652` | VERIFIED. Field meaning INFERRED |
+| Graph handlers | `HeadTrackingOn/OffHandler`, `HeadTrackingRotationOn/OffHandler`, `EyeTrackingOn/OffHandler`, `FaceEmotionalIdleHandler`, `GetUpStart/EndHandler`, `RagdollStartHandler`, `KnockdownHandler`, `StaggeredStopHandler`, `IdleDialogueEnter/ExitHandler` | VERIFIED (RTTI). That they react to named graph events is INFERRED |
+| Physical | `StaggerMeter` (`0x4D53E20`), `StaggerEffect`, `RagdollGetUp`, `AnimationRagdoll`, `BGSBleedoutActivity` | VERIFIED (RTTI) |
+
+### 12.5 Engine events
+
+319 distinct `BSTEventSink<…>` types exist in the binary, among them `TESDeathEvent`, `TESEquipEvent`, `TESTopicInfoEvent`, `TESQuestStageEvent`, `TESQuestStartStopEvent`, `TESSceneEvent`, `TESScenePhaseEvent`, `TESSceneActionEvent`, `TESFurnitureEvent`, `TESExitFurnitureEvent`, `TESPackageEvent`, `TESCombatEvent`, `TESOpenCloseEvent`, `TESActivateEvent`, `TESContainerChangedEvent`, `TESOnPCDialogueTargetEvent`, `TESEnterBleedoutEvent`, `BGSActorDeathEvent` and `AliasChangeEvent`. VERIFIED (RTTI).
+
+**Their sources are mostly unresolved.** CommonLibSF has IDs for only a few here: `TESEquipEvent` 64135, `TESLoadGameEvent` 64149, `TESBookReadEvent` 64108, `ActorCellChangeEvent` 64106. The rest are ID 0.
+
+### 12.6 Failed attempt: deriving event sources statically
+
+Tried on 2026-11-04 and **not usable**, recorded so it is not repeated:
+
+- Matching `RegisterSink` (`0x22C8E80`) call sites to RTTI base offsets resolved only 28 events and **none of the four known getters**, so it could not be validated. Its candidates, such as `0x4EC960` (ID 44207) for `TESDeathEvent`, are **UNVERIFIED**, and they must not be used as facts.
+- Reading offsets from `0x1FB8B60`, which calls 41 getters including the Equip one, **failed its control**: `0xB99C40` came back as `BGSLocationLoadedEvent`, not `TESEquipEvent`. The offsets in that function do not identify sinks.
+
+What did hold: getters are thread-safe static-local functions with one shape (`sub rsp,28; mov rax,gs:[58]; …; lea rax,<source>`). The proposed next step is a runtime probe that registers a counting sink on a candidate getter and reads no event fields, then checks whether the count rises only when the event should happen.
+
+### 12.7 Runtime findings, 2026-11-04
+
+- `ProcessLists` holds at least four actor-handle arrays: `+0x60` (64 entries), `+0x70` (1173), `+0x90` (35), `+0x190` (5). All entries resolved as actors. VERIFIED-RT. What each list means is UNKNOWN. Static analysis of `ProcessLists` users gave no offsets.
+- The controller hold works: over 15 minutes, no NPC left state 1 while 16,400 state changes were refused, without a crash. VERIFIED-RT.
+
+### 12.8 Menu pause
+
+- `0x1888410` (ID 99406) is the main frame update. Each frame it sets `Main+0x448` to 1 if `UI+0x4B4` is non-zero, `MainMenu` is open (`0x2544D60` with the name from `0x253D330`), or global `0x5FB4B78` is set. VERIFIED. `Main` singleton: ID 883591, global `0x5E71710`.
+- 13 functions read `Main+0x448`. About 80 sites read `UI+0x4B4` directly, so those systems may still stop during menus after the patch. UNKNOWN which.
+- Patch (`MenuPause.cpp`): the `ja` at `+0x64` is removed, and the call at `+0x71` is redirected to a hook that restores the pause if a `LoadingMenu` is open or no session is active. Whether `LoadingMenu` covers every unsafe case is UNVERIFIED.
+
+### 12.9 Not yet investigated
+
+Internals of dialogue flow, scene execution, quest scripts, equipment, ragdoll, loot, and actor attach and detach. Sections 12.4 and 12.5 list entry points only.
+
+### 12.10 CrowdManager, the ambient crowd
+
+Decompiled with IDA 9.3 on 2026-11-06. **Nothing here has been exercised at runtime** unless marked VERIFIED-RT.
+
+Singleton: `CrowdManager*` at global `0x5FD9B70` (ID 937582). Constructor `0x1272750`, destructor `0x1272F70`.
+
+| Manager offset | Meaning | Evidence |
+|---|---|---|
+| `+0x48` (72) | Crowd movement processing, copied to each entry's `+0x70`. Console toggle `0xC658A0` | VERIFIED |
+| `+0x49` (73) | Crowd animation processing, gates the per-actor jobs in `0x127D290`. Console toggle `0xC65A70` | VERIFIED |
+| `+0x4A` (74) | Gates the update `0x127E900` | VERIFIED |
+| `+0x50` | Read-write lock | VERIFIED |
+| `+0x68` / `+0x70` | `CrowdActorInfo` count and data, 0x80 bytes each | VERIFIED |
+| `+0x78` / `+0x80` | Target table count and data, 80 bytes each. `+56` handle, `+60` occupant, `+64`, `+68`, `+72` links | VERIFIED (`0x1278150`, `0x1271B20`) |
+| `+0x329` (809) | Inhibit strategy: 1 at `+824` Disable, 2 at `+832` Default, otherwise `+816` Null | VERIFIED |
+
+`CrowdActorInfo`: `+0x00` actor handle, `+0x04` target handle, `+0x08` previous target, `+0x0C` queued target, `+0x18` region, `+0x40` inhibit level, `+0x70` movement copy, `+0x72` near the player, `+0x74` inhibited, `+0x78` state. All VERIFIED, roles of `+0x08` and `+0x0C` INFERRED from their use.
+
+**The update.** Per frame `0x17CAB70` calls `0x127D290`, which queues jobs per actor: `0x1272610` -> `0x1271140` -> `0x127E900` -> `0x127EBA0`, the state machine. `0x127EAEA` is its only call site, and it sets only `rcx`, `rdx` and `r8`. It runs on job threads.
+
+| State | Does | Next |
+|---|---|---|
+| 0 | Builds a `PathingRequest` to the target, issues it with `0x19229A0` | 1, or 12 if seated |
+| 1 | Walks. On arrival, `0x19FFB10` for furniture | 2, 11, 14 or 7 |
+| 2 | Arrived. Random wait from the standing or furniture timers | 4, 5 or 6 |
+| 3, 4, 6 | Timed waits | 7 |
+| 7, 9 | Clears the target with `0x1271B20` | 8, 10 |
+| 8, 10 | **Picks the next target at random**, through `0x127D580` | 0 |
+| 11, 12 | Sitting down, standing up | 2, 1 |
+| 14 | Leaves through a door | 15 |
+| 17 to 21 | Reacts to the player | 7 |
+| 23 | Scripted path | 0, 1 or 12 |
+| 25 | Dead | |
+
+Meanings of states are INFERRED from their bodies; the transitions are VERIFIED.
+
+`0x1271B20(manager, entry, handle)` is SetTarget: it clears the old target's occupant, sets the new one's, stores the handle at `+0x04` and the old one at `+0x08`. `0x12718E0(entry, state)` is SetState. Issuing a new path from state 1 is something the machine does itself (repath), and state 0 stands a seated actor up (`v110 = 12`). VERIFIED.
+
+**Randomness cannot be seeded.** `0x4071D0`, `0x2FCF60` and `0x2FBE70` all draw on one engine generator at `0x591F4D0`, also used by about 20 unrelated functions (`0x15A3350`, `0x2150520`, `0xDDEA60`, others). Together with job threads, the same seed cannot give the same result. Spawning (`0x1276A70`, `NEW_REFR_DATA`) uses the same generator. VERIFIED. That two copies of one save start with an identical crowd is VERIFIED-RT (2026-11-05, same positions, clothes and looks, other FormIDs); they then diverge.
+
+**Inhibition is per camera.** `0x1275360` runs on the main thread. While `bCrowdInhibitEnable:AI` (value `0x5F10770`) is on, strategy = `(crowd size > uCrowdInhibitThresholdMinActor) + 1`, compared unsigned, default threshold 80 (setting at `0x5F107A8`, value `0x5F107B0`, ID 914896). A change calls the new strategy's enter and update slots. Default (2) sets entry `+0x74` from occlusion and distance. Such an actor skips `0x127E900` when `0x1286C40` agrees, so it stands still on that copy. Disable's update `0x126D100` clears `+0x74` on every entry. VERIFIED. 101 crowd actors were measured, so Default was active.
+
+**Settings** hold their value at object `+8` (`0x305FD0`). 90 or so `f/b/uCrowd*` settings exist, mostly in sections `Crowd` and `AI`. `bCrowdSystemEnabled:AI` (`0x5F106D0`) and `uMaxCrowdActorCount:Crowd` (`0x59169E0` table, default 250) are the coarse controls. Not used: turning the crowd off is not synchronising it.
+
+**What CoSync does** (`CrowdSync.cpp`, EXPERIMENTAL):
+
+1. Raises the threshold to `0xFFFFFFFF` during a session on every copy, so the engine itself selects Disable. The authority's camera can no longer stop an actor. Restored on leaving. Cost: more active crowd actors, frame rate unmeasured.
+2. The authority publishes each actor's target as a **position**, since a target may be a runtime reference numbered per copy. Whether any are is UNKNOWN; the log now counts misses.
+3. A replica finds the local target at that position (within 0.25) and hooks `0x127EAEA`. On a different target it calls SetTarget and SetState 0, exactly as state 8 does. With the same target it skips the update in states 3, 4, 6 to 10, where the machine would wait or choose at random. States 13 to 23 and 25 are never redirected.
+4. A crowd actor with no local match, a door for example, stays on the old driven path.
+
+Not solved: each copy still spawns and despawns its own actors (`0x1276A70`, `0x1281250`), so an actor spawned on the authority only pairs if a similar local one exists. Replicating the spawn itself needs its own work.
+
+## 13. Open items (what is needed and why)
 
 1. **IDA Pro 9.3** (now available; database being built under `local/ida/`, script `tools/re/ida/analyze_and_save.py`). Decompile `0xCD56E0` (appearance fields), `0x5A0520` (CreateReference), NPC locomotion selection, and `0x23B20F0` (the EnableAI → process path).
 2. **WinDbg/cdb** to analyse the four crash dumps.

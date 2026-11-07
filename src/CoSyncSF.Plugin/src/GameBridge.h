@@ -3,6 +3,7 @@
 #include "AnimEvents.h"
 #include "AnimProbe.h"
 #include "Avatars.h"
+#include "NpcReplication.h"
 #include "cosync/net/LanDiscovery.h"
 #include "cosync/net/NetworkWorker.h"
 #include "cosync/ui/UiModel.h"
@@ -37,6 +38,9 @@ namespace cosync::plugin
         void EnableLocalPlayerReads(bool enable) noexcept { _readLocalPlayer = enable; }
         // Experimental: spawn and move a stand-in actor per remote player in the same cell.
         void EnableAvatars(bool enable) noexcept { _avatarsEnabled = enable; }
+        // Experimental: replicate NPCs (NpcReplication.h).
+        void EnableMenuPatch(bool enable) { _menuPatch = enable; }
+    void EnableNpcSync(bool enable) noexcept { _npcSyncEnabled = enable; }
         void SetAvatarScale(float scale) noexcept { _avatarScale = scale; }
         struct AvatarOptions
         {
@@ -157,6 +161,9 @@ namespace cosync::plugin
         bool _readLocalPlayer = false;
         bool _inWorld = false;
         bool _avatarsEnabled = false;
+        bool _npcSyncEnabled = false;
+        bool _menuPatch = true;
+        npcsync::Replication _npcs;
         float _avatarScale = 1.0f;
         AvatarOptions _opt;
         // Animation diagnostics (AvatarAnimDiag).

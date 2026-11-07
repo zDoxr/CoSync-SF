@@ -324,6 +324,65 @@ namespace cosync::plugin::avatars
         }
     }
 
+    namespace
+    {
+        RE::TESForm* Wearable(std::uint32_t formId)
+        {
+            auto* item = RE::TESForm::LookupByID(formId);
+            return item && (item->Is(RE::FormType::kARMO) || item->Is(RE::FormType::kWEAP)) ? item : nullptr;
+        }
+    }
+
+    bool EquipForm(std::uint32_t actorId, std::uint32_t itemFormId)
+    {
+        auto* actor = LookupActor(actorId);
+        auto* item = Wearable(itemFormId);
+        if (!actor || !item) return false;
+        // EquipItem gives the actor the item first if it has none (ID::Actor::EquipItem).
+        return Dispatch(ScriptObjectFor(actor), "EquipItem", [item](RE::BSScrapArray<Variable>& a) {
+            Push(a, item);
+            Push(a, false);  // abPreventRemoval
+            Push(a, true);   // abSilent
+        });
+    }
+
+    bool UnequipForm(std::uint32_t actorId, std::uint32_t itemFormId)
+    {
+        auto* actor = LookupActor(actorId);
+        auto* item = Wearable(itemFormId);
+        if (!actor || !item) return false;
+        return Dispatch(ScriptObjectFor(actor), "UnequipItem", [item](RE::BSScrapArray<Variable>& a) {
+            Push(a, item);
+            Push(a, false);  // abPreventEquip
+            Push(a, true);   // abSilent
+        });
+    }
+
+    bool KillSilent(std::uint32_t actorId)
+    {
+        auto* actor = LookupActor(actorId);
+        if (!actor) return false;
+        return Dispatch(ScriptObjectFor(actor), "KillSilent", [](RE::BSScrapArray<Variable>& a) { a.emplace_back(); });
+    }
+
+    bool DamageHealth(std::uint32_t actorId, float amount)
+    {
+        auto* actor = LookupActor(actorId);
+        if (!actor) return false;
+        const auto self = ScriptObjectFor(actor);
+        return DispatchStatic(
+            "Game", "GetHealthAV", [](RE::BSScrapArray<Variable>&) {},
+            [self, amount](const Variable& av) {
+                const Variable copy = av;
+                Dispatch(self, "DamageValue", [copy, amount](RE::BSScrapArray<Variable>& a) {
+                    a.emplace_back();
+                    a.back() = copy;
+                    Push(a, amount);
+                });
+            },
+            [] {});
+    }
+
     bool RequestStatus(std::uint32_t actorId, std::shared_ptr<StatusQuery> q)
     {
         auto* actor = LookupActor(actorId);

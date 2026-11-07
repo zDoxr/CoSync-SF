@@ -22,12 +22,14 @@ namespace cosync::proto
 {
     inline constexpr std::uint32_t kMagic = 0x46535343;  // "CSSF" as little-endian bytes
     inline constexpr std::uint16_t kProtocolMajor = 1;   // incompatible changes
-    inline constexpr std::uint16_t kProtocolMinor = 5;   // backward-compatible additions
+    inline constexpr std::uint16_t kProtocolMinor = 9;   // backward-compatible additions
                                                          // 1.1: optional PlayerTransform::controls
                                                          // 1.2: tagged trailing sections, PlayerTransform::events
                                                          // 1.3: PlayerTransform::weapon
                                                          // 1.4: NpcCombat
                                                          // 1.5: PlayerTransform::status, groups
+                                                         // 1.6: NPC authority, states, death, damage
+                                                         // 1.7: NPC graph events, equipment
 
     inline constexpr std::size_t kMaxMessageBytes = 16 * 1024;
     inline constexpr std::size_t kMaxPlayerNameBytes = 32;
@@ -56,6 +58,12 @@ namespace cosync::proto
         NpcCombat = 11,       // C->S then S->C relay, reliable (1.4)
         GroupRequest = 12,    // C->S reliable (1.5)
         GroupState = 13,      // S->C reliable, authoritative group list (1.5)
+        NpcAuthority = 14,    // S->C reliable, who owns NPC simulation (1.6)
+        NpcStates = 15,       // authority->S->others, unreliable (1.6)
+        NpcDeath = 16,        // authority->S->others, reliable; replayed to late joiners (1.6)
+        NpcDamage = 17,       // C->S->authority, reliable (1.6)
+        NpcEvents = 18,       // authority->S->others, reliable (1.7)
+        NpcOutfits = 19,        // authority->S->others, reliable (1.7)
     };
 
     enum class RejectReason : std::uint16_t
@@ -236,6 +244,102 @@ namespace cosync::proto
         PlayerId targetPlayer = kInvalidPlayerId;
     };
 
+    // NPC replication (1.6, docs/NPC_SYNC_ARCHITECTURE.md). One game client at a time is the NPC
+    // authority, chosen by the server. Data-file references carry the same FormID on every machine
+    // with the same load order. Runtime FF references only match between copies of one save, so
+    // receivers must also compare baseId before treating one as the same NPC.
+    inline constexpr std::size_t kMaxNpcStates = 100;  // per message; a snapshot spans several
+    inline constexpr float kMaxNpcDamage = 1.0e6f;    // abuse bound, in health points
+    [[nodiscard]] constexpr bool IsRuntimeFormId(std::uint32_t formId) noexcept { return (formId >> 24) == 0xFF; }
+    [[nodiscard]] constexpr bool IsReplicatedNpcId(std::uint32_t formId) noexcept { return formId != 0; }
+
+    struct NpcAuthority
+    {
+        PlayerId authority = kInvalidPlayerId;  // none = no game client connected
+    };
+
+    enum NpcFlags : std::uint8_t
+    {
+        kNpcDead = 1 << 0,
+        kNpcWeaponDrawn = 1 << 1,
+        kNpcInCombat = 1 << 2,
+        kNpcSneaking = 1 << 3,
+        kNpcInScene = 1 << 4,
+        kNpcUnconscious = 1 << 5,
+        kNpcSitting = 1 << 6,  // in furniture
+        kNpcCrowdTarget = 1 << 7,  // ambient crowd actor heading for crowdTarget
+    };
+    inline constexpr std::uint8_t kNpcKnownFlags = 0xFF;
+
+    struct NpcState
+    {
+        std::uint32_t formId = 0;
+        std::uint32_t baseId = 0;
+        Vec3 position;
+        float yaw = 0.0f;  // radians
+        std::uint8_t healthPercent = 100;  // 0..100
+        std::uint8_t flags = 0;
+        // Where CrowdManager is sending it (1.9). On the wire only with kNpcCrowdTarget. A position,
+        // because the reference itself may be a runtime one, numbered per copy (RE 12.10).
+        Vec3 crowdTarget;
+    };
+
+    // Part of the latest state of the NPCs the authority has loaded, nearest first. Clients send
+    // playerId = 0; the server stamps the sender and refuses anyone but the authority.
+    struct NpcStates
+    {
+        PlayerId playerId = kInvalidPlayerId;
+        std::uint32_t sequence = 0;
+        std::uint32_t locationId = 0;
+        std::vector<NpcState> npcs;
+    };
+
+    struct NpcDeath
+    {
+        PlayerId playerId = kInvalidPlayerId;
+        std::uint32_t npcFormId = 0;
+    };
+
+    // Health a client's player took from its local copy of an NPC. The authority's engine applies
+    // it, so damage, bleedout and death are decided once. Clients send playerId = 0.
+    struct NpcDamage
+    {
+        PlayerId playerId = kInvalidPlayerId;
+        std::uint32_t npcFormId = 0;
+        float amount = 0.0f;  // health points, > 0
+    };
+
+    // Animation-graph input events the authority's engine sent to its NPCs, in order.
+    inline constexpr std::size_t kMaxNpcEvents = 64;
+    struct NpcEvent
+    {
+        std::uint32_t formId = 0;
+        std::string name;
+    };
+    struct NpcEvents
+    {
+        PlayerId playerId = kInvalidPlayerId;
+        std::vector<NpcEvent> events;
+    };
+
+    // What NPCs wear and hold on the authority: every equipped armor and weapon, sorted. Sent as
+    // full state on a timer, so a receiver corrects any difference, however it came about.
+    inline constexpr std::size_t kMaxNpcOutfits = 64;      // per message
+    inline constexpr std::size_t kMaxNpcOutfitItems = 24;  // per NPC
+    struct NpcOutfit
+    {
+        std::uint32_t formId = 0;
+        std::vector<std::uint32_t> items;
+        // Hash of what makes the NPC look the way it does. Runtime base IDs differ between copies,
+        // so this is how they tell whether two NPCs are the same person.
+        std::uint32_t look = 0;
+    };
+    struct NpcOutfits
+    {
+        PlayerId playerId = kInvalidPlayerId;
+        std::vector<NpcOutfit> outfits;
+    };
+
     // Groups (1.5): who shares party frames and overhead markers. The server owns the state.
     inline constexpr std::size_t kMaxGroups = 32;
     inline constexpr std::size_t kMaxGroupMembers = 8;
@@ -262,7 +366,7 @@ namespace cosync::proto
 
     using Message = std::variant<Hello, Welcome, Reject, SessionSnapshot, PlayerJoined, PlayerLeft,
                                  Heartbeat, HeartbeatAck, Disconnect, PlayerTransform, NpcCombat, GroupRequest,
-                                 GroupState>;
+                                 GroupState, NpcAuthority, NpcStates, NpcDeath, NpcDamage, NpcEvents, NpcOutfits>;
 
     enum class DecodeError
     {
@@ -298,6 +402,7 @@ namespace cosync::proto
     [[nodiscard]] bool IsValidPlayerName(std::string_view name) noexcept;
     [[nodiscard]] bool IsValidTransform(const PlayerTransform& t) noexcept;
     [[nodiscard]] bool IsValidControls(const PlayerControls& c) noexcept;
+    [[nodiscard]] bool IsValidNpcState(const NpcState& s) noexcept;
 
     // Serial-number comparison (RFC 1982 style) for wrapping u32 sequences.
     [[nodiscard]] constexpr bool SequenceNewer(std::uint32_t candidate, std::uint32_t last) noexcept

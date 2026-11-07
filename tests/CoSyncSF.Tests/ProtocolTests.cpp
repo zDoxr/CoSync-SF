@@ -58,6 +58,12 @@ namespace
             NpcCombat{ 4, 0x00015062, 2 },
             GroupRequest{ GroupAction::Invite, 3, 0 },
             GroupState{ 7, { GroupInfo{ 1, 2, { 2, 3 }, { 4 } } } },
+            NpcAuthority{ 3 },
+            NpcStates{ 3, 77, 0x1234, { NpcState{ 0x15062, 0x15061, { 1.0f, 2.0f, 3.0f }, 0.5f, 42, kNpcWeaponDrawn } } },
+            NpcDeath{ 3, 0x15062 },
+            NpcDamage{ 4, 0x15062, 12.5f },
+            NpcEvents{ 3, { NpcEvent{ 0x15062, "weaponDraw" } } },
+            NpcOutfits{ 3, { { 0x15062, { 0x1234, 0x5678 } }, { 0x15063, {} } } },
         };
     }
 

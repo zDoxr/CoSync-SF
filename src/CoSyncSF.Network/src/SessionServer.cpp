@@ -267,6 +267,13 @@ namespace cosync::net
             Broadcast(m, player.id, Delivery::Reliable);
             break;
         }
+        case proto::MessageType::NpcStates:
+        case proto::MessageType::NpcDeath:
+        case proto::MessageType::NpcDamage:
+        case proto::MessageType::NpcEvents:
+        case proto::MessageType::NpcOutfits:
+            OnNpcMessage(conn, player, msg);
+            break;
         case proto::MessageType::Disconnect:
             log::Info("player {} '{}' left", player.id, player.name);
             DropConnection(id, CloseCode::Normal, "client quit", proto::LeaveReason::Quit);
@@ -374,6 +381,10 @@ namespace cosync::net
         std::ranges::sort(snapshot.players, {}, &proto::PlayerEntry::playerId);
         Send(conn.id, snapshot);
         Send(conn.id, _groups.State());
+
+        ElectNpcAuthority();
+        Send(conn.id, proto::NpcAuthority{ _npcAuthority });
+        for (const auto npc : _deadNpcs) Send(conn.id, proto::NpcDeath{ _npcAuthority, npc });
     }
 
     void SessionServer::OnTransform(Connection&, Player& player, proto::PlayerTransform transform)
@@ -487,6 +498,67 @@ namespace cosync::net
             Broadcast(proto::PlayerLeft{ id, reason }, id);
         }
         if (_groups.RemovePlayer(id)) Broadcast(_groups.State(), id);
+        ElectNpcAuthority();
+    }
+
+    void SessionServer::ElectNpcAuthority()
+    {
+        if (const auto it = _players.find(_npcAuthority);
+            it != _players.end() && it->second.connection != kInvalidConnection) {
+            return;
+        }
+        PlayerId next = kInvalidPlayerId;
+        for (const auto& [id, p] : _players) {
+            if (p.connection == kInvalidConnection || p.gameRuntime == 0) continue;  // tool clients have no NPCs
+            if (next == kInvalidPlayerId || id < next) next = id;
+        }
+        if (next == _npcAuthority) return;
+        _npcAuthority = next;
+        log::Info("NPC authority: player {}", next);
+        Broadcast(proto::NpcAuthority{ next }, kInvalidPlayerId);
+    }
+
+    void SessionServer::OnNpcMessage(Connection& conn, Player& player, proto::Message& msg)
+    {
+        const auto stamped = [&](auto& m) {
+            if (m.playerId != kInvalidPlayerId && m.playerId != player.id) {
+                ++_stats.protocolViolations;
+                DropConnection(conn.id, CloseCode::ProtocolViolation, "NPC message for another player",
+                               proto::LeaveReason::ProtocolViolation);
+                return false;
+            }
+            m.playerId = player.id;
+            return true;
+        };
+        if (auto* damage = std::get_if<proto::NpcDamage>(&msg)) {
+            if (!stamped(*damage)) return;
+            const auto authority = _players.find(_npcAuthority);
+            if (authority == _players.end() || authority->first == player.id ||
+                authority->second.connection == kInvalidConnection) {
+                ++_stats.npcMessagesRefused;
+                return;
+            }
+            Send(authority->second.connection, *damage);
+            return;
+        }
+        // State and death: the authority's alone. A player that just lost the role can still have
+        // messages in flight, so this is not a violation.
+        if (player.id != _npcAuthority) {
+            ++_stats.npcMessagesRefused;
+            return;
+        }
+        if (auto* states = std::get_if<proto::NpcStates>(&msg)) {
+            if (stamped(*states)) Broadcast(*states, player.id, Delivery::Unreliable);
+        } else if (auto* events = std::get_if<proto::NpcEvents>(&msg)) {
+            if (stamped(*events)) Broadcast(*events, player.id);
+        } else if (auto* outfits = std::get_if<proto::NpcOutfits>(&msg)) {
+            if (stamped(*outfits)) Broadcast(*outfits, player.id, Delivery::Unreliable);
+        } else if (auto* death = std::get_if<proto::NpcDeath>(&msg)) {
+            if (!stamped(*death)) return;
+            constexpr std::size_t kMaxRememberedDeaths = 4096;
+            if (_deadNpcs.size() < kMaxRememberedDeaths) _deadNpcs.insert(death->npcFormId);
+            Broadcast(*death, player.id);
+        }
     }
 
     void SessionServer::ReservePlayer(Player& player)
@@ -499,6 +571,7 @@ namespace cosync::net
         if (_config.resumeWindowMs == 0) {
             _players.erase(id);
         }
+        ElectNpcAuthority();
     }
 
     SessionServer::Player* SessionServer::FindByToken(const ResumeToken& token)
