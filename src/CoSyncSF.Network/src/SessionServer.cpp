@@ -442,6 +442,7 @@ namespace cosync::net
         }
         player.hasTransform = true;
         player.lastTransformSequence = transform.sequence;
+        player.place = { transform.locationId, transform.position };
         transform.playerId = player.id;  // server stamps the authenticated identity
         Broadcast(transform, player.id, Delivery::Unreliable);
         ++_stats.transformsRelayed;
@@ -475,6 +476,12 @@ namespace cosync::net
             log::Info("player {} '{}' resume window expired", id, _players.at(id).name);
             _players.erase(id);  // PlayerLeft(ConnectionLost) was already broadcast at drop time
         }
+    }
+
+    presence::Place SessionServer::PlaceOf(PlayerId id) const
+    {
+        const auto it = _players.find(id);
+        return it == _players.end() ? presence::Place{} : it->second.place;
     }
 
     void SessionServer::Send(ConnectionId id, const proto::Message& msg, Delivery delivery)
@@ -587,12 +594,25 @@ namespace cosync::net
             ++_stats.npcMessagesRefused;
             return;
         }
+        // What NPCs do only matters to players who can see them. Deaths go to everyone: they change
+        // the world for good.
+        const auto nearby = [&](const proto::Message& m, Delivery delivery) {
+            const auto bytes = proto::Encode(m);
+            for (const auto& [id, p] : _players) {
+                if (id == player.id || p.connection == kInvalidConnection) continue;
+                if (!presence::MayShare(player.place, p.place)) {
+                    ++_stats.npcMessagesNotRelevant;
+                    continue;
+                }
+                _transport.Send(p.connection, bytes, delivery);
+            }
+        };
         if (auto* states = std::get_if<proto::NpcStates>(&msg)) {
-            if (stamped(*states)) Broadcast(*states, player.id, Delivery::Unreliable);
+            if (stamped(*states)) nearby(*states, Delivery::Unreliable);
         } else if (auto* events = std::get_if<proto::NpcEvents>(&msg)) {
-            if (stamped(*events)) Broadcast(*events, player.id);
+            if (stamped(*events)) nearby(*events, Delivery::Reliable);
         } else if (auto* outfits = std::get_if<proto::NpcOutfits>(&msg)) {
-            if (stamped(*outfits)) Broadcast(*outfits, player.id, Delivery::Unreliable);
+            if (stamped(*outfits)) nearby(*outfits, Delivery::Unreliable);
         } else if (auto* death = std::get_if<proto::NpcDeath>(&msg)) {
             if (!stamped(*death)) return;
             constexpr std::size_t kMaxRememberedDeaths = 4096;

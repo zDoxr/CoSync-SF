@@ -11,6 +11,7 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <format>
 #include <limits>
@@ -117,6 +118,8 @@ namespace cosync::plugin::worldsync
             }
         };
         LockSink g_lockSink;
+
+        const auto g_homeShip = std::make_shared<std::atomic<std::uint32_t>>(0);
 
         RE::BSTEventSource<RawEvent>* RawSource(std::uint64_t id)
         {
@@ -807,23 +810,73 @@ namespace cosync::plugin::worldsync
             log::Info("[world] {} with locks:{}", locked, lockeds);
             return true;
         }
+        if (step == "@home") {
+            avatars::RequestHomeShip(g_homeShip);
+            return true;
+        }
+        if (step.starts_with("@sethome ")) {
+            const auto id = static_cast<std::uint32_t>(std::stoul(step.substr(9), nullptr, 16));
+            log::Info("[ship] {}: dispatched {}", step, avatars::RequestSetHomeShip(id, g_homeShip));
+            return true;
+        }
+        if (step == "@seats" || step == "@pilot") {
+            // Furniture in the player's cell, by name; "@pilot" sits in the one named like a pilot seat.
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            RE::TESObjectREFR* pilot = nullptr;
+            for (auto* r : CellRefs(player->parentCell)) {
+                const auto base = r->GetBaseObject();
+                if (!base || !base->Is(RE::FormType::kFURN)) continue;
+                auto* full = starfield_cast<RE::TESFullName*>(base.get());
+                const char* n = full ? full->GetFullName() : nullptr;
+                const std::string name = n ? n : "";
+                log::Info("[ship] furniture {:08X} base {:08X} '{}'", r->GetFormID(), BaseId(r), name);
+                if (!pilot && name.find("ilot") != std::string::npos) pilot = r;
+            }
+            if (step == "@pilot" && pilot) {
+                log::Info("[ship] @pilot: sitting in {:08X}", pilot->GetFormID());
+                avatars::ActivateAsPlayer(pilot->GetFormID());
+            }
+            return true;
+        }
+        if (step == "@launch") {
+            // What the cockpit menu's Launch button does (TakeoffMenu_Launch, 0x16757D0): for a landed
+            // ship it closes the menu and posts the take-off. It only reads and sets the menu's
+            // "launched" byte at +560, so a zeroed stand-in serves as the menu.
+            using Launch_t = void (*)(void* const*);
+            static REL::Relocation<Launch_t> launch{ REL::ID(93833) };
+            static std::array<std::byte, 1024> menu{};
+            menu.fill(std::byte{ 0 });
+            void* const self = menu.data();
+            launch(&self);
+            log::Info("[ship] @launch: menu flag now {}", static_cast<int>(menu[560]));
+            return true;
+        }
+        if (step == "@takeoff") {
+            // SpaceshipReference.TakeOff (0x1F220B0): unless 0xB58D50(ship, 0) holds, 0x21199B0(ship), which
+            // has the ship's pilot perform the take-off action.
+            auto* ship = LookupRef(g_homeShip->load(), 0);
+            if (!ship) return true;
+            using Guard_t = bool (*)(RE::TESObjectREFR*, bool);
+            using TakeOff_t = std::uint64_t (*)(RE::TESObjectREFR*);
+            static REL::Relocation<Guard_t> guard{ REL::ID(63482) };
+            static REL::Relocation<TakeOff_t> takeOff{ REL::ID(119907) };
+            const bool blocked = guard(ship, false);
+            log::Info("[ship] @takeoff {:08X}: guard {}, pilot {:08X}", ship->GetFormID(), blocked, ship->GetSpaceshipPilot() ? ship->GetSpaceshipPilot()->GetFormID() : 0);
+            if (!blocked) log::Info("[ship] @takeoff returned {:#x}", takeOff(ship));
+            return true;
+        }
+        if (step == "@board") {
+            // The console entry runs only commands without a target ('player.moveto' does nothing).
+            log::Info("[ship] @board: dispatched {}", avatars::MoveRefTo(kPlayerRef, g_homeShip->load()));
+            return true;
+        }
         if (step == "@ship") {
             auto* player = RE::PlayerCharacter::GetSingleton();
             auto* ship = player->GetSpaceship(true);
+            log::Info("[ship] request result {}", g_homeShip->load());
+            if (!ship && g_homeShip->load() > 2) ship = LookupRef(g_homeShip->load(), 0);
             log::Info("[ship] player cell {:08X} pos {:.1f} {:.1f} {:.1f} in ship {:08X}", player->parentCell ? player->parentCell->GetFormID() : 0, player->GetPosition().x,
                       player->GetPosition().y, player->GetPosition().z, ship ? ship->GetFormID() : 0);
-            // Console landing (0xC7BC80) reads the player's ship here before falling back.
-            std::uint64_t word = 0;
-            ReadWord(reinterpret_cast<std::uintptr_t>(player) + 0xDE8, word);
-            if (IsRefPointer(word)) {
-                log::Info("[ship] player+0xDE8 is {:08X}", reinterpret_cast<RE::TESObjectREFR*>(word)->GetFormID());
-                if (!ship) ship = reinterpret_cast<RE::TESObjectREFR*>(word);
-            } else {
-                std::uint64_t head = 0, type = 0;
-                ReadWord(word, head);
-                ReadWord(word + 0x20, type);
-                log::Info("[ship] player+0xDE8 is {:#x}, {} words {:#x}", word, RttiName(reinterpret_cast<const void*>(word)), type);
-            }
             if (ship) {
                 const auto base = ship->GetBaseObject();
                 const auto at = ship->GetPosition();

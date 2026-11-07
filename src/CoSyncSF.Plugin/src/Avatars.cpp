@@ -309,6 +309,59 @@ namespace cosync::plugin::avatars
         return Dispatch(ScriptObjectFor(ref), "DisableNoWait", [](RE::BSScrapArray<Variable>& a) { Push(a, false); });
     }
 
+    bool RequestHomeShip(std::shared_ptr<std::atomic<std::uint32_t>> result)
+    {
+        return DispatchStatic(
+            "Game", "GetPlayerHomeSpaceShip", [](RE::BSScrapArray<Variable>&) {},
+            [result](const Variable& v) {
+                std::uint32_t id = 1;
+                if (v.is<RE::BSScript::Object>() && RE::BSScript::get<RE::BSScript::Object>(v)) {
+                    if (auto* ship = RE::BSScript::UnpackVariable<RE::TESObjectREFR>(v)) id = ship->GetFormID();
+                }
+                result->store(id);
+            },
+            [result] { result->store(1); });
+    }
+
+    bool RequestSetHomeShip(std::uint32_t shipId, std::shared_ptr<std::atomic<std::uint32_t>> result)
+    {
+        auto* ship = RE::TESForm::LookupByID<RE::TESObjectREFR>(shipId);
+        if (!ship) return false;
+        const auto object = ScriptObjectFor(ship);
+        log::Info("[ship] script type of {:08X}: {}", shipId, TypeChain(object));
+        return DispatchStatic(
+            "Game", "TrySetPlayerHomeSpaceShip", [object](RE::BSScrapArray<Variable>& a) {
+                a.emplace_back();
+                a.back() = object;
+            },
+            [result](const Variable& v) { result->store(v.is<bool>() && RE::BSScript::get<bool>(v) ? 2 : 1); },
+            [result] { result->store(1); });
+    }
+
+    bool MoveRefTo(std::uint32_t refId, std::uint32_t targetId)
+    {
+        // LookupByID<TESObjectREFR> refuses actors, the player among them.
+        auto* refForm = RE::TESForm::LookupByID(refId);
+        auto* targetForm = RE::TESForm::LookupByID(targetId);
+        RE::TESObjectREFR* ref = refForm ? refForm->As<RE::TESObjectREFR>() : nullptr;
+        if (refId == 0x14) ref = RE::PlayerCharacter::GetSingleton();  // LookupByID(0x14) finds no player here
+        auto* target = targetForm ? targetForm->As<RE::TESObjectREFR>() : nullptr;
+        if (!ref || !target) {
+            log::Warn("[ship] MoveTo: {:08X} found {}, {:08X} found {}", refId, ref != nullptr, targetId, target != nullptr);
+            return false;
+        }
+        const auto self = ScriptObjectFor(ref);
+        log::Info("[ship] MoveTo: self {} ({}), target {}", self != nullptr, TypeChain(self), TypeChain(ScriptObjectFor(target)));
+        return Dispatch(self, "MoveTo", [target](RE::BSScrapArray<Variable>& a) {
+            Push(a, target);
+            Push(a, 0.0f);
+            Push(a, 0.0f);
+            Push(a, 0.0f);
+            Push(a, true);
+            Push(a, false);
+        });
+    }
+
     bool SetLocked(std::uint32_t refId, bool locked)
     {
         auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refId);

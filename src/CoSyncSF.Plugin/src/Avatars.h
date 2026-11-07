@@ -208,6 +208,12 @@ namespace cosync::plugin::avatars
         float distanceToPlayer = -1.0f;
     };
     [[nodiscard]] ProxyState Probe(std::uint32_t refId);
+    // Game.GetPlayerHomeSpaceShip. *result receives the ship's FormID, or 1 when there is none.
+    bool RequestHomeShip(std::shared_ptr<std::atomic<std::uint32_t>> result);
+    // Game.TrySetPlayerHomeSpaceShip. *result receives 2 on success, 1 on refusal.
+    bool RequestSetHomeShip(std::uint32_t shipId, std::shared_ptr<std::atomic<std::uint32_t>> result);
+    // ObjectReference.MoveTo(target, 0, 0, 0, true, false): 0x2077B90 takes a target, three offsets, two flags.
+    bool MoveRefTo(std::uint32_t refId, std::uint32_t targetId);
     bool SetLocked(std::uint32_t refId, bool locked);
     bool DamageObject(std::uint32_t refId, float amount);
     bool SetDestroyed(std::uint32_t refId, bool destroyed);

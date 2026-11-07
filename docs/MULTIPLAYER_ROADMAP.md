@@ -20,6 +20,8 @@ Every copy runs the full game from the same save, and CoSync keeps those copies 
 | Ambient crowd follows the authority | Two copies | Median 75 seated on both, was 27 |
 | Doors, world pickups, data-file containers, clock, weather | Two copies | New, 2026-11-07 |
 | Quest stages and quest start | Two copies | New. Quests a guest starts stay local |
+| Locks | Two copies | New |
+| Presence: NPC updates only to players who can see them | Two copies | New. `cosync/shared/Presence.h` |
 | Late join for world state | Two copies | New |
 | Unattended two-copy test harness | Working | Loads a save, runs steps, reads back |
 
@@ -33,7 +35,7 @@ Rank combines importance, feasibility, dependencies and regression risk.
 | 2 | Crowd spawn and despawn (#2) | The largest remaining NPC divergence | | Medium, needs hooks |
 | 3 | Runtime reference identity | Unblocks runtime containers, dropped items, spawned loot | | Medium |
 | 4 | Item transfers arbitrated by the server | Prevents duplication | 3 | Medium |
-| 5 | Cell and location presence: which players are where | Everything below needs interest management | | Low |
+| 5 | Presence beyond NPCs: world events, ships, combat by place | NPC traffic is filtered by place already | | Low |
 | 6 | Reconnection and save/load through a session | A session must survive normal play | | Medium |
 | 7 | Projectiles, hits and damage between players | Combat is cosmetic until this | 5 | High |
 | 8 | Dialogue and scenes: one speaker, others watch | Quests depend on it in practice | 1 | High |

@@ -3,6 +3,7 @@
 #include "cosync/net/SessionServer.h"
 #include "cosync/shared/GameRuntime.h"
 #include "cosync/shared/NpcReplication.h"
+#include "cosync/shared/Presence.h"
 #include "cosync/shared/WorldSync.h"
 
 #include <gtest/gtest.h>
@@ -609,4 +610,55 @@ TEST(WorldContainers, OnlyDataFileContainersAreShared)
     EXPECT_TRUE(world::CanShareContainer(0x0022ED8A));
     EXPECT_FALSE(world::CanShareContainer(0xFF010C54));  // numbered per copy
     EXPECT_FALSE(world::CanShareContainer(0));
+}
+
+TEST(WorldLocks, NewestLockStateWinsAndReachesLateJoiners)
+{
+    world::Ledger ledger;
+    ledger.Apply({ WorldEventKind::LockState, 0x001661A7, 0x55, 0 });
+    ledger.Apply({ WorldEventKind::LockState, 0x001661A7, 0x55, 1 });
+    const auto snapshot = ledger.Snapshot();
+    ASSERT_EQ(snapshot.size(), 1u);
+    EXPECT_EQ(snapshot[0].value, 1);
+}
+
+TEST(WorldLocks, ProtocolAcceptsOnlyLockedOrUnlocked)
+{
+    EXPECT_TRUE(proto::IsValidWorldEvent({ WorldEventKind::LockState, 0x001661A7, 0x55, 0 }));
+    EXPECT_TRUE(proto::IsValidWorldEvent({ WorldEventKind::LockState, 0x001661A7, 0x55, 1 }));
+    EXPECT_FALSE(proto::IsValidWorldEvent({ WorldEventKind::LockState, 0x001661A7, 0x55, 2 }));
+    EXPECT_FALSE(proto::IsValidWorldEvent({ WorldEventKind::Destroyed, 0x001661A7, 0x55, -1 }));
+    EXPECT_FALSE(proto::IsValidWorldEvent({ static_cast<WorldEventKind>(7), 0x001661A7, 0x55, 1 }));
+}
+
+TEST(Presence, KnownApartOnlyWhenTheyReallyAre)
+{
+    using presence::Place;
+    constexpr std::uint32_t kOutside = 0x80001234, kOutsideNext = 0x80001235, kInside = 0x00005678;
+    EXPECT_TRUE(presence::MayShare(Place{ 0, {} }, Place{ kInside, {} }));  // not known yet
+    EXPECT_TRUE(presence::MayShare(Place{ kInside, {} }, Place{ kInside, { 900, 0, 0 } }));
+    EXPECT_FALSE(presence::MayShare(Place{ kInside, {} }, Place{ 0x00005679, {} }));
+    EXPECT_FALSE(presence::MayShare(Place{ kInside, {} }, Place{ kOutside, {} }));
+    EXPECT_TRUE(presence::MayShare(Place{ kOutside, { 0, 0, 0 } }, Place{ kOutsideNext, { 3000, 0, 0 } }));  // next cell over
+    EXPECT_FALSE(presence::MayShare(Place{ kOutside, { 0, 0, 0 } }, Place{ kOutsideNext, { 20000, 0, 0 } }));
+}
+
+TEST_F(Session, NpcStatesGoOnlyToPlayersWhoCanSeeThem)
+{
+    auto& host = Add("Host");
+    auto& near = Add("Near");
+    auto& away = Add("Away");
+    host.session->SendTransform(0x00005678, { 0, 0, 0 }, { 0, 0, 0 });
+    near.session->SendTransform(0x00005678, { 50, 0, 0 }, { 0, 0, 0 });
+    away.session->SendTransform(0x00009999, { 0, 0, 0 }, { 0, 0, 0 });
+    Pump();
+    ASSERT_TRUE(host.session->SendNpcStates(0x00005678, { At(kNpc, 5.0f) }));
+    Pump();
+    EXPECT_EQ(near.Got<client_event::NpcStates>().size(), 1u);
+    EXPECT_TRUE(away.Got<client_event::NpcStates>().empty());
+    EXPECT_EQ(server->Stats().npcMessagesNotRelevant, 1u);
+    // A death still reaches everyone.
+    ASSERT_TRUE(host.session->SendNpcDeath(kNpc));
+    Pump();
+    EXPECT_FALSE(away.Got<client_event::NpcDeath>().empty());
 }

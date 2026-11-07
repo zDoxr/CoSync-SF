@@ -1,6 +1,6 @@
 # World Sync
 
-Shared world state: what one player changes, the others see. Off unless `[Experimental] WorldSync=1` (`launch-instances.ps1 -WorldSync`). Protocol 1.10. Engine evidence is in [REVERSE_ENGINEERING.md](REVERSE_ENGINEERING.md) §12.11.
+Shared world state: what one player changes, the others see. Off unless `[Experimental] WorldSync=1` (`launch-instances.ps1 -WorldSync`). Protocol 1.11. Engine evidence is in [REVERSE_ENGINEERING.md](REVERSE_ENGINEERING.md) §12.11.
 
 Status words, used strictly:
 
@@ -21,6 +21,8 @@ Status words, used strictly:
 | Quest stages | **Two copies** | `00352CBA` stage 200 set on copy 1, read back as done on copy 2 |
 | Quest start | **Two copies** | `00193266` started on copy 1, then running with stage 5 on copy 2 |
 | Weather | **Two copies** | Host changed `001034AB` to `0002B07E`, copy 2 followed within 3 s |
+| Locks | **Two copies** | `001661A7` unlocked then locked on copy 1, copy 2 read back engine state 0 then 1 |
+| Destroyed objects | Implemented | Apply and read-back written. The engine event is not yet identified, and no breakable object was found in the test save |
 | Runtime (FF) containers | Unit tested | Deliberately not shared, see below |
 
 Crowd sync, measured in the same runs and over 16 minutes: seated on both copies, median 75 (was 27), and seated on one side, median 15 (was 71). No faults. Followers start at 86 of 104 and fall to about 64 as the copies' crowds diverge, which is issue #2.
@@ -29,13 +31,14 @@ Crowd sync, measured in the same runs and over 16 minutes: seated on both copies
 
 **Observing.** A sink on `Activation::Event` notes what the local player activated. For a door or a loose item, a watch of up to 4 s reads what the engine actually did. A locked door never changes state, so nothing is sent. Container and quest changes come from their own sinks. Sinks run on any thread and only queue numbers, and all engine reads happen in `Tick` on the main thread.
 
-**Applying.** Through the existing Papyrus dispatch: `SetOpen`, `DisableNoWait`, `AddItem`, `RemoveItem`, `SetCurrentStageID`. Weather forms have no script object to call, so weather uses the engine's `fw` command. Each apply is read back from the engine after 3 s and logged as `[world] verify ...`.
+**Applying.** Through the existing Papyrus dispatch: `SetOpen`, `DisableNoWait`, `AddItem`, `RemoveItem`, `SetCurrentStageID`, `Lock`. Weather forms have no script object to call, so weather uses the engine's `fw` command. Each apply is read back from the engine after 3 s and logged as `[world] verify ...`.
 
 **Authority.**
 
 | State | Who decides | Conflict rule |
 |---|---|---|
 | Doors, removed references | The player who acted | Newest report wins, one ledger entry per reference |
+| Locks | Whoever's engine changed it | Newest report wins. A lock event that changes nothing is not sent |
 | Containers | The player who acted | Counts add up. Two players taking the same stack can still both succeed: see limits |
 | Quest stages | Any player, quests with an objective on show | Stages only accumulate. Only the authority's report may start a quest on another copy |
 | Clock, weather | The NPC authority | Others step only past 2 game minutes, so they do not chase small differences. Weather only applies in the same location |
@@ -47,6 +50,7 @@ Crowd sync, measured in the same runs and over 16 minutes: seated on both copies
 ## Known limits
 
 - **Runtime containers stay local.** FF references are numbered per copy, and a container event carries no base ID to prove identity. This was a real bug, found in the late-join test: `FF010C54` was sent and applied to whatever had that number on the other copy. It is now refused at both ends. Refusal path unit tested, not exercised in game.
+- **Locks follow the engine, not only the player.** The lock event (RE 12.11) also fires when an NPC or a script changes a lock, and those changes are sent too. On a busy door in New Atlantis something unlocked a door a second after the test locked it, and that unlock was sent as well. The cause was not confirmed. A script that locks the same door on every copy costs nothing: the receiver already has that state and does nothing.
 - **Doors wait for their cell.** A door whose cell is not attached is retried every 2 s until a player brings it in.
 - **Containers have no reservation.** Two players emptying one container at once can both receive the items. Preventing duplication needs the server to arbitrate transfers before they happen.
 - **Ambient quests are local by design.** About 1 stage event per 2 s, all left on their own copy. A quest counts as shared when it has an objective on show, the same test as `Quest.IsObjectiveDisplayed`. `Quest.IsActive` proved to mean only the one tracked quest.

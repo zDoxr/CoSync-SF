@@ -339,6 +339,14 @@ From IDA 9.3 and from runs of `DevHarness.cpp` on 2026-11-07. VERIFIED-RT below 
 
 **Weather forms** are `BGSWeatherSettingsForm` (form type `0x44`, 181 of them), not `TESWeather`. Packing one as a script object fails, so `Weather.SetActive` could not be called this way, while the console's `fw <id>` works, VERIFIED-RT.
 
+**Locks.** Event getter ID 64148 fires on every lock change, payload word 0 the reference, VERIFIED-RT (it fired once for each `Lock` call on `000B2B04`, and for changes no test made). Lock data comes from ID 64290 (`0xBA0610`, used by `ObjectReference.IsLocked`): bit 0 of `+12` is locked, `+13` the level, and `null` means no lock. `Lock` (`0x2076B40`) creates the data on a reference that had none, VERIFIED-RT.
+
+**Destruction.** `ObjectReference.GetCurrentDestructionStage` calls ID 47007 (`0x5C39A0`), which **crashes** on a reference whose base has no `BGSDestructibleObject_Component`: it reads `[component+8]` without a check (dump `Starfield_11-07-20-07`, `Starfield.exe+0x5C3A17`). Check first with ID 47392 (`0x5DDB20`, find a component by key) and key ID 46986 (`0x5BF6D0`). Destroyed is bit `0x800000` of the form flags at `+0x20` (`ObjectReference.IsDestroyed`).
+
+**Ships, first findings.** Ship references are ordinary `REFR` (type 74) whose base has form type 65 (`BGSGenericBaseForm`) and flag `0x40`, the test `0x1FA78D0` makes. 108 exist in the New Atlantis save, most in sky cells. `Game.GetPlayerHomeSpaceShip` takes no arguments (`NativeFunction0`). `Actor.MoveTo` refuses a target in a sky cell ("non-unique cell ... can be instanced", Papyrus log). Boarding a landed home ship through `MoveTo` puts the player in its interior (`BlueprintShips-Starfield.esm:00100136`), VERIFIED-RT. `SpaceshipReference.TakeOff` (`0x1F220B0`) calls ID 119907 (`0x21199B0`), which has the pilot perform the take-off action. With the player seated as pilot it returned 0 and the ship stayed landed. The cockpit menu's Launch handler is ID 93833 (`0x16757D0`). Called with a stand-in menu, it ran without taking off. Both are open questions.
+
+**The console entry** (ID 113576) runs commands without a target (`fw`, `LoadGame`), but `player.moveto` and `set gamehour` do nothing, and `tots`/`lopa` did nothing either. Its output does not reach `ConsoleLog`'s buffer.
+
 **Time and weather.** `Utility.GetCurrentGameTime` reads `Calendar+0x30`'s value at `+0x48`, matching CommonLibSF. Writing `gameDaysPassed` and `gameHour` moves the clock and it keeps running, VERIFIED-RT. `Weather.GetCurrentWeather` is `Sky+0x118`, global `0x61DF6F0` (ID 938081).
 
 **Console.** `StartingConsoleCommandRunner` calls `0x1EA1E10` (ID 113576) with global `0x61E26B0` (ID 938528) and a command used as a format string. Called from the main menu with `LoadGame <name>` it loads the save, VERIFIED-RT. `set gamehour to N` through it does nothing, cause UNKNOWN.

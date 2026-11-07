@@ -215,6 +215,7 @@ namespace cosync::net
         auto nextTick = std::chrono::steady_clock::now();
         std::vector<ClientEvent> events;
         std::uint64_t dropped = 0;
+        auto nextStats = std::chrono::steady_clock::now();
 
         while (!_stopRequested) {
             if (server) {
@@ -229,6 +230,12 @@ namespace cosync::net
                 info.passwordRequired = !server->Config().password.empty();
                 info.serverName = server->Config().serverName;
                 discovery.Poll(info);
+                if (const auto now = std::chrono::steady_clock::now(); now >= nextStats) {
+                    nextStats = now + std::chrono::seconds(30);
+                    const auto& st = server->Stats();
+                    log::Info("[server] {} players, {} transforms relayed, {} NPC messages refused, {} NPC messages not sent to players elsewhere",
+                              server->ConnectedPlayerCount(), st.transformsRelayed, st.npcMessagesRefused, st.npcMessagesNotRelevant);
+                }
             }
 
             {

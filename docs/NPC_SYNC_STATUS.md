@@ -15,6 +15,8 @@ Status words, used strictly:
 
 ## Where this stands (2026-11-07)
 
+**Presence filter, two copies.** The server now sends NPC states, graph events and outfits only to players who may see them: same cell, or both outdoors within 8192 units (`presence::MayShare`). Deaths still go to everyone. Copy 1 boarded its ship while copy 2 stayed in New Atlantis: in the next minute 1,286 NPC messages were held back, copy 2's NPCs went back to its own AI after 5 s, and its count of received updates stopped at 638.
+
 **Crowd following works in game.** Two copies, 16 minutes, no faults: seated on both copies median 75 (was 27), seated on one side median 15 (was 71). The first minutes were better, 92 and 1. The crowd hook installed, and 85 of 104 crowd actors followed at the start, falling to about 64 as each copy spawned and despawned its own (issue #2). Frame rate with inhibition off is still unmeasured.
 
 Earlier status, 2026-11-06:

@@ -5,6 +5,7 @@ add_library(cosync_shared STATIC
     src/GameRuntime.cpp
     src/Interpolation.cpp
     src/Log.cpp
+    src/Presence.cpp
     src/Protocol.cpp
     src/WorldSync.cpp
 )

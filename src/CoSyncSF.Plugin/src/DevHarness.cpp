@@ -7,6 +7,7 @@
 
 #include <Windows.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -244,7 +245,19 @@ namespace cosync::plugin::dev
             if (c == '%') escaped += c;
         }
         log::Info("[dev] console: {}", command);
+        auto* console = RE::ConsoleLog::GetSingleton();
+        const std::string before = console ? std::string(console->buffer.c_str() ? console->buffer.c_str() : "") : std::string();
         execute(*runner, escaped.c_str());
+        // What the command printed, so a refusal shows its reason in the log.
+        if (console && console->buffer.c_str()) {
+            std::string after = console->buffer.c_str();
+            const auto added = after.size() > before.size() && after.starts_with(before) ? after.substr(before.size()) : after.substr(after.size() > 400 ? after.size() - 400 : 0);
+            if (!added.empty() && after != before) {
+                std::string line = added;
+                std::ranges::replace(line, '\n', '|');
+                log::Info("[dev] console said: {}", line);
+            }
+        }
     }
 
     void SetCommandHandler(std::function<bool(const std::string&)> handler) { g_handler = std::move(handler); }

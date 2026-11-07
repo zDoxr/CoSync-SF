@@ -4,6 +4,7 @@
 #include "cosync/net/Transport.h"
 #include "cosync/net/Util.h"
 #include "cosync/shared/Protocol.h"
+#include "cosync/shared/Presence.h"
 #include "cosync/shared/WorldSync.h"
 
 #include <optional>
@@ -40,6 +41,7 @@ namespace cosync::net
         std::uint64_t rejections = 0;
         std::uint64_t npcMessagesRefused = 0;  // NPC state or damage from a player without the right
         std::uint64_t worldEventsNotRemembered = 0;  // the ledger was full, late joiners miss these
+        std::uint64_t npcMessagesNotRelevant = 0;    // NPC updates not sent to a player who is elsewhere
     };
 
     struct PlayerInfo
@@ -77,6 +79,8 @@ namespace cosync::net
         [[nodiscard]] std::size_t PendingConnectionCount() const;
         [[nodiscard]] SessionId Id() const noexcept { return _sessionId; }
         [[nodiscard]] const ServerStats& Stats() const noexcept { return _stats; }
+        // Where a player was last seen; an unknown place for an unknown player.
+        [[nodiscard]] presence::Place PlaceOf(PlayerId id) const;
         [[nodiscard]] PlayerId NpcAuthority() const noexcept { return _npcAuthority; }
         [[nodiscard]] const ServerConfig& Config() const noexcept { return _config; }
 
@@ -100,6 +104,7 @@ namespace cosync::net
             std::uint32_t gameRuntime = 0;
             std::uint32_t lastTransformSequence = 0;
             bool hasTransform = false;
+            presence::Place place;  // from the latest transform
         };
 
         void OnConnected(ConnectionId id);
