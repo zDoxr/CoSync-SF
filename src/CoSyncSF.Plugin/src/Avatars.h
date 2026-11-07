@@ -118,6 +118,16 @@ namespace cosync::plugin::avatars
     bool StartCombat(std::uint32_t actorId, std::uint32_t targetRefId);
     bool StopCombat(std::uint32_t actorId);  // Papyrus Actor.StopCombat()
     bool KillSilent(std::uint32_t actorId);  // Papyrus Actor.KillSilent(None)
+
+    // ---- World (RE 12.11) ----
+    bool SetOpen(std::uint32_t refId, bool open);      // ObjectReference.SetOpen(bool)
+    bool DisableNoWait(std::uint32_t refId);           // ObjectReference.DisableNoWait(bool fade)
+    bool SetQuestStage(std::uint32_t questId, int stage);  // Quest.SetCurrentStageID(int)
+    bool SetWeatherActive(std::uint32_t weatherId);    // Weather.SetActive(bool override, bool accelerate)
+    bool ActivateAsPlayer(std::uint32_t refId);        // ObjectReference.Activate(player, false)
+    bool ContainerAdd(std::uint32_t refId, std::uint32_t itemId, int count);     // AddItem(item, count, silent)
+    bool ContainerRemove(std::uint32_t refId, std::uint32_t itemId, int count);  // RemoveItem(item, count, silent, None)
+    bool ContainerTakeAll(std::uint32_t refId);        // RemoveAllItems(player, false, false)
     // Armor, clothing or a weapon: added if missing, then equipped. Unequip leaves it in the inventory.
     bool EquipForm(std::uint32_t actorId, std::uint32_t itemFormId);
     bool UnequipForm(std::uint32_t actorId, std::uint32_t itemFormId);

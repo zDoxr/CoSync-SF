@@ -8,6 +8,8 @@ add_library(cosync_plugin SHARED
     src/NpcReplication.cpp
     src/MenuPause.cpp
     src/SelfTest.cpp
+    src/DevHarness.cpp
+    src/WorldSync.cpp
     src/MetroUi.cpp
     src/Overlay.cpp
     src/SteamInvite.cpp

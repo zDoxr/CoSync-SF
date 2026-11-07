@@ -240,6 +240,29 @@ namespace cosync::proto
             }
         }
 
+        void Encode(ByteWriter& w, const WorldEvents& m)
+        {
+            w.U32(m.playerId);
+            const auto count = std::min(m.events.size(), kMaxWorldEvents);
+            w.U8(static_cast<std::uint8_t>(count));
+            for (std::size_t i = 0; i < count; ++i) {
+                const auto& e = m.events[i];
+                w.U8(static_cast<std::uint8_t>(e.kind));
+                w.U32(e.formId);
+                w.U32(e.itemId);
+                w.U32(static_cast<std::uint32_t>(e.value));
+            }
+        }
+
+        void Encode(ByteWriter& w, const WorldClock& m)
+        {
+            w.U32(m.playerId);
+            w.F32(m.gameDaysPassed);
+            w.F32(m.gameHour);
+            w.U32(m.locationId);
+            w.U32(m.weather);
+        }
+
         void Encode(ByteWriter& w, const NpcOutfits& m)
         {
             w.U32(m.playerId);
@@ -513,6 +536,35 @@ namespace cosync::proto
                 }
                 return m;
             }
+            case MessageType::WorldEvents: {
+                WorldEvents m;
+                m.playerId = r.U32();
+                const auto count = r.U8();
+                if (count == 0 || count > kMaxWorldEvents) r.Fail();
+                for (std::uint8_t i = 0; r.Ok() && i < count; ++i) {
+                    WorldEvent e;
+                    e.kind = static_cast<WorldEventKind>(r.U8());
+                    e.formId = r.U32();
+                    e.itemId = r.U32();
+                    e.value = static_cast<std::int32_t>(r.U32());
+                    if (r.Ok() && !IsValidWorldEvent(e)) r.Fail();
+                    m.events.push_back(e);
+                }
+                return m;
+            }
+            case MessageType::WorldClock: {
+                WorldClock m;
+                m.playerId = r.U32();
+                m.gameDaysPassed = r.F32();
+                m.gameHour = r.F32();
+                m.locationId = r.U32();
+                m.weather = r.U32();
+                if (r.Ok() && (!std::isfinite(m.gameDaysPassed) || !std::isfinite(m.gameHour) || m.gameDaysPassed < 0.0f ||
+                               m.gameHour < 0.0f || m.gameHour > 24.0f)) {
+                    r.Fail();
+                }
+                return m;
+            }
             case MessageType::NpcOutfits: {
                 NpcOutfits m;
                 m.playerId = r.U32();
@@ -547,7 +599,7 @@ namespace cosync::proto
         bool IsKnownType(std::uint16_t t)
         {
             return t >= static_cast<std::uint16_t>(MessageType::Hello) &&
-                   t <= static_cast<std::uint16_t>(MessageType::NpcOutfits);
+                   t <= static_cast<std::uint16_t>(MessageType::WorldClock);
         }
 
         bool IsFiniteBounded(const Vec3& v, float bound)
@@ -585,6 +637,8 @@ namespace cosync::proto
                 else if constexpr (std::is_same_v<T, NpcDamage>) return MessageType::NpcDamage;
                 else if constexpr (std::is_same_v<T, NpcEvents>) return MessageType::NpcEvents;
                 else if constexpr (std::is_same_v<T, NpcOutfits>) return MessageType::NpcOutfits;
+                else if constexpr (std::is_same_v<T, WorldEvents>) return MessageType::WorldEvents;
+                else if constexpr (std::is_same_v<T, WorldClock>) return MessageType::WorldClock;
                 else static_assert(kAlwaysFalse<T>, "unhandled message type");
             },
             message);
@@ -688,6 +742,18 @@ namespace cosync::proto
         return name.front() != ' ' && name.back() != ' ';
     }
 
+    bool IsValidWorldEvent(const WorldEvent& e) noexcept
+    {
+        if (e.formId == 0) return false;
+        switch (e.kind) {
+        case WorldEventKind::DoorOpen: return e.value == 0 || e.value == 1;
+        case WorldEventKind::RefRemoved: return e.value == 0;
+        case WorldEventKind::QuestStage: return e.value >= 0 && e.value <= 0xFFFF;
+        case WorldEventKind::ContainerItem: return e.itemId != 0 && e.value != 0;
+        }
+        return false;
+    }
+
     bool IsValidNpcState(const NpcState& s) noexcept
     {
         return IsReplicatedNpcId(s.formId) && IsFiniteBounded(s.position, kMaxCoordinate) && std::isfinite(s.yaw) &&
@@ -736,6 +802,8 @@ namespace cosync::proto
         case MessageType::NpcDamage: return "NpcDamage";
         case MessageType::NpcEvents: return "NpcEvents";
         case MessageType::NpcOutfits: return "NpcOutfits";
+        case MessageType::WorldEvents: return "WorldEvents";
+        case MessageType::WorldClock: return "WorldClock";
         }
         return "Unknown";
     }

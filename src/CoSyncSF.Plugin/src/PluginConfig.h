@@ -45,12 +45,18 @@ namespace cosync::plugin
         bool avatarMirror = false;    // [Experimental] AvatarMoveMode=mirror: proxies replay the local player's controls
         bool avatarControls = false;  // [Experimental] AvatarMoveMode=controls: proxies replay the remote player's controls
         bool npcSync = false;         // [Experimental] NpcSync: replicate NPCs (docs/NPC_SYNC_STATUS.md)
+        bool worldSync = false;       // [Experimental] WorldSync: doors, pickups, clock, weather (docs/WORLD_SYNC.md)
         float avatarScale = 1.0f;     // [Experimental] AvatarScale (debug: >1 makes proxies easy to spot)
         // [Dev] FakeSteamId: 0 = real Steam; N (1..999) = test identity steam:N over local GNS (several
         // copies on one PC with one Steam account). Invites go through a shared file in %TEMP%.
         std::uint32_t fakeSteamId = 0;
         // [Dev] SelfTest: 0 = off; N = seconds in the world before the unattended menu test.
         std::uint32_t selfTest = 0;
+        // [Dev] Unattended tests (DevHarness.h).
+        std::string autoLoad;
+        bool eventCensus = false;
+        std::string testCommands;
+        std::uint32_t testCommandDelay = 30;
         // [Dev] MenuPatch=0: menus pause as in the unmodified game (control runs).
         bool menuPatch = true;
     };

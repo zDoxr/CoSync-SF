@@ -295,6 +295,85 @@ namespace cosync::plugin::avatars
         });
     }
 
+    bool SetOpen(std::uint32_t refId, bool open)
+    {
+        auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refId);
+        if (!ref) return false;
+        return Dispatch(ScriptObjectFor(ref), "SetOpen", [open](RE::BSScrapArray<Variable>& a) { Push(a, open); });
+    }
+
+    bool DisableNoWait(std::uint32_t refId)
+    {
+        auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refId);
+        if (!ref) return false;
+        return Dispatch(ScriptObjectFor(ref), "DisableNoWait", [](RE::BSScrapArray<Variable>& a) { Push(a, false); });
+    }
+
+    bool SetQuestStage(std::uint32_t questId, int stage)
+    {
+        auto* quest = RE::TESForm::LookupByID<RE::TESQuest>(questId);
+        if (!quest) return false;
+        return Dispatch(ScriptObjectFor(quest), "SetCurrentStageID", [stage](RE::BSScrapArray<Variable>& a) { Push(a, stage); });
+    }
+
+    bool SetWeatherActive(std::uint32_t weatherId)
+    {
+        auto* weather = RE::TESForm::LookupByID(weatherId);
+        if (!weather) return false;
+        return Dispatch(ScriptObjectFor(weather), "SetActive", [](RE::BSScrapArray<Variable>& a) {
+            Push(a, true);   // abOverride
+            Push(a, false);  // abAccelerate
+        });
+    }
+
+    bool ContainerAdd(std::uint32_t refId, std::uint32_t itemId, int count)
+    {
+        auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refId);
+        auto* item = RE::TESForm::LookupByID(itemId);
+        if (!ref || !item) return false;
+        return Dispatch(ScriptObjectFor(ref), "AddItem", [item, count](RE::BSScrapArray<Variable>& a) {
+            Push(a, item);
+            Push(a, count);
+            Push(a, true);  // abSilent
+        });
+    }
+
+    bool ContainerRemove(std::uint32_t refId, std::uint32_t itemId, int count)
+    {
+        auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refId);
+        auto* item = RE::TESForm::LookupByID(itemId);
+        if (!ref || !item) return false;
+        return Dispatch(ScriptObjectFor(ref), "RemoveItem", [item, count](RE::BSScrapArray<Variable>& a) {
+            Push(a, item);
+            Push(a, count);
+            Push(a, true);  // abSilent
+            PushNone(a);    // akOtherContainer
+        });
+    }
+
+    bool ContainerTakeAll(std::uint32_t refId)
+    {
+        auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refId);
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!ref || !player) return false;
+        return Dispatch(ScriptObjectFor(ref), "RemoveAllItems", [player](RE::BSScrapArray<Variable>& a) {
+            Push(a, static_cast<RE::TESObjectREFR*>(player));
+            Push(a, false);  // abKeepOwnership
+            Push(a, false);  // abRemoveQuestItems
+        });
+    }
+
+    bool ActivateAsPlayer(std::uint32_t refId)
+    {
+        auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refId);
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!ref || !player) return false;
+        return Dispatch(ScriptObjectFor(ref), "Activate", [player](RE::BSScrapArray<Variable>& a) {
+            Push(a, static_cast<RE::TESObjectREFR*>(player));
+            Push(a, false);  // abDefaultProcessingOnly
+        });
+    }
+
     bool StopCombat(std::uint32_t actorId)
     {
         auto* actor = LookupActor(actorId);

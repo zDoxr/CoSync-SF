@@ -22,7 +22,7 @@ namespace cosync::proto
 {
     inline constexpr std::uint32_t kMagic = 0x46535343;  // "CSSF" as little-endian bytes
     inline constexpr std::uint16_t kProtocolMajor = 1;   // incompatible changes
-    inline constexpr std::uint16_t kProtocolMinor = 9;   // backward-compatible additions
+    inline constexpr std::uint16_t kProtocolMinor = 10;   // backward-compatible additions
                                                          // 1.1: optional PlayerTransform::controls
                                                          // 1.2: tagged trailing sections, PlayerTransform::events
                                                          // 1.3: PlayerTransform::weapon
@@ -64,6 +64,8 @@ namespace cosync::proto
         NpcDamage = 17,       // C->S->authority, reliable (1.6)
         NpcEvents = 18,       // authority->S->others, reliable (1.7)
         NpcOutfits = 19,        // authority->S->others, reliable (1.7)
+        WorldEvents = 20,       // C->S->others, reliable; replayed to late joiners (1.10)
+        WorldClock = 21,        // authority->S->others, reliable (1.10)
     };
 
     enum class RejectReason : std::uint16_t
@@ -340,6 +342,41 @@ namespace cosync::proto
         std::vector<NpcOutfit> outfits;
     };
 
+    // Shared world state (1.10, docs/WORLD_SYNC.md). A change one player caused. Any player may report
+    // one, the server remembers it for late joiners and passes it on.
+    inline constexpr std::size_t kMaxWorldEvents = 64;  // per message
+    enum class WorldEventKind : std::uint8_t
+    {
+        DoorOpen = 1,       // formId door, itemId its base, value 1 open / 0 closed
+        RefRemoved = 2,     // formId reference taken from the world, itemId its base, value 0
+        QuestStage = 3,     // formId quest, value the stage set
+        ContainerItem = 4,  // formId container, itemId the item, value the change in count
+    };
+    struct WorldEvent
+    {
+        WorldEventKind kind = WorldEventKind::DoorOpen;
+        std::uint32_t formId = 0;
+        std::uint32_t itemId = 0;
+        std::int32_t value = 0;
+        bool operator==(const WorldEvent&) const = default;
+    };
+    struct WorldEvents
+    {
+        PlayerId playerId = kInvalidPlayerId;
+        std::vector<WorldEvent> events;
+    };
+    [[nodiscard]] bool IsValidWorldEvent(const WorldEvent& e) noexcept;
+
+    // The authority's sky, on a timer. Weather only applies to a copy in the same location.
+    struct WorldClock
+    {
+        PlayerId playerId = kInvalidPlayerId;
+        float gameDaysPassed = 0.0f;
+        float gameHour = 0.0f;
+        std::uint32_t locationId = 0;
+        std::uint32_t weather = 0;  // 0 = unknown
+    };
+
     // Groups (1.5): who shares party frames and overhead markers. The server owns the state.
     inline constexpr std::size_t kMaxGroups = 32;
     inline constexpr std::size_t kMaxGroupMembers = 8;
@@ -366,7 +403,8 @@ namespace cosync::proto
 
     using Message = std::variant<Hello, Welcome, Reject, SessionSnapshot, PlayerJoined, PlayerLeft,
                                  Heartbeat, HeartbeatAck, Disconnect, PlayerTransform, NpcCombat, GroupRequest,
-                                 GroupState, NpcAuthority, NpcStates, NpcDeath, NpcDamage, NpcEvents, NpcOutfits>;
+                                 GroupState, NpcAuthority, NpcStates, NpcDeath, NpcDamage, NpcEvents, NpcOutfits,
+                                 WorldEvents, WorldClock>;
 
     enum class DecodeError
     {

@@ -13,7 +13,11 @@ Status words, used strictly:
 | **UNIMPLEMENTED** | No code. Investigation may or may not have started |
 | **BLOCKED** | Cannot proceed until the named thing is resolved |
 
-## Where this stands (2026-11-06)
+## Where this stands (2026-11-07)
+
+**Crowd following works in game.** Two copies, 16 minutes, no faults: seated on both copies median 75 (was 27), seated on one side median 15 (was 71). The first minutes were better, 92 and 1. The crowd hook installed, and 85 of 104 crowd actors followed at the start, falling to about 64 as each copy spawned and despawned its own (issue #2). Frame rate with inhibition off is still unmeasured.
+
+Earlier status, 2026-11-06:
 
 **Crowd rework, statically derived, not run.** The last run showed why sync broke down: 98 NPCs seated on the authority, only 27 on both copies, because a crowd actor released to sit then took its own random decisions. CrowdManager cannot be seeded (RE 12.10), so a replica now takes the choice of target from the authority and lets the engine do the walking and sitting, and per-camera inhibition is off during a session. 110 of 110 automated tests pass. Whether it holds in game is unknown until the next run: read the `[crowd] … following now` line and `seated on both` against the numbers above.
 

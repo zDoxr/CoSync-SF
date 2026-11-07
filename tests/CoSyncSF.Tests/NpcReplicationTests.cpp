@@ -3,6 +3,7 @@
 #include "cosync/net/SessionServer.h"
 #include "cosync/shared/GameRuntime.h"
 #include "cosync/shared/NpcReplication.h"
+#include "cosync/shared/WorldSync.h"
 
 #include <gtest/gtest.h>
 
@@ -433,4 +434,179 @@ TEST(NpcDecisions, OnlyTheDeathEventKills)
     const auto change = h.OnAuthoritative(0.0f, 10.0f);
     ASSERT_TRUE(change.has_value());
     EXPECT_FLOAT_EQ(*change, -9.0f);  // down to 1%, never to 0
+}
+
+// ---- shared world state (docs/WORLD_SYNC.md) ----
+namespace
+{
+    using proto::WorldEvent;
+    using proto::WorldEventKind;
+    constexpr std::uint32_t kDoor = 0x0012AB34;
+    constexpr std::uint32_t kQuest = 0x00020001;
+
+    WorldEvent Door(int open) { return { WorldEventKind::DoorOpen, kDoor, 0x77, open }; }
+    WorldEvent Item(int count) { return { WorldEventKind::ContainerItem, kDoor, 0x0F, count }; }
+    WorldEvent Stage(int stage) { return { WorldEventKind::QuestStage, kQuest, 0, stage }; }
+}
+
+TEST(WorldLedger, NewestDoorReportWinsAndCostsOneEntry)
+{
+    world::Ledger ledger;
+    for (int i = 0; i < 50; ++i) ledger.Apply(Door(i % 2));
+    ASSERT_EQ(ledger.Size(), 1u);
+    EXPECT_EQ(ledger.Snapshot()[0].value, 1);
+}
+
+TEST(WorldLedger, QuestKeepsEveryStageInOrder)
+{
+    world::Ledger ledger;
+    ledger.Apply(Stage(10));
+    ledger.Apply(Stage(20));
+    ledger.Apply(Stage(10));  // reported by a second player: moves, does not duplicate
+    const auto all = ledger.Snapshot();
+    ASSERT_EQ(all.size(), 2u);
+    EXPECT_EQ(all[0].value, 20);
+    EXPECT_EQ(all[1].value, 10);
+}
+
+TEST(WorldLedger, ContainerCountsAddUpAndCancelOut)
+{
+    world::Ledger ledger;
+    ledger.Apply(Item(5));
+    ledger.Apply(Item(-2));
+    ASSERT_EQ(ledger.Size(), 1u);
+    EXPECT_EQ(ledger.Snapshot()[0].value, 3);
+    ledger.Apply(Item(-3));
+    EXPECT_EQ(ledger.Size(), 0u);
+}
+
+TEST(WorldLedger, FullLedgerRefusesNewThingsButStillUpdatesKnownOnes)
+{
+    world::Ledger ledger;
+    for (std::uint32_t i = 1; i <= world::Ledger::kMaxEntries; ++i) {
+        ASSERT_TRUE(ledger.Apply({ WorldEventKind::RefRemoved, i, 0, 0 }));
+    }
+    EXPECT_FALSE(ledger.Apply({ WorldEventKind::RefRemoved, 0xFFFFFF, 0, 0 }));
+    EXPECT_TRUE(ledger.Apply({ WorldEventKind::RefRemoved, 1, 0, 0 }));
+    EXPECT_EQ(ledger.Size(), world::Ledger::kMaxEntries);
+}
+
+TEST(WorldEcho, AppliedChangeIsSwallowedOnceThenForgotten)
+{
+    world::EchoFilter echo;
+    echo.Expect(Door(1), 1000);
+    EXPECT_TRUE(echo.Consume(Door(1), 1100));
+    EXPECT_FALSE(echo.Consume(Door(1), 1200));  // a second report is a real change
+}
+
+TEST(WorldEcho, DifferentChangeIsNotAnEcho)
+{
+    world::EchoFilter echo;
+    echo.Expect(Door(1), 1000);
+    EXPECT_FALSE(echo.Consume(Door(0), 1100));
+    EXPECT_TRUE(echo.Consume(Door(1), 1100));
+}
+
+TEST(WorldEcho, ExpectationRunsOut)
+{
+    world::EchoFilter echo;
+    echo.Expect(Door(1), 1000);
+    EXPECT_FALSE(echo.Consume(Door(1), 1000 + world::EchoFilter::kExpiryMs));
+}
+
+TEST(WorldClock, StepsOnlyWhenClocksHaveReallyParted)
+{
+    EXPECT_FALSE(world::NeedsClockStep(10.0f, 10.0f));
+    EXPECT_FALSE(world::NeedsClockStep(10.0f, 10.0f + world::kClockToleranceDays / 2.0f));
+    EXPECT_TRUE(world::NeedsClockStep(10.0f, 10.5f));
+    EXPECT_TRUE(world::NeedsClockStep(10.5f, 10.0f));
+    EXPECT_FALSE(world::NeedsClockStep(10.0f, std::nanf("")));
+}
+
+TEST(WorldProtocol, EventsRoundTrip)
+{
+    const proto::WorldEvents in{ 3, { Door(1), Item(-7), Stage(1000), { WorldEventKind::RefRemoved, 0xFF000123, 0x55, 0 } } };
+    const auto bytes = proto::Encode(proto::Message{ in });
+    const auto out = proto::Decode(bytes);
+    ASSERT_TRUE(out.Ok());
+    const auto& got = std::get<proto::WorldEvents>(*out.message);
+    EXPECT_EQ(got.playerId, 3u);
+    EXPECT_EQ(got.events, in.events);
+}
+
+TEST(WorldProtocol, ClockRoundTrip)
+{
+    const proto::WorldClock in{ 1, 123.25f, 6.0f, 0xAB, 0xCD };
+    const auto out = proto::Decode(proto::Encode(proto::Message{ in }));
+    ASSERT_TRUE(out.Ok());
+    const auto& got = std::get<proto::WorldClock>(*out.message);
+    EXPECT_EQ(got.gameDaysPassed, in.gameDaysPassed);
+    EXPECT_EQ(got.gameHour, in.gameHour);
+    EXPECT_EQ(got.weather, in.weather);
+}
+
+TEST(WorldProtocol, RefusesNonsense)
+{
+    EXPECT_FALSE(proto::IsValidWorldEvent({ WorldEventKind::DoorOpen, 0, 0, 1 }));
+    EXPECT_FALSE(proto::IsValidWorldEvent({ WorldEventKind::DoorOpen, kDoor, 0, 2 }));
+    EXPECT_FALSE(proto::IsValidWorldEvent({ WorldEventKind::QuestStage, kQuest, 0, 70000 }));
+    EXPECT_FALSE(proto::IsValidWorldEvent({ WorldEventKind::ContainerItem, kDoor, 0, 1 }));
+    EXPECT_FALSE(proto::IsValidWorldEvent({ WorldEventKind::ContainerItem, kDoor, 1, 0 }));
+    EXPECT_FALSE(proto::IsValidWorldEvent({ static_cast<WorldEventKind>(99), kDoor, 0, 0 }));
+    auto bad = proto::Encode(proto::Message{ proto::WorldClock{ 1, 1.0f, 99.0f, 0, 0 } });
+    EXPECT_FALSE(proto::Decode(bad).Ok());
+}
+
+TEST_F(Session, WorldEventFromAnyPlayerReachesTheOthers)
+{
+    auto& host = Add("Host");
+    auto& guest = Add("Guest");
+    ASSERT_TRUE(guest.session->SendWorldEvents({ Door(1) }));
+    Pump();
+    const auto got = host.Got<client_event::WorldEvents>();
+    ASSERT_EQ(got.size(), 1u);
+    EXPECT_EQ(got[0].world.playerId, guest.session->LocalPlayerId());
+    EXPECT_EQ(got[0].world.events, std::vector<WorldEvent>{ Door(1) });
+    EXPECT_TRUE(guest.Got<client_event::WorldEvents>().empty());  // never echoed to its sender
+}
+
+TEST_F(Session, LateJoinerGetsTheWorldAsItIsNow)
+{
+    auto& host = Add("Host");
+    host.session->SendWorldEvents({ Door(1), Stage(10), Item(5) });
+    host.session->SendWorldEvents({ Door(0), Stage(20), Item(-2) });
+    host.session->SendWorldClock({ 0, 50.5f, 12.0f, 0x10, 0x20 });
+    Pump();
+    auto& late = Add("Late");
+    Pump();
+    std::vector<WorldEvent> seen;
+    for (const auto& m : late.Got<client_event::WorldEvents>()) seen.insert(seen.end(), m.world.events.begin(), m.world.events.end());
+    ASSERT_EQ(seen.size(), 4u);  // the door once, both stages, the item once
+    const auto has = [&](const WorldEvent& e) { return std::ranges::find(seen, e) != seen.end(); };
+    EXPECT_TRUE(has(Door(0)));
+    EXPECT_TRUE(has(Stage(10)));
+    EXPECT_TRUE(has(Stage(20)));
+    EXPECT_TRUE(has(Item(3)));
+    const auto clocks = late.Got<client_event::WorldClock>();
+    ASSERT_EQ(clocks.size(), 1u);
+    EXPECT_EQ(clocks[0].clock.gameDaysPassed, 50.5f);
+}
+
+TEST_F(Session, OnlyTheAuthorityRunsTheClock)
+{
+    Add("Host");
+    auto& rogue = Add("Rogue");
+    auto& witness = Add("Witness");
+    rogue.session->SendWorldClock({ 0, 1.0f, 1.0f, 0, 0 });
+    Pump();
+    EXPECT_TRUE(witness.Got<client_event::WorldClock>().empty());
+    EXPECT_EQ(server->Stats().npcMessagesRefused, 1u);
+    EXPECT_EQ(server->ConnectedPlayerCount(), 3u);
+}
+
+TEST(WorldContainers, OnlyDataFileContainersAreShared)
+{
+    EXPECT_TRUE(world::CanShareContainer(0x0022ED8A));
+    EXPECT_FALSE(world::CanShareContainer(0xFF010C54));  // numbered per copy
+    EXPECT_FALSE(world::CanShareContainer(0));
 }

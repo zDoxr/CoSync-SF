@@ -1,0 +1,657 @@
+#include "WorldSync.h"
+
+#include "Avatars.h"
+
+#include "cosync/shared/Log.h"
+
+#include <RE/Starfield.h>
+#include <REL/Relocation.h>
+
+#include <Windows.h>
+
+#include <algorithm>
+#include <cmath>
+#include <format>
+#include <limits>
+#include <map>
+#include <mutex>
+
+namespace cosync::plugin::worldsync
+{
+    namespace
+    {
+        using namespace std::chrono_literals;
+        using proto::WorldEvent;
+        using proto::WorldEventKind;
+
+        constexpr std::uint64_t kGetOpenStateId = 47134;  // 0x5CDC70: 1 open, 2 opening, 3 closed, 4 closing
+        constexpr std::uint64_t kSkyId = 938081;              // 0x61DF6F0, read by Weather.GetCurrentWeather
+        // Both identified at runtime by what fired after a scripted action, payloads included (RE 12.11).
+        constexpr std::uint64_t kContainerChangedId = 64118;  // u32 from, to, item, count
+        constexpr std::uint64_t kQuestStageId = 64161;        // u32 quest, stage
+        constexpr std::uint32_t kPlayerRef = 0x14;
+        // quest+0x114, as Quest.IsRunning (0x20CDCA0) and Quest.IsActive (0x20CDC20) read them.
+        constexpr std::size_t kQuestFlags = 0x114;
+        constexpr std::size_t kQuestStopping = 0x338;
+        constexpr std::size_t kQuestStarting = 0x32C;
+        constexpr auto kWatchFor = 4s;
+        constexpr auto kVerifyAfter = 3s;
+        constexpr auto kRetryEvery = 2s;
+        constexpr auto kClockEvery = 5s;
+        constexpr auto kWeatherHold = 30s;
+        constexpr auto kLogEvery = 30s;
+        constexpr std::size_t kMaxPending = 16384;
+        constexpr std::size_t kMaxPerFrame = 16;
+
+        struct RawEvent
+        {
+            std::uint32_t a, b, c, d;
+        };
+
+        std::mutex g_activationLock;
+        std::vector<std::uint32_t> g_activations;
+        std::vector<RawEvent> g_containerChanges;
+        std::vector<RawEvent> g_questStages;
+
+        // On whatever thread activated the reference, so it only notes the form ID.
+        class ActivationSink final : public RE::BSTEventSink<RE::Activation::Event>
+        {
+        public:
+            RE::BSEventNotifyControl ProcessEvent(const RE::Activation::Event& event, RE::BSTEventSource<RE::Activation::Event>*) override
+            {
+                const auto* player = RE::PlayerCharacter::GetSingleton();
+                if (player && event.target && static_cast<const RE::TESForm*>(event.source.get()) == player) {
+                    std::scoped_lock lock(g_activationLock);
+                    if (g_activations.size() < 256) g_activations.push_back(event.target->GetFormID());
+                }
+                return RE::BSEventNotifyControl::kContinue;
+            }
+        };
+        ActivationSink g_sink;
+
+        class ContainerSink final : public RE::BSTEventSink<RawEvent>
+        {
+        public:
+            RE::BSEventNotifyControl ProcessEvent(const RawEvent& event, RE::BSTEventSource<RawEvent>*) override
+            {
+                std::scoped_lock lock(g_activationLock);
+                if (g_containerChanges.size() < 1024) g_containerChanges.push_back(event);
+                return RE::BSEventNotifyControl::kContinue;
+            }
+        };
+        ContainerSink g_containerSink;
+
+        class QuestSink final : public RE::BSTEventSink<RawEvent>
+        {
+        public:
+            RE::BSEventNotifyControl ProcessEvent(const RawEvent& event, RE::BSTEventSource<RawEvent>*) override
+            {
+                std::scoped_lock lock(g_activationLock);
+                if (g_questStages.size() < 256) g_questStages.push_back(event);
+                return RE::BSEventNotifyControl::kContinue;
+            }
+        };
+        QuestSink g_questSink;
+
+        RE::BSTEventSource<RawEvent>* RawSource(std::uint64_t id)
+        {
+            using Getter_t = RE::BSTEventSource<RawEvent>* (*)();
+            return reinterpret_cast<Getter_t>(REL::ID(id).address())();
+        }
+
+        std::uint32_t QuestFlags(const RE::TESQuest* quest)
+        {
+            return *reinterpret_cast<const std::uint32_t*>(reinterpret_cast<const std::byte*>(quest) + kQuestFlags);
+        }
+
+        bool QuestIsActive(const RE::TESQuest* quest) { return (QuestFlags(quest) & 0x800) != 0; }
+
+        bool QuestIsRunning(const RE::TESQuest* quest)
+        {
+            const auto* bytes = reinterpret_cast<const std::byte*>(quest);
+            const auto flags = QuestFlags(quest);
+            return (flags & 1) != 0 && (flags & 0x80) == 0 && *reinterpret_cast<void* const*>(bytes + kQuestStopping) == nullptr &&
+                   *reinterpret_cast<const std::uint8_t*>(bytes + kQuestStarting) == 0;
+        }
+
+        bool ReadWord(std::uintptr_t at, std::uint64_t& out) noexcept
+        {
+            __try {
+                out = *reinterpret_cast<const std::uint64_t*>(at);
+                return true;
+            } __except (1) {
+                return false;
+            }
+        }
+
+        // A pointer to a reference: right vtable range, and the form type is REFR or ACHR.
+        bool IsRefPointer(std::uint64_t word) noexcept
+        {
+            static const auto image = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+            if (word < 0x10000 || word > 0x7FFFFFFFFFFF || (word & 7) != 0) return false;
+            std::uint64_t vtable = 0, type = 0;
+            if (!ReadWord(word, vtable) || !ReadWord(word + 0x28, type)) return false;
+            const auto formType = static_cast<std::uint8_t>(type >> 48);
+            return vtable >= image && vtable < image + 0x8000000 && (formType == 0x4A || formType == 0x4B);
+        }
+
+        // The class name the compiler stored for this object: vtable[-1] -> locator -> type descriptor.
+        std::string RttiName(const void* object)
+        {
+            static const auto image = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+            std::uint64_t vtable = 0, locator = 0, word = 0;
+            if (!ReadWord(reinterpret_cast<std::uintptr_t>(object), vtable) || !ReadWord(vtable - 8, locator) || !ReadWord(locator + 12, word)) return "?";
+            const auto* name = reinterpret_cast<const char*>(image + static_cast<std::uint32_t>(word) + 0x10);
+            return std::string(name, strnlen(name, 80));
+        }
+
+        std::size_t CountRefs(std::uint64_t data)
+        {
+            std::size_t n = 0;
+            for (std::uint64_t word = 0; n < 65536 && ReadWord(data + n * 8, word) && IsRefPointer(word); ++n) {}
+            return n;
+        }
+
+        // Found by what it contains, with every entry checked, because a test step must not take the
+        // game down: walking the array the plain way crashed on 2026-11-07, cause not yet known.
+        std::vector<RE::TESObjectREFR*> CellRefs(const RE::TESObjectCELL* cell)
+        {
+            static std::size_t offset = 0;
+            const auto base = reinterpret_cast<std::uintptr_t>(cell);
+            if (offset == 0) {
+                std::size_t best = 0;
+                for (std::size_t at = 0x40; at < 0x300; at += 8) {
+                    std::uint64_t data = 0;
+                    if (!ReadWord(base + at, data)) continue;
+                    if (const auto n = CountRefs(data); n > best) {
+                        best = n;
+                        offset = at;
+                    }
+                }
+                log::Info("[world] cell references found at +{:#x}: {} in the first run", offset, best);
+                if (best < 2) offset = 0;
+            }
+            std::vector<RE::TESObjectREFR*> refs;
+            std::uint64_t data = 0;
+            if (offset == 0 || !ReadWord(base + offset, data)) return refs;
+            const auto n = CountRefs(data);
+            refs.reserve(n);
+            for (std::size_t i = 0; i < n; ++i) refs.push_back(*reinterpret_cast<RE::TESObjectREFR* const*>(data + i * 8));
+            return refs;
+        }
+
+        std::uint64_t NowMs()
+        {
+            return static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+        }
+
+        std::uint8_t DoorState(RE::TESObjectREFR* ref)
+        {
+            using Fn = std::uint8_t (*)(RE::TESObjectREFR*);
+            static REL::Relocation<Fn> fn{ REL::ID(kGetOpenStateId) };
+            return fn(ref);
+        }
+
+        std::uint32_t BaseId(const RE::TESObjectREFR* ref)
+        {
+            const auto base = ref->GetBaseObject();
+            return base ? base->GetFormID() : 0;
+        }
+
+        bool IsDoor(const RE::TESObjectREFR* ref)
+        {
+            const auto base = ref->GetBaseObject();
+            return base && base->Is(RE::FormType::kDOOR);
+        }
+
+        bool IsLooseItem(const RE::TESObjectREFR* ref)
+        {
+            const auto base = ref->GetBaseObject();
+            if (!base) return false;
+            switch (static_cast<RE::FormType>(base->GetFormType())) {
+            case RE::FormType::kARMO:
+            case RE::FormType::kWEAP:
+            case RE::FormType::kMISC:
+            case RE::FormType::kALCH:
+            case RE::FormType::kBOOK:
+            case RE::FormType::kAMMO:
+            case RE::FormType::kKEYM:
+                return true;
+            default:
+                return false;
+            }
+        }
+
+        // Runtime FF references are numbered per copy of a save, so the number alone is no proof.
+        RE::TESObjectREFR* LookupRef(std::uint32_t formId, std::uint32_t base)
+        {
+            auto* form = RE::TESForm::LookupByID(formId);
+            if (!form) return nullptr;
+            auto* ref = form->As<RE::TESObjectREFR>();
+            if (!ref) return nullptr;
+            if (proto::IsRuntimeFormId(formId) && base != 0 && BaseId(ref) != base) return nullptr;
+            return ref;
+        }
+
+        bool IsGone(const RE::TESObjectREFR* ref) { return ref->IsDisabled() || ref->IsDeleted() || !ref->parentCell; }
+
+        RE::Calendar* Calendar()
+        {
+            auto* calendar = RE::Calendar::GetSingleton();
+            return calendar && calendar->gameDaysPassed && calendar->gameHour ? calendar : nullptr;
+        }
+
+        std::uint32_t CurrentWeather()
+        {
+            auto* sky = *REL::Relocation<RE::Sky**>{ REL::ID(kSkyId) };
+            return sky && sky->currentWeather ? sky->currentWeather->GetFormID() : 0;
+        }
+
+        template <class Filter>
+        RE::TESObjectREFR* Nearest(Filter filter, const RE::TESObjectCELL* cell = nullptr)
+        {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (!player || !player->parentCell) return nullptr;
+            if (!cell) cell = player->parentCell;
+            const auto origin = player->GetPosition();
+            RE::TESObjectREFR* best = nullptr;
+            float bestDistance = std::numeric_limits<float>::max();
+            std::size_t matches = 0, gone = 0;
+            for (auto* ref : CellRefs(cell)) {
+                if (!filter(ref)) continue;
+                ++matches;
+                if (IsGone(ref)) {
+                    ++gone;
+                    continue;
+                }
+                const auto at = ref->GetPosition();
+                const auto d = std::hypot(at.x - origin.x, at.y - origin.y, at.z - origin.z);
+                if (!best || d < bestDistance) {
+                    bestDistance = d;
+                    best = ref;
+                }
+            }
+            log::Info("[world] search: {} match, {} of them gone, nearest {:.1f}", matches, gone, bestDistance);
+            return best;
+        }
+
+        bool IsContainer(const RE::TESObjectREFR* ref)
+        {
+            const auto base = ref->GetBaseObject();
+            return base && base->Is(RE::FormType::kCONT);
+        }
+    }
+
+    void Replication::Reset(const char* why)
+    {
+        log::Info("[world] reset: {}", why);
+        _watches.clear();
+        _outgoing.clear();
+        _pending.clear();
+        _verifies.clear();
+        _clock.reset();
+    }
+
+    void Replication::OnEvents(const proto::WorldEvents& events)
+    {
+        for (const auto& e : events.events) {
+            if (_pending.size() >= kMaxPending) {
+                ++_dropped;
+                continue;
+            }
+            _pending.push_back(e);
+        }
+    }
+
+    void Replication::OnClock(const proto::WorldClock& clock) { _clock = clock; }
+
+    void Replication::DrainActivations(Clock::time_point now)
+    {
+        std::vector<std::uint32_t> ids;
+        std::vector<RawEvent> changes, stages;
+        {
+            std::scoped_lock lock(g_activationLock);
+            ids.swap(g_activations);
+            changes.swap(g_containerChanges);
+            stages.swap(g_questStages);
+        }
+        for (const auto& c : changes) {
+            // Only what the local player moved. What an apply does on this copy never involves the
+            // player, so it cannot come back round.
+            const auto other = c.a == kPlayerRef ? c.b : c.b == kPlayerRef ? c.a : 0;
+            if (c.a == 0 || c.b == 0) {
+                if (_awaitedContainers.contains(c.a != 0 ? c.a : c.b)) {
+                    log::Info("[world] engine: container {:08X} {} item {:08X} x{}", c.a != 0 ? c.a : c.b, c.a != 0 ? "lost" : "gained", c.c, c.d);
+                }
+            }
+            if (other == 0) continue;
+            if (!world::CanShareContainer(other)) {
+                ++_localContainers;
+                continue;
+            }
+            const auto* ref = LookupRef(other, 0);
+            if (!ref || !IsContainer(ref)) continue;
+            const auto count = static_cast<std::int32_t>(c.d);
+            _outgoing.push_back({ WorldEventKind::ContainerItem, other, c.c, c.b == kPlayerRef ? -count : count });
+        }
+        for (const auto& s : stages) {
+            const auto* quest = RE::TESForm::LookupByID<RE::TESQuest>(s.a);
+            if (!quest) continue;
+            const proto::WorldEvent e{ WorldEventKind::QuestStage, s.a, 0, static_cast<std::int32_t>(s.b & 0xFFFF) };
+            if (_echo.Consume(e, NowMs())) continue;
+            // Ambient quests run on each copy for themselves. Only what a player follows is shared.
+            if (!QuestIsActive(quest)) {
+                ++_ambientStages;
+                continue;
+            }
+            _outgoing.push_back(e);
+        }
+        for (const auto id : ids) {
+            auto* ref = LookupRef(id, 0);
+            if (!ref) continue;
+            const bool door = IsDoor(ref);
+            if (!door && !IsLooseItem(ref)) continue;
+            _watches.push_back({ id, BaseId(ref), door ? DoorState(ref) : std::uint8_t{ 0 }, now + kWatchFor });
+        }
+    }
+
+    void Replication::UpdateWatches(net::NetworkWorker&, Clock::time_point now)
+    {
+        std::erase_if(_watches, [&](const Watch& w) {
+            auto* form = RE::TESForm::LookupByID(w.ref);
+            auto* ref = form ? form->As<RE::TESObjectREFR>() : nullptr;
+            if (!ref || w.doorStateBefore == 0) {
+                if (!ref || IsGone(ref)) {
+                    _outgoing.push_back({ WorldEventKind::RefRemoved, w.ref, w.base, 0 });
+                    return true;
+                }
+            } else if (const auto state = DoorState(ref); state != w.doorStateBefore && state != 0) {
+                _outgoing.push_back({ WorldEventKind::DoorOpen, w.ref, w.base, state == 1 || state == 2 ? 1 : 0 });
+                return true;
+            }
+            return now >= w.until;  // locked, refused, or still there: nothing changed
+        });
+    }
+
+    bool Replication::Apply(const WorldEvent& e, Clock::time_point now)
+    {
+        switch (e.kind) {
+        case WorldEventKind::DoorOpen: {
+            auto* ref = LookupRef(e.formId, e.itemId);
+            if (!ref) {
+                ++_dropped;
+                log::Warn("[world] door {:08X} is not on this copy", e.formId);
+                return true;
+            }
+            // Needs its cell in memory: a door further off waits until a player brings it in.
+            if (!ref->parentCell || !ref->parentCell->IsAttached()) return false;
+            avatars::SetOpen(e.formId, e.value != 0);
+            break;
+        }
+        case WorldEventKind::RefRemoved: {
+            auto* ref = LookupRef(e.formId, e.itemId);
+            if (!ref || IsGone(ref)) return true;
+            avatars::DisableNoWait(e.formId);
+            break;
+        }
+        case WorldEventKind::QuestStage: {
+            auto* quest = RE::TESForm::LookupByID<RE::TESQuest>(e.formId);
+            if (!quest) {
+                ++_dropped;
+                return true;
+            }
+            if (quest->IsStageDone(static_cast<std::uint16_t>(e.value))) return true;
+            // Setting a stage starts a quest that is not running, and that is never this copy's to do.
+            if (!QuestIsRunning(quest)) {
+                ++_dropped;
+                log::Info("[world] quest {:08X} stage {} not applied: not running here", e.formId, e.value);
+                return true;
+            }
+            _echo.Expect(e, NowMs());
+            avatars::SetQuestStage(e.formId, e.value);
+            break;
+        }
+        case WorldEventKind::ContainerItem: {
+            const auto* ref = world::CanShareContainer(e.formId) ? LookupRef(e.formId, 0) : nullptr;
+            if (!ref || !IsContainer(ref)) {
+                ++_dropped;
+                return true;
+            }
+            _awaitedContainers.insert(e.formId);
+            if (e.value > 0) {
+                avatars::ContainerAdd(e.formId, e.itemId, e.value);
+            } else {
+                avatars::ContainerRemove(e.formId, e.itemId, -e.value);
+            }
+            log::Info("[world] applied container {:08X} item {:08X} {:+}", e.formId, e.itemId, e.value);
+            ++_applied;
+            return true;
+        }
+        }
+        ++_applied;
+        _verifies.push_back({ e, now + kVerifyAfter });
+        return true;
+    }
+
+    void Replication::ApplyPending(Clock::time_point now)
+    {
+        if (now < _nextRetry) return;
+        std::size_t budget = kMaxPerFrame;
+        std::deque<WorldEvent> later;
+        while (!_pending.empty() && budget > 0) {
+            const auto e = _pending.front();
+            _pending.pop_front();
+            --budget;
+            if (!Apply(e, now)) later.push_back(e);
+        }
+        // Everything was tried and nothing moved: wait, rather than spinning on it every frame.
+        if (_pending.empty() && !later.empty()) _nextRetry = now + kRetryEvery;
+        _pending.insert(_pending.end(), later.begin(), later.end());
+    }
+
+    void Replication::RunVerifies(Clock::time_point now)
+    {
+        std::erase_if(_verifies, [&](const Verify& v) {
+            if (now < v.at) return false;
+            auto* ref = LookupRef(v.event.formId, v.event.itemId);
+            switch (v.event.kind) {
+            case WorldEventKind::DoorOpen:
+                log::Info("[world] verify door {:08X}: wanted {}, engine state {}", v.event.formId, v.event.value != 0 ? "open" : "closed",
+                          ref ? DoorState(ref) : 0);
+                break;
+            case WorldEventKind::RefRemoved:
+                log::Info("[world] verify removed {:08X}: {}", v.event.formId, !ref || IsGone(ref) ? "gone" : "STILL THERE");
+                break;
+            case WorldEventKind::QuestStage: {
+                const auto* quest = RE::TESForm::LookupByID<RE::TESQuest>(v.event.formId);
+                log::Info("[world] verify quest {:08X} stage {}: {}", v.event.formId, v.event.value,
+                          quest && quest->IsStageDone(static_cast<std::uint16_t>(v.event.value)) ? "done" : "NOT DONE");
+                break;
+            }
+            case WorldEventKind::ContainerItem:
+                break;
+            }
+            return true;
+        });
+    }
+
+    void Replication::PublishClock(net::NetworkWorker& worker, const Context& context, Clock::time_point now)
+    {
+        if (context.localPlayer != _authority || now < _nextClock) return;
+        _nextClock = now + kClockEvery;
+        const auto* calendar = Calendar();
+        if (!calendar) return;
+        worker.SubmitWorldClock({ kInvalidPlayerId, calendar->gameDaysPassed->value, calendar->gameHour->value, context.locationId, CurrentWeather() });
+    }
+
+    void Replication::ApplyClock(const Context& context, Clock::time_point now)
+    {
+        if (!_clock) return;
+        const auto clock = *_clock;
+        _clock.reset();
+        auto* calendar = Calendar();
+        if (!calendar) return;
+        const auto localHour = calendar->gameHour->value;
+        if (world::NeedsClockStep(calendar->gameDaysPassed->value, clock.gameDaysPassed) ||
+            world::NeedsClockStep(localHour / 24.0f, clock.gameHour / 24.0f)) {
+            log::Info("[world] clock step: days {:.4f} -> {:.4f}, hour {:.3f} -> {:.3f}", calendar->gameDaysPassed->value, clock.gameDaysPassed, localHour,
+                      clock.gameHour);
+            calendar->gameDaysPassed->value = clock.gameDaysPassed;
+            calendar->gameHour->value = clock.gameHour;
+            ++_clockSteps;
+        }
+        // A weather belongs to a place, and changing it takes a moment to show, so give it time.
+        if (clock.weather != 0 && clock.locationId == context.locationId && clock.weather != CurrentWeather() &&
+            now - _weatherAppliedAt >= kWeatherHold) {
+            _weatherAppliedAt = now;
+            log::Info("[world] weather {:08X} -> {:08X}", CurrentWeather(), clock.weather);
+            avatars::SetWeatherActive(clock.weather);
+        }
+    }
+
+    void Replication::Tick(net::NetworkWorker& worker, const Context& context)
+    {
+        if (!_sinkInstalled) {
+            _sinkInstalled = true;
+            RE::Activation::Event::GetEventSource()->RegisterSink(&g_sink);
+            RawSource(kContainerChangedId)->RegisterSink(&g_containerSink);
+            RawSource(kQuestStageId)->RegisterSink(&g_questSink);
+            log::Info("[world] watching what the local player activates");
+        }
+        if (!context.ready) return;
+        const auto now = Clock::now();
+        DrainActivations(now);
+        UpdateWatches(worker, now);
+        ApplyPending(now);
+        RunVerifies(now);
+        PublishClock(worker, context, now);
+        ApplyClock(context, now);
+        if (!_outgoing.empty()) {
+            for (const auto& e : _outgoing) {
+                log::Info("[world] report kind {} form {:08X} value {}", static_cast<int>(e.kind), e.formId, e.value);
+            }
+            _sent += _outgoing.size();
+            worker.SubmitWorldEvents(_outgoing);
+            _outgoing.clear();
+        }
+        if (now >= _nextLog) {
+            _nextLog = now + kLogEvery;
+            log::Info("[world] {} ambient quest stages and {} runtime container changes kept local", _ambientStages, _localContainers);
+            log::Info("[world] {} reported, {} applied, {} waiting, {} dropped, {} clock steps; day {:.3f} hour {:.2f} weather {:08X}", _sent, _applied, _pending.size(),
+                      _dropped, _clockSteps, Calendar() ? Calendar()->gameDaysPassed->value : 0.0f, Calendar() ? Calendar()->gameHour->value : 0.0f, CurrentWeather());
+        }
+    }
+
+    bool Replication::RunStep(const std::string& step)
+    {
+        RE::TESObjectREFR* ref = nullptr;
+        if (step == "@quests") {
+            auto* data = RE::TESDataHandler::GetSingleton();
+            std::string line;
+            int n = 0;
+            for (const auto& form : data->formArrays[std::to_underlying(RE::FormType::kQUST)].formArray) {
+                const auto* quest = form ? form->As<RE::TESQuest>() : nullptr;
+                if (quest && QuestIsActive(quest) && QuestIsRunning(quest) && n++ < 24) line += std::format(" {:08X}", quest->GetFormID());
+            }
+            const auto& all = data->formArrays[std::to_underlying(RE::FormType::kQUST)].formArray;
+            std::size_t forms = 0, quests = 0, running = 0, active = 0;
+            for (const auto& form : all) {
+                ++forms;
+                const auto* quest = form ? form->As<RE::TESQuest>() : nullptr;
+                if (!quest) continue;
+                ++quests;
+                running += QuestIsRunning(quest) ? 1 : 0;
+                active += QuestIsActive(quest) ? 1 : 0;
+                if (QuestIsRunning(quest) && running <= 6) line += std::format(" {:08X}/{:08X}", quest->GetFormID(), QuestFlags(quest));
+            }
+            log::Info("[world] {} quest array entries, {} quests, {} running, {} active, both {}:{}", forms, quests, running, active, n, line);
+            return true;
+        }
+        if (step == "@cell") {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            std::map<int, int> types;
+            std::size_t gone = 0, nobase = 0;
+            const auto refs = CellRefs(player->parentCell);
+            for (auto* ref : refs) {
+                const auto base = ref->GetBaseObject();
+                if (!base) {
+                    ++nobase;
+                    continue;
+                }
+                gone += IsGone(ref) ? 1 : 0;
+                const auto type = static_cast<int>(base->GetFormType());
+                if (++types[type] == 1) log::Info("[world] form type {:#x}: {} e.g. base {:08X} ref {:08X}", type, RttiName(base.get()), base->GetFormID(), ref->GetFormID());
+            }
+            std::string line;
+            for (const auto& [type, n] : types) line += std::format(" {:#x}:{}", type, n);
+            log::Info("[world] cell {:08X}: {} refs, {} gone, {} without base, types{}", player->parentCell->GetFormID(), refs.size(), gone, nobase, line);
+            return true;
+        }
+        if (step == "@take") {
+            ref = Nearest([](RE::TESObjectREFR* r) { return IsContainer(r); });
+            if (ref) {
+                log::Info("[world] @take: emptying {:08X} base {:08X} into the player", ref->GetFormID(), BaseId(ref));
+                avatars::ContainerTakeAll(ref->GetFormID());
+            } else {
+                log::Warn("[world] @take: no container in this cell");
+            }
+            return true;
+        }
+        if (step.starts_with("@ref ")) {
+            const auto id = static_cast<std::uint32_t>(std::stoul(step.substr(5), nullptr, 16));
+            ref = LookupRef(id, 0);
+            if (ref) {
+                const auto base = ref->GetBaseObject();
+                log::Info("[world] {}: base {} {:08X} door {} state {} gone {} cell {:08X}", step, base ? RttiName(base.get()) : "?", BaseId(ref), IsDoor(ref),
+                          DoorState(ref), IsGone(ref), ref->parentCell ? ref->parentCell->GetFormID() : 0);
+                avatars::ActivateAsPlayer(id);
+            }
+            return true;
+        }
+        if (step.starts_with("@near ")) {
+            // "@near <ref> item|take": the same as @item or @take, in the cell that reference is in.
+            const auto space = step.find(' ', 6);
+            const auto* anchor = LookupRef(static_cast<std::uint32_t>(std::stoul(step.substr(6, space - 6), nullptr, 16)), 0);
+            if (!anchor || !anchor->parentCell) return true;
+            const bool take = step.ends_with("take");
+            auto* found = take ? Nearest([](RE::TESObjectREFR* r) { return IsContainer(r); }, anchor->parentCell) : Nearest(IsLooseItem, anchor->parentCell);
+            if (!found) {
+                log::Warn("[world] {}: nothing live in that cell", step);
+                return true;
+            }
+            log::Info("[world] {}: {:08X} base {:08X}", step, found->GetFormID(), BaseId(found));
+            if (take) {
+                avatars::ContainerTakeAll(found->GetFormID());
+            } else {
+                avatars::ActivateAsPlayer(found->GetFormID());
+            }
+            return true;
+        }
+        if (step.starts_with("@time ")) {
+            auto* calendar = Calendar();
+            if (!calendar) return true;
+            const auto hour = std::stof(step.substr(6));
+            calendar->gameDaysPassed->value += (hour - calendar->gameHour->value) / 24.0f;
+            calendar->gameHour->value = hour;
+            log::Info("[world] {}: day {:.4f} hour {:.3f}", step, calendar->gameDaysPassed->value, calendar->gameHour->value);
+            return true;
+        }
+        if (step == "@door") {
+            ref = Nearest([](RE::TESObjectREFR* r) {
+                return IsDoor(r) && (!r->extraDataList || !r->extraDataList->HasType(RE::ExtraDataType::kTeleport));
+            });
+        } else if (step == "@item") {
+            ref = Nearest(IsLooseItem);
+        } else {
+            return false;
+        }
+        if (!ref) {
+            log::Warn("[world] {}: none in this cell", step);
+            return true;
+        }
+        log::Info("[world] {}: activating {:08X} base {:08X} door state {}", step, ref->GetFormID(), BaseId(ref), IsDoor(ref) ? DoorState(ref) : 0);
+        avatars::ActivateAsPlayer(ref->GetFormID());
+        return true;
+    }
+}

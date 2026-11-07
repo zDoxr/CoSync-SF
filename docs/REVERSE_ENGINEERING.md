@@ -315,6 +315,36 @@ What did hold: getters are thread-safe static-local functions with one shape (`s
 - 13 functions read `Main+0x448`. About 80 sites read `UI+0x4B4` directly, so those systems may still stop during menus after the patch. UNKNOWN which.
 - Patch (`MenuPause.cpp`): the `ja` at `+0x64` is removed, and the call at `+0x71` is redirected to a hook that restores the pause if a `LoadingMenu` is open or no session is active. Whether `LoadingMenu` covers every unsafe case is UNVERIFIED.
 
+### 12.11 Engine events, doors, quests and the console
+
+From IDA 9.3 and from runs of `DevHarness.cpp` on 2026-11-07. VERIFIED-RT below means the event was seen in two running copies with its payload decoded.
+
+**Event getters.** IDs 64095 to 64237 are one block of 142 global getters, 0x70 bytes apart, all `sub rsp,28h` (ID 64114 has no address). A generic sink registered on all of them, 142 installed and 0 refused. This replaces the failed approach in 12.6. Position in the block is not evidence of which event a getter is: the order is close to alphabetical but not exact, for example quest timers are far from quest stages. Each below was identified by what fired after a scripted action, or by its payload.
+
+| ID | Event | Payload | Confidence |
+|---|---|---|---|
+| 64118 | `TESContainerChangedEvent` | u32 from, to, item, count | VERIFIED-RT: `additem` gave `0, 0x14, 0xF, 5`, `removeitem` swapped from and to |
+| 64160 | Quest stage | pointer, then u32 quest, stage | VERIFIED-RT payload, name INFERRED |
+| 64161 | Quest stage done | u32 quest, stage | VERIFIED-RT payload, for example `002C9C96, 100`. Name INFERRED |
+| 64162 | Quest start or stop | u32 quest | INFERRED |
+| 64153 | `TESOpenCloseEvent` | ref, activator, byte | INFERRED: door `000B2B04` with the flag going 1 then 0 |
+| 64099 | Activation | ref, ref | INFERRED: caller is `0xB47920`, which `SetOpen` uses |
+| 64179, 64180 | Furniture enter, exit | ref, actor | INFERRED |
+
+`RE::Activation::Event` (ID 63133, `source, target`) is VERIFIED-RT and is what WorldSync watches. `BSTGlobalEvent::EventSource<T>` has 525 RTTI entries, mostly UI, and the `TES*` events above are not among them.
+
+**Doors.** `0x5CDC70` (ID 47134) returns 1 open, 2 opening, 3 closed, 4 closing, VERIFIED-RT. Its switch accepts base types 0x1E, 0x24, 0x25, 0x27, 0x2F, 0x3E. `ObjectReference.SetOpen` is `0x2080BC0`: it activates through `0xB47920` if the door is not already there, then sends the graph event `Open` or `Close`.
+
+**Quests.** `Quest.IsRunning` `0x20CDCA0`: `quest+0x114` bit 0 set, `0x80` clear, `+0x338` null, `+0x32C` zero. `Quest.IsActive` `0x20CDC20`: bit `0x800`. CommonLibSF's `QUEST_DATA` flags at `+0x10C` are not what these read. Stages are set through `Quest.SetCurrentStageID`. The console text says setting a stage starts a stopped quest (`Stage %d set (quest will be started first)`), which is why WorldSync refuses that.
+
+**Time and weather.** `Utility.GetCurrentGameTime` reads `Calendar+0x30`'s value at `+0x48`, matching CommonLibSF. Writing `gameDaysPassed` and `gameHour` moves the clock and it keeps running, VERIFIED-RT. `Weather.GetCurrentWeather` is `Sky+0x118`, global `0x61DF6F0` (ID 938081).
+
+**Console.** `StartingConsoleCommandRunner` calls `0x1EA1E10` (ID 113576) with global `0x61E26B0` (ID 938528) and a command used as a format string. Called from the main menu with `LoadGame <name>` it loads the save, VERIFIED-RT. `set gamehour to N` through it does nothing, cause UNKNOWN.
+
+**Cells.** Cell `+0x88` points at the reference array, 1655 entries in `000125B6`, VERIFIED-RT. That is the data pointer of CommonLibSF's array at `+0x80`, so the header is right. Walking it through `ForEachReference` crashed reading address `0x22` from a value of 2 (dump `Starfield_11-07-17-39.dmp`), cause UNKNOWN. Base form type values and CommonLibSF's `FormType` agree, checked against RTTI names at runtime. Many references in an exterior cell are disabled, 444 of 1655 there.
+
+**Lists.** `TESDataHandler::formArrays[kQUST]` reads as empty on 1.16.244, so it cannot be used to list quests.
+
 ### 12.9 Not yet investigated
 
 Internals of dialogue flow, scene execution, quest scripts, equipment, ragdoll, loot, and actor attach and detach. Sections 12.4 and 12.5 list entry points only.

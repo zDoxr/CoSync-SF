@@ -107,6 +107,21 @@ namespace cosync::net
         _npcOutfitsOut = std::move(outfits);  // full state: a newer one replaces an unsent one
     }
 
+    void NetworkWorker::SubmitWorldEvents(const std::vector<proto::WorldEvent>& events)
+    {
+        constexpr std::size_t kMaxQueued = 4096;
+        std::scoped_lock lock(_localMutex);
+        for (const auto& e : events) {
+            if (_worldEventsOut.size() < kMaxQueued) _worldEventsOut.push_back(e);
+        }
+    }
+
+    void NetworkWorker::SubmitWorldClock(const proto::WorldClock& clock)
+    {
+        std::scoped_lock lock(_localMutex);
+        _worldClockOut = clock;
+    }
+
     std::vector<proto::NpcStates> NetworkWorker::TakeNpcStates()
     {
         std::scoped_lock lock(_localMutex);
@@ -257,6 +272,17 @@ namespace cosync::net
                                      std::make_move_iterator(_npcEventsOut.begin() + static_cast<std::ptrdiff_t>(n)));
                     _npcEventsOut.erase(_npcEventsOut.begin(), _npcEventsOut.begin() + static_cast<std::ptrdiff_t>(n));
                 }
+                std::vector<proto::WorldEvent> worldEvents;
+                std::optional<proto::WorldClock> worldClock;
+                {
+                    std::scoped_lock lock(_localMutex);
+                    const auto n = static_cast<std::ptrdiff_t>(std::min(_worldEventsOut.size(), proto::kMaxWorldEvents));
+                    worldEvents.assign(_worldEventsOut.begin(), _worldEventsOut.begin() + n);
+                    _worldEventsOut.erase(_worldEventsOut.begin(), _worldEventsOut.begin() + n);
+                    worldClock.swap(_worldClockOut);
+                }
+                client.SendWorldEvents(std::move(worldEvents));
+                if (worldClock) client.SendWorldClock(*worldClock);
                 for (auto& part : npc::SplitOutfits(std::move(npcOutfits))) client.SendNpcOutfits(std::move(part));
                 client.SendNpcEvents(std::move(npcEvents));
                 // Deaths first: a snapshot sent after them already shows the NPC dead.

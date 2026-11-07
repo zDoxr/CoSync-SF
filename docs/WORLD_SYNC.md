@@ -1,0 +1,65 @@
+# World Sync
+
+Shared world state: what one player changes, the others see. Off unless `[Experimental] WorldSync=1` (`launch-instances.ps1 -WorldSync`). Protocol 1.10. Engine evidence is in [REVERSE_ENGINEERING.md](REVERSE_ENGINEERING.md) §12.11.
+
+Status words, used strictly:
+
+- **Implemented**: written, compiles.
+- **Unit tested**: automated tests pass, no game involved.
+- **Two copies**: run in two real game copies on one PC, and the receiving copy's engine confirmed the result.
+- **Verified**: also played by a person, or across two machines. Nothing here has reached this yet.
+
+## State of each system
+
+| System | Status | Evidence, 2026-11-07, Starfield 1.16.244 |
+|---|---|---|
+| Doors | **Two copies** | Door `000B2B04`: sender state 1 to 3 and 3 to 1. Receiver read back engine state 3 and 1 |
+| Things taken from the world | **Two copies** | `00229BAF` taken on copy 1, read back as gone on copy 2 |
+| Data-file containers | **Two copies** | `0022ED8A` emptied: 111 stacks reported, 111 applied, 111 reported lost by the receiver's own engine |
+| Game clock | **Two copies** | Host's hour 10.1 to 15.0, receiver stepped within 1 s. Hour 21 reached a late joiner |
+| Late join | **Two copies** | Copy 2 joined 2 minutes after the changes. Door, removal and clock all arrived, 0 dropped |
+| Runtime (FF) containers | Unit tested | Deliberately not shared, see below |
+| Weather | Implemented | Sent and compared. Both copies always had the same weather, so the apply path has **not run** |
+| Quest stages | Implemented | Sink verified at runtime. No player-facing stage fired in a test, so report and apply have **not run** |
+
+Crowd sync, measured in the same runs and over 16 minutes: seated on both copies, median 75 (was 27), and seated on one side, median 15 (was 71). No faults. Followers start at 86 of 104 and fall to about 64 as the copies' crowds diverge, which is issue #2.
+
+## How it works
+
+**Observing.** A sink on `Activation::Event` notes what the local player activated. For a door or a loose item, a watch of up to 4 s reads what the engine actually did. A locked door never changes state, so nothing is sent. Container and quest changes come from their own sinks. Sinks run on any thread and only queue numbers, and all engine reads happen in `Tick` on the main thread.
+
+**Applying.** Through the existing Papyrus dispatch: `SetOpen`, `DisableNoWait`, `AddItem`, `RemoveItem`, `SetCurrentStageID`. Each apply is read back from the engine after 3 s and logged as `[world] verify ...`.
+
+**Authority.**
+
+| State | Who decides | Conflict rule |
+|---|---|---|
+| Doors, removed references | The player who acted | Newest report wins, one ledger entry per reference |
+| Containers | The player who acted | Counts add up. Two players taking the same stack can still both succeed: see limits |
+| Quest stages | Any player, player-facing quests only | Stages only accumulate. Never applied to a quest not running on that copy, because setting a stage starts it |
+| Clock, weather | The NPC authority | Others step only past 2 game minutes, so they do not chase small differences. Weather only applies in the same location |
+
+**Late join.** `world::Ledger` on the server keeps one entry per changing thing, so a door opened fifty times costs one entry. A joiner receives the ledger in order, then the latest clock. It holds up to 16,384 entries. When full it refuses new ones and counts them in `worldEventsNotRemembered`.
+
+**Echoes.** An applied quest stage makes the engine report that stage again, so `world::EchoFilter` swallows it once. Container applies do not involve the player, so they cannot come back. A door apply has no player activation.
+
+## Known limits
+
+- **Runtime containers stay local.** FF references are numbered per copy, and a container event carries no base ID to prove identity. This was a real bug, found in the late-join test: `FF010C54` was sent and applied to whatever had that number on the other copy. It is now refused at both ends. Refusal path unit tested, not exercised in game.
+- **Doors wait for their cell.** A door whose cell is not attached is retried every 2 s until a player brings it in.
+- **Containers have no reservation.** Two players emptying one container at once can both receive the items. Preventing duplication needs the server to arbitrate transfers before they happen.
+- **Ambient quests are local by design.** About 1 stage event per 2 s, all left on their own copy.
+- **Tested with two copies on one PC only.** Not across machines, not with real latency, and only in the `CoSyncTest` New Atlantis save.
+- **Not covered by a test:** reconnection, save and load during a session, three or more players, simultaneous actions.
+
+## Running the automated test
+
+Unattended, from a shell. Copy 1 runs the steps, and each copy's log shows the result.
+
+```powershell
+./scripts/deploy-plugin.ps1
+./scripts/launch-instances.ps1 -Avatars -AvatarMoveMode controls -NpcSync -WorldSync -AutoLoad CoSyncTest `
+    -TestCommandDelay 50 -TestCommands '@ref 000B2B04;@near 000B2B04 item;@near 000B2B04 take;@ref 000B2B04;@time 15'
+```
+
+Add `-DelaySeconds 170` to make copy 2 a late joiner, and `-EventCensus` to log which engine events fire after each step. Read `[world]` lines in `CoSyncSF-p1.log` and `CoSyncSF-p2.log`, then `Stop-Process` the copies when done. `set gamehour` through the console has no effect from here, which is why `@time` exists.

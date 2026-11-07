@@ -6,6 +6,7 @@ add_library(cosync_shared STATIC
     src/Interpolation.cpp
     src/Log.cpp
     src/Protocol.cpp
+    src/WorldSync.cpp
 )
 add_library(CoSyncSF::Shared ALIAS cosync_shared)
 

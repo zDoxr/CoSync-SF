@@ -8,6 +8,8 @@ Legend:
 - ⬜ **pending**
 
 
+Current priorities and the full feature inventory are in [MULTIPLAYER_ROADMAP.md](MULTIPLAYER_ROADMAP.md). This file is the history of the early milestones.
+
 ## Milestone 1 — Networking foundation (current)
 
 - [x] ✅ Reproducible build: CMake presets + vcpkg manifest (pinned baseline) + `scripts/build.ps1`

@@ -5,6 +5,7 @@
 #include "MoveControls.h"
 #include "MenuPause.h"
 #include "SelfTest.h"
+#include "DevHarness.h"
 #include "NpcSync.h"
 #include "Overlay.h"
 #include "SessionControl.h"
@@ -358,9 +359,16 @@ namespace cosync::plugin
         _worker.store(nullptr);
     }
 
+    void GameBridge::EnableWorldSync(bool enable)
+    {
+        _worldSyncEnabled = enable;
+        if (enable) dev::SetCommandHandler([this](const std::string& step) { return _world.RunStep(step); });
+    }
+
     void GameBridge::Tick()
     {
         UpdateUi();  // first: a UI host/join/leave replaces the worker
+        dev::Tick(_inWorld && _vmSettled);
         auto* worker = _worker.load();
         if (!worker) {
             return;
@@ -383,6 +391,7 @@ namespace cosync::plugin
                         if (e.state == net::ClientState::Disconnected) {
                             _groupState = {};
                             _npcs.Reset("disconnected");
+                            _world.Reset("disconnected");
                             RemoveAllRemotes();
                         }
                     } else if constexpr (std::is_same_v<T, ce::Welcomed>) {
@@ -398,6 +407,11 @@ namespace cosync::plugin
                         ApplyNpcCombat(e.combat, *_worker.load());
                     } else if constexpr (std::is_same_v<T, ce::NpcAuthority>) {
                         if (_npcSyncEnabled) _npcs.OnAuthority(e.authority);
+                        _world.OnAuthority(e.authority);
+                    } else if constexpr (std::is_same_v<T, ce::WorldEvents>) {
+                        if (_worldSyncEnabled) _world.OnEvents(e.world);
+                    } else if constexpr (std::is_same_v<T, ce::WorldClock>) {
+                        if (_worldSyncEnabled) _world.OnClock(e.clock);
                     } else if constexpr (std::is_same_v<T, ce::NpcDeath>) {
                         if (_npcSyncEnabled) _npcs.OnDeath(e.death.npcFormId);
                     } else if constexpr (std::is_same_v<T, ce::NpcDamage>) {
@@ -428,6 +442,10 @@ namespace cosync::plugin
             // Only with the player in the world: a load has stages with no LoadingMenu open.
             menupause::SetActive(_menuPatch && _inWorld && _vmSettled && worker->Status().state == net::ClientState::InSession);
             selftest::Tick(_inWorld && _vmSettled && worker->Status().state == net::ClientState::InSession);
+            if (_worldSyncEnabled) {
+                _world.Tick(*worker, { _inWorld && _vmSettled && worker->Status().state == net::ClientState::InSession,
+                                       worker->Status().localPlayer, _localLocationId });
+            }
         }
         LogSummary(*worker);
     }

@@ -96,6 +96,9 @@ namespace cosync::net
         void SubmitNpcDamage(std::uint32_t npcFormId, float amount);
         void SubmitNpcEvents(std::vector<proto::NpcEvent> events);  // bounded, oldest dropped
         void SubmitNpcOutfits(std::vector<proto::NpcOutfit> outfits);
+        // World state. Events are queued, reliable and bounded; a newer clock replaces an unsent one.
+        void SubmitWorldEvents(const std::vector<proto::WorldEvent>& events);
+        void SubmitWorldClock(const proto::WorldClock& clock);
         [[nodiscard]] std::vector<proto::NpcStates> TakeNpcStates();
         // Host only: removes a player from the session (no resume). Ignored in client mode.
         void SubmitKick(PlayerId player);
@@ -129,6 +132,8 @@ namespace cosync::net
         std::vector<std::pair<std::uint32_t, float>> _npcDamageOut;     // guarded by _localMutex
         std::deque<proto::NpcEvent> _npcEventsOut;                      // guarded by _localMutex
         std::vector<proto::NpcOutfit> _npcOutfitsOut;                      // guarded by _localMutex
+        std::vector<proto::WorldEvent> _worldEventsOut;                    // guarded by _localMutex
+        std::optional<proto::WorldClock> _worldClockOut;                   // guarded by _localMutex
         std::vector<proto::GroupRequest> _groupOut;                     // guarded by _localMutex
         void Run(std::promise<std::string>& ready);
 

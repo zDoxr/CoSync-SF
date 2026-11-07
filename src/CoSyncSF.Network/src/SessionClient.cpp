@@ -246,6 +246,10 @@ namespace cosync::net
                     events.emplace_back(client_event::NpcDamage{ m });
                 } else if constexpr (std::is_same_v<T, proto::NpcEvents>) {
                     if (m.playerId == _npcAuthority) events.emplace_back(client_event::NpcEvents{ m });
+                } else if constexpr (std::is_same_v<T, proto::WorldEvents>) {
+                    events.emplace_back(client_event::WorldEvents{ m });
+                } else if constexpr (std::is_same_v<T, proto::WorldClock>) {
+                    if (m.playerId == _npcAuthority) events.emplace_back(client_event::WorldClock{ m });
                 } else if constexpr (std::is_same_v<T, proto::NpcOutfits>) {
                     if (m.playerId == _npcAuthority) events.emplace_back(client_event::NpcOutfits{ m });
                 } else if constexpr (std::is_same_v<T, proto::Disconnect>) {
@@ -324,6 +328,20 @@ namespace cosync::net
     {
         if (_state != ClientState::InSession) return false;
         Send(proto::NpcStates{ kInvalidPlayerId, ++_npcStatesSequence, locationId, std::move(npcs) }, Delivery::Unreliable);
+        return true;
+    }
+
+    bool SessionClient::SendWorldEvents(std::vector<proto::WorldEvent> events)
+    {
+        if (_state != ClientState::InSession || events.empty()) return false;
+        Send(proto::WorldEvents{ kInvalidPlayerId, std::move(events) }, Delivery::Reliable);
+        return true;
+    }
+
+    bool SessionClient::SendWorldClock(const proto::WorldClock& clock)
+    {
+        if (_state != ClientState::InSession) return false;
+        Send(clock, Delivery::Reliable);
         return true;
     }
 

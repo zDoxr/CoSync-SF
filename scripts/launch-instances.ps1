@@ -49,7 +49,12 @@ param(
     [switch]$AvatarAnimate,          # drive proxy locomotion variables from network velocity
     [switch]$AvatarNoMove,           # experiment: do not SetPosition/SetAngle stand-ins
     [switch]$NpcSync,                # experimental: replicate NPCs from the first copy to the others
+    [switch]$WorldSync,              # experimental: doors, things taken from the world, clock, weather
     [int]$SelfTest = 0,              # dev: seconds in the world before the unattended menu test (0 = off)
+    [string]$AutoLoad = '',          # dev: save every copy loads from the main menu, unattended
+    [switch]$EventCensus,            # dev: log which global event sources fire, and their payloads
+    [string]$TestCommands = '',      # dev: console commands for copy 1, ';' separated, once in the world
+    [int]$TestCommandDelay = 30,     # dev: seconds in the world before the first command
     [switch]$NoMenuPatch,            # dev: control runs, menus pause as in the unmodified game
     [switch]$FakeSteam,              # dev: copy n gets test identity steam:n (Steam-path testing on one PC)
     [double]$RenderScale = 0.5,      # test instances share one GPU: render at this scale (DLSS/FSR upscales)
@@ -223,6 +228,7 @@ function Write-InstanceConfig([int]$n) {
         "AvatarBase=$AvatarBase"
         "AvatarMoveMode=$AvatarMoveMode"
         "NpcSync=$(if ($NpcSync) { 1 } else { 0 })"
+        "WorldSync=$(if ($WorldSync) { 1 } else { 0 })"
         "AvatarAnimDiag=$(if ($AvatarAnimDiagLevel -gt 0) { $AvatarAnimDiagLevel } elseif ($AvatarAnimDiag) { 1 } else { 0 })"
         "AvatarAnimate=$(if ($AvatarAnimate) { 1 } else { 0 })"
         "AvatarMove=$(if ($AvatarNoMove) { 0 } else { 1 })"
@@ -230,6 +236,10 @@ function Write-InstanceConfig([int]$n) {
         "FakeSteamId=$(if ($FakeSteam) { $n } else { 0 })"
         "SelfTest=$(if ($SelfTest -gt 0) { $SelfTest + ($n - 1) * 120 } else { 0 })"
         "MenuPatch=$(if ($NoMenuPatch) { 0 } else { 1 })"
+        "AutoLoad=$AutoLoad"
+        "EventCensus=$(if ($EventCensus) { 1 } else { 0 })"
+        "TestCommands=$(if ($n -eq 1) { $TestCommands } else { '' })"
+        "TestCommandDelay=$TestCommandDelay"
         '[Debug]'
         'LogLevel=debug'
     ) | Set-Content -LiteralPath $ini -Encoding ASCII

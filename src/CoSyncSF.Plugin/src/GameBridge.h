@@ -4,6 +4,7 @@
 #include "AnimProbe.h"
 #include "Avatars.h"
 #include "NpcReplication.h"
+#include "WorldSync.h"
 #include "cosync/net/LanDiscovery.h"
 #include "cosync/net/NetworkWorker.h"
 #include "cosync/ui/UiModel.h"
@@ -41,6 +42,7 @@ namespace cosync::plugin
         // Experimental: replicate NPCs (NpcReplication.h).
         void EnableMenuPatch(bool enable) { _menuPatch = enable; }
     void EnableNpcSync(bool enable) noexcept { _npcSyncEnabled = enable; }
+        void EnableWorldSync(bool enable);
         void SetAvatarScale(float scale) noexcept { _avatarScale = scale; }
         struct AvatarOptions
         {
@@ -164,6 +166,8 @@ namespace cosync::plugin
         bool _npcSyncEnabled = false;
         bool _menuPatch = true;
         npcsync::Replication _npcs;
+        bool _worldSyncEnabled = false;
+        worldsync::Replication _world;
         float _avatarScale = 1.0f;
         AvatarOptions _opt;
         // Animation diagnostics (AvatarAnimDiag).

@@ -274,6 +274,10 @@ namespace cosync::net
         case proto::MessageType::NpcOutfits:
             OnNpcMessage(conn, player, msg);
             break;
+        case proto::MessageType::WorldEvents:
+        case proto::MessageType::WorldClock:
+            OnWorldMessage(conn, player, msg);
+            break;
         case proto::MessageType::Disconnect:
             log::Info("player {} '{}' left", player.id, player.name);
             DropConnection(id, CloseCode::Normal, "client quit", proto::LeaveReason::Quit);
@@ -385,6 +389,42 @@ namespace cosync::net
         ElectNpcAuthority();
         Send(conn.id, proto::NpcAuthority{ _npcAuthority });
         for (const auto npc : _deadNpcs) Send(conn.id, proto::NpcDeath{ _npcAuthority, npc });
+        const auto history = _world.Snapshot();
+        for (std::size_t at = 0; at < history.size(); at += proto::kMaxWorldEvents) {
+            const auto end = std::min(at + proto::kMaxWorldEvents, history.size());
+            Send(conn.id, proto::WorldEvents{ kInvalidPlayerId, { history.begin() + static_cast<std::ptrdiff_t>(at), history.begin() + static_cast<std::ptrdiff_t>(end) } });
+        }
+        if (_worldClock) Send(conn.id, *_worldClock);
+    }
+
+    void SessionServer::OnWorldMessage(Connection& conn, Player& player, proto::Message& msg)
+    {
+        const auto stamped = [&](auto& m) {
+            if (m.playerId != kInvalidPlayerId && m.playerId != player.id) {
+                ++_stats.protocolViolations;
+                DropConnection(conn.id, CloseCode::ProtocolViolation, "world message for another player",
+                               proto::LeaveReason::ProtocolViolation);
+                return false;
+            }
+            m.playerId = player.id;
+            return true;
+        };
+        if (auto* events = std::get_if<proto::WorldEvents>(&msg)) {
+            if (!stamped(*events)) return;
+            for (const auto& e : events->events) {
+                if (!_world.Apply(e)) ++_stats.worldEventsNotRemembered;
+            }
+            Broadcast(*events, player.id);
+        } else if (auto* clock = std::get_if<proto::WorldClock>(&msg)) {
+            if (!stamped(*clock)) return;
+            // The authority's alone: one clock, or two copies would keep correcting each other.
+            if (player.id != _npcAuthority) {
+                ++_stats.npcMessagesRefused;
+                return;
+            }
+            _worldClock = *clock;
+            Broadcast(*clock, player.id);
+        }
     }
 
     void SessionServer::OnTransform(Connection&, Player& player, proto::PlayerTransform transform)
