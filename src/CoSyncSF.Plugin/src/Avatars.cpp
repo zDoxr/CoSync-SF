@@ -413,6 +413,24 @@ namespace cosync::plugin::avatars
         });
     }
 
+    bool StartCombatWithPlayer(std::uint32_t actorId)
+    {
+        auto* actor = LookupActor(actorId);
+        auto* player = RE::PlayerCharacter::GetSingleton();  // LookupByID(0x14) finds no player
+        if (!actor || !player) return false;
+        return Dispatch(ScriptObjectFor(actor), "StartCombat", [player](RE::BSScrapArray<Variable>& a) {
+            Push(a, static_cast<RE::TESObjectREFR*>(player));
+            Push(a, true);  // abPreferredTarget
+        });
+    }
+
+    bool KillActor(std::uint32_t actorId)
+    {
+        auto* actor = LookupActor(actorId);
+        if (!actor) return false;
+        return Dispatch(ScriptObjectFor(actor), "Kill", [](RE::BSScrapArray<Variable>& a) { PushNone(a); });
+    }
+
     bool SetLocked(std::uint32_t refId, bool locked)
     {
         auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refId);

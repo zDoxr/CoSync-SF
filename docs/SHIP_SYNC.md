@@ -14,6 +14,8 @@ Every player runs the same save, so every player has the same home ship. Another
 | Sending it: protocol 1.12, transform section 5 (cell, design, position, angle) | **Two copies** | Each copy received the other's ship 30 times a second |
 | Same space cell recognised on both copies | **Two copies** | Both reported cell key `5C12A803` for `00018343` |
 | Movement reaches the other copy | **Two copies** | Copy 1 moved its ship 500, then 2000 units. Copy 2 read 500.0, then 2500.0 apart, within 10 s |
+| Two players inside one ship | **Two copies** | Both boarded the same ship in space. Each copy showed the other player inside, following them between seats, settled within 0.64 units |
+| The shared home ship follows when another player moves it | Implemented | Applies the other player's ship transform to this copy's home ship. Moving a **landed** ship this way does nothing: its position stayed put. Moving one in space worked |
 | Placing the stand-in ship | **Blocked** | `PlaceShipAtMe` needs the local player to be flying, see below |
 | Moving the stand-in each frame | Not started | Depends on placing it |
 | Taking off and landing unattended | **Blocked** | See below |

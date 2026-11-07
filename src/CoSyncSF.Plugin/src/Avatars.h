@@ -220,6 +220,9 @@ namespace cosync::plugin::avatars
     bool RequestPlaceShip(std::uint32_t anchorId, std::uint32_t shipBaseId, std::shared_ptr<std::atomic<std::uint32_t>> result);
     // ObjectReference.SetPosition / SetAngle (degrees) on any reference.
     bool PlaceRef(std::uint32_t refId, const Vec3& position, const Vec3& angleRadians);
+    // Actor.StartCombat against the local player, and Actor.Kill with no killer.
+    bool StartCombatWithPlayer(std::uint32_t actorId);
+    bool KillActor(std::uint32_t actorId);
     bool SetLocked(std::uint32_t refId, bool locked);
     bool DamageObject(std::uint32_t refId, float amount);
     bool SetDestroyed(std::uint32_t refId, bool destroyed);

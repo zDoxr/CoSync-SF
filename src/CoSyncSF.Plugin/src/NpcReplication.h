@@ -141,6 +141,13 @@ namespace cosync::plugin::npcsync
         std::map<std::uint32_t, Unmatched> _unmatched;
         std::map<std::uint32_t, std::uint32_t> _idMap;  // authority's runtime ID -> the same NPC's ID here
         std::set<std::uint32_t> _sameRuntimeId;         // runtime IDs that are the same NPC on both machines
+        // Crowd actors this copy spawned that the authority has no match for (issue #2): first seen
+        // unpaired, and those hidden for it.
+        std::map<std::uint32_t, Clock::time_point> _unpairedSince;
+        std::set<std::uint32_t> _hiddenLocal;
+        Clock::time_point _nextHideCheck{};
+        Clock::time_point _lastAbsorb{};
+        void HideLocalOnlyCrowd(Clock::time_point now);
         std::uint64_t _tallySameId = 0, _tallyPaired = 0, _tallyUnmatched = 0, _tallyProxy = 0;
         Clock::time_point _nextPairing{};
         std::uint64_t _pairs = 0;

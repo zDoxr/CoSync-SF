@@ -15,6 +15,12 @@ Status words, used strictly:
 
 ## Where this stands (2026-11-07)
 
+**Deaths of runtime NPCs, two copies.** A recording showed an NPC killed on the authority still alive on the other copy. Deaths were looked up under the authority's number, while a runtime NPC has another number on each copy, and crowd actors were not searched at all. Both are fixed: copy 1 killed `FF0111CD`, and copy 2 applied it to its own NPC 0.06 s later.
+
+**Walk-ins the authority does not have (issue #2), implemented.** Each copy's CrowdManager spawns its own walk-ins. A crowd actor on a guest copy that has no partner on the authority after 10 s, while states keep arriving, is now hidden. Spawning the authority's walk-ins on other copies is the other half and is not done. Not yet seen hiding anyone in a test.
+
+**Guest copy froze once (issue #23).** 90 s into a two-copy run, copy 2's actor update job never finished. Under investigation.
+
 **Presence filter, two copies.** The server now sends NPC states, graph events and outfits only to players who may see them: same cell, or both outdoors within 8192 units (`presence::MayShare`). Deaths still go to everyone. Copy 1 boarded its ship while copy 2 stayed in New Atlantis: in the next minute 1,286 NPC messages were held back, copy 2's NPCs went back to its own AI after 5 s, and its count of received updates stopped at 638.
 
 **Crowd following works in game.** Two copies, 16 minutes, no faults: seated on both copies median 75 (was 27), seated on one side median 15 (was 71). The first minutes were better, 92 and 1. The crowd hook installed, and 85 of 104 crowd actors followed at the start, falling to about 64 as each copy spawned and despawned its own (issue #2). Frame rate with inhibition off is still unmeasured.

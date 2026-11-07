@@ -452,6 +452,7 @@ namespace cosync::plugin::npcsync
 
     void Replication::OnDeath(std::uint32_t formId)
     {
+        log::Info("[npc] death of {:08X} received; here {:08X}", formId, LocalId(formId));
         _dead.insert(formId);
         _nextDeathCheck = {};
     }
@@ -633,6 +634,7 @@ namespace cosync::plugin::npcsync
             // both machines. Whether an NPC is loaded here decides, per NPC, in UpdateOne.
             if (states.locationId != ctx.locationId) ++_otherLocation;
             Absorb(states);
+            _lastAbsorb = Clock::now();
         }
 
         const auto now = Clock::now();
@@ -652,6 +654,7 @@ namespace cosync::plugin::npcsync
         crowd::SetOrders(_crowdOrders);
         ApplyPendingDeaths();
         PairRuntimeNpcs(now);
+        HideLocalOnlyCrowd(now);
 
         // The engine's own input dispatch crashes on dead entries in PlayerControls::Manager
         // (RE A.10 / crash 0x12C70D8). Only data-file references are taken over, and those are not
@@ -659,6 +662,44 @@ namespace cosync::plugin::npcsync
         if (now >= _nextPurge) {
             _nextPurge = now + 1s;
             movecontrols::PurgeFromPlayerControls(0);
+        }
+    }
+
+    // Each copy's CrowdManager spawns its own walk-ins, so people appear on one copy that the
+    // authority never had. A crowd actor still without a partner after kGrace, while the authority's
+    // states keep arriving, is one of those, and is hidden here. Spawning the authority's walk-ins
+    // here is the other half of issue #2 and is not done yet.
+    void Replication::HideLocalOnlyCrowd(Clock::time_point now)
+    {
+        constexpr auto kGrace = 10s;
+        if (now < _nextHideCheck || !crowd::Installed()) return;
+        _nextHideCheck = now + 2s;
+        if (now - _lastAbsorb > 2s) {
+            _unpairedSince.clear();  // nothing from the authority: no way to tell who is unpaired
+            return;
+        }
+        std::set<std::uint32_t> paired(_sameRuntimeId.begin(), _sameRuntimeId.end());
+        for (const auto& [from, to] : _idMap) paired.insert(to);
+        std::set<std::uint32_t> present;
+        std::size_t hiddenNow = 0;
+        for (const auto& a : EnumerateCrowdActors()) {
+            if (!proto::IsRuntimeFormId(a.formId) || IsProxy(a.formId) || _hiddenLocal.contains(a.formId)) continue;
+            present.insert(a.formId);
+            if (paired.contains(a.formId) || _tracked.contains(a.formId)) {
+                _unpairedSince.erase(a.formId);
+                continue;
+            }
+            const auto [it, added] = _unpairedSince.try_emplace(a.formId, now);
+            if (added || now - it->second < kGrace) continue;
+            if (avatars::DisableNoWait(a.formId)) {
+                _hiddenLocal.insert(a.formId);
+                ++hiddenNow;
+            }
+            _unpairedSince.erase(it);
+        }
+        std::erase_if(_unpairedSince, [&](const auto& u) { return !present.contains(u.first); });
+        if (hiddenNow > 0) {
+            log::Info("[crowd] hid {} walk-ins the authority does not have ({} hidden so far)", hiddenNow, _hiddenLocal.size());
         }
     }
 
@@ -863,10 +904,19 @@ namespace cosync::plugin::npcsync
         if (now < _nextDeathCheck || _dead.size() == _killsApplied.size()) return;
         _nextDeathCheck = now + 1s;
         // Only loaded NPCs: what the engine does to an unloaded actor is not known (status doc).
-        const auto e = EnumerateHighActors();
+        // Crowd actors are in a list of their own.
+        auto e = EnumerateHighActors();
         if (!e.ok) return;
+        const auto crowd = EnumerateCrowdActors();
+        e.actors.insert(e.actors.end(), crowd.begin(), crowd.end());
+        // Deaths arrive under the authority's numbers. A runtime NPC has another number here, the
+        // same pairing that states use (found in the 2026-11-07 recording: FF01126C is FF011214 here).
+        std::set<std::uint32_t> deadHere;
+        for (const auto id : _dead) {
+            if (const auto local = LocalId(id); local != 0) deadHere.insert(local);
+        }
         for (const auto& a : e.actors) {
-            if (!_dead.contains(a.formId) || _killsApplied.contains(a.formId)) continue;
+            if (!deadHere.contains(a.formId) || _killsApplied.contains(a.formId)) continue;
             auto* actor = Lookup(a.formId);
             if (!actor) continue;
             if (IsDead(actor)) {

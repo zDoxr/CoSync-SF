@@ -13,7 +13,7 @@
 // local ship and reports where the others are against it. Main thread only.
 namespace cosync::plugin::ships
 {
-    // The local player's ship while both are in space; nothing on the ground.
+    // The local player's home ship, landed or in space.
     [[nodiscard]] std::optional<proto::ShipState> ReadLocalShip();
 
     class Replication
@@ -30,8 +30,11 @@ namespace cosync::plugin::ships
             proto::ShipState ship;
             Clock::time_point at{};
             std::uint64_t samples = 0;
+            bool moved = false;  // moved on its owner's copy since it was last applied here
         };
         std::map<PlayerId, Remote> _remote;
         Clock::time_point _nextLog{};
+        Clock::time_point _nextApply{};
+        std::uint64_t _applied = 0;
     };
 }

@@ -121,6 +121,7 @@ namespace cosync::plugin::worldsync
 
         const auto g_homeShip = std::make_shared<std::atomic<std::uint32_t>>(0);
         const auto g_standIn = std::make_shared<std::atomic<std::uint32_t>>(0);
+        std::uint32_t g_lastTarget = 0;
 
         bool InSpace(RE::TESObjectREFR* ref)
         {
@@ -853,6 +854,86 @@ namespace cosync::plugin::worldsync
             log::Info("[world] {} with locks:{}", locked, lockeds);
             return true;
         }
+        if (step == "@hostile" || step == "@kill") {
+            // The nearest living NPC that is not a stand-in for a player: attacks the local player,
+            // or dies. The authority's engine decides what the others see.
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const auto origin = player->GetPosition();
+            const auto playerBase = player->GetBaseObject();
+            RE::TESObjectREFR* best = nullptr;
+            float bestDistance = 2500.0f;
+            for (const auto [first, last] : { std::pair<std::uint32_t, std::uint32_t>{ 1, 0x400000 }, { 0xFF000000, 0xFF080000 } }) {
+                for (std::uint32_t id = first; id < last; ++id) {
+                    auto* form = RE::TESForm::LookupByID(id);
+                    if (!form || form->GetFormType() != RE::FormType::kACHR) continue;
+                    auto* r = static_cast<RE::TESObjectREFR*>(form);
+                    if (r == player || IsGone(r) || !r->parentCell->IsAttached() || static_cast<RE::Actor*>(r)->IsDead()) continue;
+                    if (playerBase && r->GetBaseObject() == playerBase) continue;  // a remote player's stand-in
+                    const auto at = r->GetPosition();
+                    const auto d = std::hypot(at.x - origin.x, at.y - origin.y, at.z - origin.z);
+                    if (d > 150.0f && d < bestDistance) {
+                        bestDistance = d;
+                        best = r;
+                    }
+                }
+            }
+            if (!best) {
+                log::Warn("[combat] {}: nobody within 2500", step);
+                return true;
+            }
+            log::Info("[combat] {}: {:08X} base {:08X} at {:.0f}", step, best->GetFormID(), BaseId(best), bestDistance);
+            if (step == "@hostile") {
+                avatars::StartCombatWithPlayer(best->GetFormID());
+            } else {
+                avatars::KillActor(best->GetFormID());
+            }
+            g_lastTarget = best->GetFormID();
+            return true;
+        }
+        if (step == "@killtarget") {
+            // Kills the NPC the last @hostile picked.
+            log::Info("[combat] @killtarget {:08X}", g_lastTarget);
+            if (g_lastTarget != 0) avatars::KillActor(g_lastTarget);
+            return true;
+        }
+        if (step == "@talk") {
+            // Starts a conversation with the nearest named, living NPC, as pressing activate would.
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const auto origin = player->GetPosition();
+            RE::TESObjectREFR* best = nullptr;
+            float bestDistance = 1500.0f;
+            // Every loaded actor: those who walked in are not in the cell's own list.
+            std::vector<RE::TESObjectREFR*> actors;
+            for (const auto [first, last] : { std::pair<std::uint32_t, std::uint32_t>{ 1, 0x400000 }, { 0xFF000000, 0xFF080000 } }) {
+                for (std::uint32_t id = first; id < last; ++id) {
+                    auto* form = RE::TESForm::LookupByID(id);
+                    if (form && form->GetFormType() == RE::FormType::kACHR) actors.push_back(static_cast<RE::TESObjectREFR*>(form));
+                }
+            }
+            for (auto* r : actors) {
+                if (r == player || IsGone(r) || !r->parentCell->IsAttached()) continue;
+                auto* actor = static_cast<RE::Actor*>(r);
+                if (actor->IsDead()) continue;
+                const auto base = r->GetBaseObject();
+                auto* full = base ? starfield_cast<RE::TESFullName*>(base.get()) : nullptr;
+                const char* name = full ? full->GetFullName() : nullptr;
+                if (!name || !*name) continue;
+                const auto at = r->GetPosition();
+                const auto d = std::hypot(at.x - origin.x, at.y - origin.y, at.z - origin.z);
+                if (d < bestDistance) {
+                    bestDistance = d;
+                    best = r;
+                }
+            }
+            if (!best) {
+                log::Warn("[dialogue] @talk: nobody named within 1500");
+                return true;
+            }
+            auto* full = starfield_cast<RE::TESFullName*>(best->GetBaseObject().get());
+            log::Info("[dialogue] @talk: {:08X} '{}' at {:.0f}", best->GetFormID(), full->GetFullName(), bestDistance);
+            avatars::ActivateAsPlayer(best->GetFormID());
+            return true;
+        }
         if (step == "@home") {
             avatars::RequestHomeShip(g_homeShip);
             return true;
@@ -860,6 +941,23 @@ namespace cosync::plugin::worldsync
         if (step.starts_with("@sethome ")) {
             const auto id = static_cast<std::uint32_t>(std::stoul(step.substr(9), nullptr, 16));
             log::Info("[ship] {}: dispatched {}", step, avatars::RequestSetHomeShip(id, g_homeShip));
+            return true;
+        }
+        if (step.starts_with("@goto ")) {
+            // "@goto <name>": the player walks over to the first furniture whose name contains it.
+            const auto want = step.substr(6);
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            for (auto* r : CellRefs(player->parentCell)) {
+                const auto base = r->GetBaseObject();
+                if (!base || !base->Is(RE::FormType::kFURN)) continue;
+                auto* full = starfield_cast<RE::TESFullName*>(base.get());
+                const char* n = full ? full->GetFullName() : nullptr;
+                if (!n || std::string(n).find(want) == std::string::npos) continue;
+                log::Info("[ship] {}: to {:08X} '{}'", step, r->GetFormID(), n);
+                avatars::MoveRefTo(kPlayerRef, r->GetFormID());
+                return true;
+            }
+            log::Warn("[ship] {}: nothing by that name here", step);
             return true;
         }
         if (step == "@seats" || step == "@pilot") {
@@ -891,13 +989,14 @@ namespace cosync::plugin::worldsync
                       avatars::RequestPlaceShip(ship->GetFormID(), BaseId(ship), g_standIn));
             return true;
         }
-        if (step.starts_with("@shiftship ")) {
-            // "@shiftship <dx>": moves the home ship itself along x, as flying would.
-            auto* ship = LookupRef(g_homeShip->load(), 0);
+        if (step.starts_with("@shiftship ") || step.starts_with("@liftship ")) {
+            // "@shiftship <dx>" / "@liftship <dz>": moves the home ship itself, as flying would.
+            auto* ship = RE::PlayerCharacter::GetSingleton()->GetSpaceship(true);
+            if (!ship && g_homeShip->load() > 2) ship = LookupRef(g_homeShip->load(), 0);
             if (!ship) return true;
             auto at = ship->GetPosition();
             const auto before = at;
-            at.x += std::stof(step.substr(11));
+            (step.starts_with("@lift") ? at.z : at.x) += std::stof(step.substr(step.find(' ') + 1));
             const auto angle = ship->GetAngle();
             avatars::PlaceRef(ship->GetFormID(), { at.x, at.y, at.z }, { angle.x, angle.y, angle.z });
             log::Info("[ship] {}: from {:.1f} {:.1f} {:.1f}", step, before.x, before.y, before.z);
