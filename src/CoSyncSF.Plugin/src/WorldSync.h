@@ -60,6 +60,7 @@ namespace cosync::plugin::worldsync
         };
 
         void DrainActivations(Clock::time_point now);
+        void ReplayAfterLoad();
         void UpdateWatches(net::NetworkWorker& worker, Clock::time_point now);
         void ApplyPending(Clock::time_point now);
         void RunVerifies(Clock::time_point now);
@@ -87,6 +88,12 @@ namespace cosync::plugin::worldsync
         std::uint64_t _localContainers = 0;
         std::set<std::uint32_t> _awaitedContainers;  // applied here: log what the engine reports
         std::map<std::uint32_t, std::int32_t> _knownLocks;  // the event also fires when nothing changed
+        // Every change this copy made or applied. Loading a save puts the world back to how the save
+        // has it, so these are applied again once the player is back in the world.
+        world::Ledger _seen;
+        bool _wasReady = false;
+        bool _everReady = false;
+        std::uint64_t _replays = 0;
         Clock::time_point _nextLog{};
     };
 }

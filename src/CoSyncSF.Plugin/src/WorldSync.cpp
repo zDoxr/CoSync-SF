@@ -120,6 +120,14 @@ namespace cosync::plugin::worldsync
         LockSink g_lockSink;
 
         const auto g_homeShip = std::make_shared<std::atomic<std::uint32_t>>(0);
+        const auto g_standIn = std::make_shared<std::atomic<std::uint32_t>>(0);
+
+        bool InSpace(RE::TESObjectREFR* ref)
+        {
+            using Fn = bool (*)(RE::TESObjectREFR*, bool);
+            static REL::Relocation<Fn> fn{ REL::ID(63482) };  // 0xB58D50, ObjectReference.IsInSpace
+            return fn(ref, false);
+        }
 
         RE::BSTEventSource<RawEvent>* RawSource(std::uint64_t id)
         {
@@ -385,6 +393,25 @@ namespace cosync::plugin::worldsync
         _pending.clear();
         _verifies.clear();
         _clock.reset();
+        _seen.Clear();
+        _knownLocks.clear();
+        _everReady = false;
+        _wasReady = false;
+    }
+
+    void Replication::ReplayAfterLoad()
+    {
+        // Container changes are counts added to whatever was there, and a save made after the change
+        // already holds it, so applying them again could hand out items twice. Those stay as loaded.
+        std::size_t queued = 0;
+        _knownLocks.clear();
+        for (const auto& e : _seen.Snapshot()) {
+            if (e.kind == WorldEventKind::ContainerItem) continue;
+            _pending.push_back({ e, true });  // it was applied here before, so it may start a quest again
+            ++queued;
+        }
+        ++_replays;
+        log::Info("[world] back in the world after a load: applying {} known changes again", queued);
     }
 
     void Replication::OnEvents(const proto::WorldEvents& events)
@@ -580,7 +607,14 @@ namespace cosync::plugin::worldsync
             const auto e = _pending.front();
             _pending.pop_front();
             --budget;
-            if (!Apply(e.event, e.mayStart, now)) later.push_back(e);
+            // Remembered for a reload whether it changed anything or this copy already had it, but
+            // not when it was dropped or kept out.
+            const auto dropped = _dropped;
+            if (!Apply(e.event, e.mayStart, now)) {
+                later.push_back(e);
+            } else if (_dropped == dropped) {
+                _seen.Apply(e.event);
+            }
         }
         // Everything was tried and nothing moved: wait, rather than spinning on it every frame.
         if (_pending.empty() && !later.empty()) _nextRetry = now + kRetryEvery;
@@ -663,7 +697,15 @@ namespace cosync::plugin::worldsync
             reinterpret_cast<RE::BSTEventSource<RefEvent>*>(RawSource(kLockChangedId))->RegisterSink(&g_lockSink);
             log::Info("[world] watching what the local player activates");
         }
-        if (!context.ready) return;
+        if (!context.ready) {
+            _wasReady = false;
+            return;
+        }
+        if (!_wasReady) {
+            _wasReady = true;
+            if (_everReady) ReplayAfterLoad();
+            _everReady = true;
+        }
         const auto now = Clock::now();
         DrainActivations(now);
         UpdateWatches(worker, now);
@@ -676,6 +718,7 @@ namespace cosync::plugin::worldsync
                 log::Info("[world] report kind {} form {:08X} value {}", static_cast<int>(e.kind), e.formId, e.value);
             }
             _sent += _outgoing.size();
+            for (const auto& e : _outgoing) _seen.Apply(e);
             worker.SubmitWorldEvents(_outgoing);
             _outgoing.clear();
         }
@@ -838,6 +881,37 @@ namespace cosync::plugin::worldsync
             }
             return true;
         }
+        if (step == "@placeship") {
+            // A stand-in of the home ship's design, next to it.
+            auto* ship = LookupRef(g_homeShip->load(), 0);
+            if (!ship) return true;
+            // Anchored on something else in the same cell: placing at a ship refuses one already in use.
+            RE::TESObjectREFR* anchor = nullptr;
+            for (auto* r : CellRefs(ship->parentCell)) {
+                const auto base = r->GetBaseObject();
+                if (r != ship && base && static_cast<int>(base->GetFormType()) != 65 && !IsGone(r) && r->GetFormType() != RE::FormType::kACHR) {
+                    anchor = r;
+                    break;
+                }
+            }
+            log::Info("[ship] @placeship: anchor {:08X} in cell {:08X}", anchor ? anchor->GetFormID() : 0, ship->parentCell ? ship->parentCell->GetFormID() : 0);
+            if (anchor) log::Info("[ship] @placeship: dispatched {}", avatars::RequestPlaceShip(anchor->GetFormID(), BaseId(ship), g_standIn));
+            return true;
+        }
+        if (step.starts_with("@moveship ")) {
+            // "@moveship <dx>": puts the stand-in that far along x from the home ship, same angle.
+            auto* ship = LookupRef(g_homeShip->load(), 0);
+            auto* standIn = LookupRef(g_standIn->load(), 0);
+            if (!ship || !standIn) {
+                log::Warn("[ship] {}: ship {} stand-in {:08X}", step, ship != nullptr, g_standIn->load());
+                return true;
+            }
+            auto at = ship->GetPosition();
+            at.x += std::stof(step.substr(10));
+            const auto angle = ship->GetAngle();
+            avatars::PlaceRef(standIn->GetFormID(), { at.x, at.y, at.z }, { angle.x, angle.y, angle.z });
+            return true;
+        }
         if (step == "@launch") {
             // What the cockpit menu's Launch button does (TakeoffMenu_Launch, 0x16757D0): for a landed
             // ship it closes the menu and posts the take-off. It only reads and sets the menu's
@@ -884,6 +958,14 @@ namespace cosync::plugin::worldsync
                 log::Info("[ship] {:08X} base {:08X} type {:#x} {} cell {:08X} worldspace {:08X} pos {:.1f} {:.1f} {:.1f} angle {:.3f} {:.3f} {:.3f} landed {}", ship->GetFormID(),
                           BaseId(ship), base ? static_cast<int>(base->GetFormType()) : 0, base ? RttiName(base.get()) : "?", ship->parentCell ? ship->parentCell->GetFormID() : 0,
                           ship->GetParentWorldSpace() ? ship->GetParentWorldSpace()->GetFormID() : 0, at.x, at.y, at.z, angle.x, angle.y, angle.z, ship->IsSpaceshipLanded());
+                log::Info("[ship] in space: ship {} player {}", InSpace(ship), InSpace(player));
+            }
+            if (auto* standIn = g_standIn->load() > 1 && !avatars::IsSpawnError(g_standIn->load()) ? LookupRef(g_standIn->load(), 0) : nullptr) {
+                const auto at = standIn->GetPosition();
+                log::Info("[ship] stand-in {:08X} base {:08X} cell {:08X} pos {:.1f} {:.1f} {:.1f} in space {} 3D {}", standIn->GetFormID(), BaseId(standIn),
+                          standIn->parentCell ? standIn->parentCell->GetFormID() : 0, at.x, at.y, at.z, InSpace(standIn), avatars::Probe(standIn->GetFormID()).has3D);
+            } else if (g_standIn->load() != 0) {
+                log::Info("[ship] stand-in result {:#x}", g_standIn->load());
             }
             return true;
         }

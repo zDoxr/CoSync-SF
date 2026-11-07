@@ -362,6 +362,57 @@ namespace cosync::plugin::avatars
         });
     }
 
+    bool RequestPlaceShip(std::uint32_t anchorId, std::uint32_t shipBaseId, std::shared_ptr<std::atomic<std::uint32_t>> result)
+    {
+        auto* anchorForm = RE::TESForm::LookupByID(anchorId);
+        auto* anchor = anchorForm ? anchorForm->As<RE::TESObjectREFR>() : nullptr;
+        auto* base = RE::TESForm::LookupByID(shipBaseId);
+        if (!anchor || !base) return false;
+        return Dispatch(
+            ScriptObjectFor(anchor), "PlaceShipAtMe",
+            [base](RE::BSScrapArray<Variable>& a) {
+                Push(a, base);
+                Push(a, static_cast<std::int32_t>(4));
+                Push(a, false);  // keep it out of the save as far as the flags allow
+                Push(a, false);  // initially disabled
+                Push(a, true);   // delete when able
+                Push(a, false);
+                PushNone(a);
+                PushNone(a);
+                PushNone(a);
+                Push(a, false);
+            },
+            [result](const Variable& v) {
+                std::uint32_t id = kSpawnReturnedNone;
+                if (v.is<RE::BSScript::Object>() && RE::BSScript::get<RE::BSScript::Object>(v)) {
+                    auto* ship = RE::BSScript::UnpackVariable<RE::TESObjectREFR>(v);
+                    id = ship ? ship->GetFormID() : kSpawnUnpackFailed;
+                } else if (!v.is<RE::BSScript::Object>()) {
+                    id = kSpawnWrongType;
+                }
+                result->store(id);
+            },
+            [result] { result->store(kSpawnCanceled); });
+    }
+
+    bool PlaceRef(std::uint32_t refId, const Vec3& position, const Vec3& angle)
+    {
+        auto* form = RE::TESForm::LookupByID(refId);
+        auto* ref = form ? form->As<RE::TESObjectREFR>() : nullptr;
+        if (!ref) return false;
+        const auto self = ScriptObjectFor(ref);
+        Dispatch(self, "SetAngle", [angle](RE::BSScrapArray<Variable>& a) {
+            Push(a, Degrees(angle.x));
+            Push(a, Degrees(angle.y));
+            Push(a, Degrees(angle.z));
+        });
+        return Dispatch(self, "SetPosition", [position](RE::BSScrapArray<Variable>& a) {
+            Push(a, position.x);
+            Push(a, position.y);
+            Push(a, position.z);
+        });
+    }
+
     bool SetLocked(std::uint32_t refId, bool locked)
     {
         auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refId);

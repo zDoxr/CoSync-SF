@@ -214,6 +214,12 @@ namespace cosync::plugin::avatars
     bool RequestSetHomeShip(std::uint32_t shipId, std::shared_ptr<std::atomic<std::uint32_t>> result);
     // ObjectReference.MoveTo(target, 0, 0, 0, true, false): 0x2077B90 takes a target, three offsets, two flags.
     bool MoveRefTo(std::uint32_t refId, std::uint32_t targetId);
+    // ObjectReference.PlaceShipAtMe (0x207A8B0) on `anchorId`: the ship base, then a level mod, four
+    // flags and three optional forms (None here) and a last flag. *result receives the new ship's
+    // FormID, or a kSpawn* error.
+    bool RequestPlaceShip(std::uint32_t anchorId, std::uint32_t shipBaseId, std::shared_ptr<std::atomic<std::uint32_t>> result);
+    // ObjectReference.SetPosition / SetAngle (degrees) on any reference.
+    bool PlaceRef(std::uint32_t refId, const Vec3& position, const Vec3& angleRadians);
     bool SetLocked(std::uint32_t refId, bool locked);
     bool DamageObject(std::uint32_t refId, float amount);
     bool SetDestroyed(std::uint32_t refId, bool destroyed);
