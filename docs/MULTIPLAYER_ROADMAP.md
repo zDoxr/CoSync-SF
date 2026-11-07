@@ -21,6 +21,7 @@ Every copy runs the full game from the same save, and CoSync keeps those copies 
 | Doors, world pickups, data-file containers, clock, weather | Two copies | New, 2026-11-07 |
 | Quest stages and quest start | Two copies | New. Quests a guest starts stay local |
 | Locks | Two copies | New |
+| Shared changes survive loading a save | Two copies | New. Container counts excluded |
 | Presence: NPC updates only to players who can see them | Two copies | New. `cosync/shared/Presence.h` |
 | Late join for world state | Two copies | New |
 | Unattended two-copy test harness | Working | Loads a save, runs steps, reads back |

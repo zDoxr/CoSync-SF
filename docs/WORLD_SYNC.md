@@ -21,6 +21,7 @@ Status words, used strictly:
 | Quest stages | **Two copies** | `00352CBA` stage 200 set on copy 1, read back as done on copy 2 |
 | Quest start | **Two copies** | `00193266` started on copy 1, then running with stage 5 on copy 2 |
 | Weather | **Two copies** | Host changed `001034AB` to `0002B07E`, copy 2 followed within 3 s |
+| Loading a save mid-session | **Two copies** | Copy 1 unlocked `001661A7`, then loaded its save, which has it locked. 5 s later the change was applied again and the engine read back unlocked. The session stayed up |
 | Locks | **Two copies** | `001661A7` unlocked then locked on copy 1, copy 2 read back engine state 0 then 1 |
 | Destroyed objects | Implemented | Apply and read-back written. The engine event is not yet identified, and no breakable object was found in the test save |
 | Runtime (FF) containers | Unit tested | Deliberately not shared, see below |
@@ -57,7 +58,8 @@ Crowd sync, measured in the same runs and over 16 minutes: seated on both copies
 - **A quest a guest starts stays on the guest's copy.** Each copy also picks some quests at random (`00193266`, `00193269`, `0019326B`, stage 5, in one test). If all of those spread, a long session would pile them up, so only the authority starts quests elsewhere. This also holds back a quest a guest really did pick up. The history a late joiner receives has no sender and counts as the authority's.
 - **Quest rewards can pay out on every copy.** A stage's script fragments run on each copy that applies it. Not tested.
 - **Tested with two copies on one PC only.** Not across machines, not with real latency, and only in the `CoSyncTest` New Atlantis save.
-- **Not covered by a test:** reconnection, save and load during a session, three or more players, simultaneous actions.
+- **After a load, container counts stay as the save has them.** Other changes are applied again, but a count added to a save made after the change would hand out items twice.
+- **Not covered by a test:** reconnection, three or more players, simultaneous actions.
 
 ## Running the automated test
 
