@@ -22,7 +22,7 @@ namespace cosync::proto
 {
     inline constexpr std::uint32_t kMagic = 0x46535343;  // "CSSF" as little-endian bytes
     inline constexpr std::uint16_t kProtocolMajor = 1;   // incompatible changes
-    inline constexpr std::uint16_t kProtocolMinor = 12;   // backward-compatible additions
+    inline constexpr std::uint16_t kProtocolMinor = 13;   // backward-compatible additions
                                                          // 1.1: optional PlayerTransform::controls
                                                          // 1.2: tagged trailing sections, PlayerTransform::events
                                                          // 1.3: PlayerTransform::weapon
@@ -348,6 +348,9 @@ namespace cosync::proto
         // Hash of what makes the NPC look the way it does. Runtime base IDs differ between copies,
         // so this is how they tell whether two NPCs are the same person.
         std::uint32_t look = 0;
+        // The data-file NPC a generated one was made from (1.13), 0 if none. A copy that has no such
+        // NPC of its own places one from this template instead (issue #2).
+        std::uint32_t templateId = 0;
     };
     struct NpcOutfits
     {

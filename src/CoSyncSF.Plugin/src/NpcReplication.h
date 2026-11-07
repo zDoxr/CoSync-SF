@@ -148,6 +148,22 @@ namespace cosync::plugin::npcsync
         Clock::time_point _nextHideCheck{};
         Clock::time_point _lastAbsorb{};
         void HideLocalOnlyCrowd(Clock::time_point now);
+
+        // The authority's walk-ins, placed here from their template (issue #2).
+        struct StandIn
+        {
+            std::shared_ptr<std::atomic<std::uint32_t>> result;
+            std::uint32_t local = 0;
+            Vec3 position{};
+            Clock::time_point requested{};
+        };
+        std::map<std::uint32_t, std::uint32_t> _templates;  // authority's runtime ID -> its data-file template
+        std::map<std::uint32_t, StandIn> _standIns;         // authority's runtime ID -> what was placed for it
+        std::map<std::uint32_t, Clock::time_point> _unmatchedSince;  // when an authority NPC was first unmatched
+        std::uint64_t _standInsPlaced = 0;
+        std::uint64_t _standInsRemoved = 0;
+        Clock::time_point _nextStandInLog{};
+        void PlaceStandIns(Clock::time_point now);
         std::uint64_t _tallySameId = 0, _tallyPaired = 0, _tallyUnmatched = 0, _tallyProxy = 0;
         Clock::time_point _nextPairing{};
         std::uint64_t _pairs = 0;

@@ -32,4 +32,8 @@ namespace cosync::plugin::crowd
     void SetInhibitionOff(bool off);
 
     [[nodiscard]] Counters TakeCounters() noexcept;
+
+    // A guest copy places the authority's walk-ins instead of spawning its own (issue #2). Main thread.
+    void SetSpawnBlocked(bool blocked) noexcept;
+    [[nodiscard]] std::uint64_t TakeBlockedSpawns() noexcept;
 }

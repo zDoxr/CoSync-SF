@@ -260,6 +260,7 @@ namespace cosync::plugin::npcsync
     {
         if (_isAuthority) return;
         for (const auto& o : outfits.outfits) {
+            if (o.templateId != 0 && _templates.size() < 4096) _templates[o.formId] = o.templateId;
             if (const auto u = _unmatched.find(o.formId); u != _unmatched.end()) {
                 u->second.look = o.look;
                 u->second.worn = o.items;
@@ -404,7 +405,14 @@ namespace cosync::plugin::npcsync
         outfits.reserve(states.size());
         for (const auto& s : states) {
             if (auto* actor = Lookup(s.formId)) {
-                outfits.push_back({ s.formId, ReadWorn(actor), LookHash(actor) });
+                std::uint32_t templateId = 0;
+                if (const auto base = actor->GetBaseObject(); base && proto::IsRuntimeFormId(s.formId)) {
+                    if (const auto* npc = base->As<RE::TESNPC>(); npc && npc->baseTemplateForm) {
+                        templateId = npc->baseTemplateForm->GetFormID();
+                        if (proto::IsRuntimeFormId(templateId)) templateId = 0;
+                    }
+                }
+                outfits.push_back({ s.formId, ReadWorn(actor), LookHash(actor), templateId });
                 if (_lookLogged.insert(s.formId).second) log::Info("[look] {:08X} {}", s.formId, DescribeLook(actor));
             }
         }
@@ -439,6 +447,7 @@ namespace cosync::plugin::npcsync
     {
         ReleaseAll(why);
         crowd::SetInhibitionOff(false);
+        crowd::SetSpawnBlocked(false);
         _authority = kInvalidPlayerId;
         _isAuthority = false;
         animevents::SetNpcCapture(false);
@@ -480,6 +489,7 @@ namespace cosync::plugin::npcsync
     void Replication::Tick(net::NetworkWorker& worker, const Context& ctx)
     {
         if (!ctx.inWorld || ctx.locationId == 0) {
+            crowd::SetSpawnBlocked(false);
             if (!_tracked.empty()) ReleaseAll("not in the world");
             return;
         }
@@ -495,6 +505,7 @@ namespace cosync::plugin::npcsync
         }
         if (!ctx.vmSettled || _authority == kInvalidPlayerId) return;
         crowd::SetInhibitionOff(true);
+        crowd::SetSpawnBlocked(!_isAuthority);
         if (_isAuthority) {
             TickAuthority(worker, ctx);
         } else {
@@ -655,6 +666,7 @@ namespace cosync::plugin::npcsync
         ApplyPendingDeaths();
         PairRuntimeNpcs(now);
         HideLocalOnlyCrowd(now);
+        PlaceStandIns(now);
 
         // The engine's own input dispatch crashes on dead entries in PlayerControls::Manager
         // (RE A.10 / crash 0x12C70D8). Only data-file references are taken over, and those are not
@@ -700,6 +712,80 @@ namespace cosync::plugin::npcsync
         std::erase_if(_unpairedSince, [&](const auto& u) { return !present.contains(u.first); });
         if (hiddenNow > 0) {
             log::Info("[crowd] hid {} walk-ins the authority does not have ({} hidden so far)", hiddenNow, _hiddenLocal.size());
+        }
+    }
+
+    // A walk-in the authority spawned has no partner here, because this copy no longer spawns its own
+    // (crowd::SetSpawnBlocked). After a few seconds unmatched, an NPC from the same data-file template
+    // is placed where it is, and paired with it, so the authority's states drive it from then on. It
+    // is removed when the authority stops reporting it.
+    void Replication::PlaceStandIns(Clock::time_point now)
+    {
+        constexpr auto kUnmatchedFor = 3s;
+        constexpr auto kSpawnTimeout = 10s;
+        constexpr std::size_t kInFlight = 4;
+        constexpr std::size_t kMaxStandIns = 60;
+        if (!crowd::Installed()) return;
+        // Finished requests: pair the new NPC, put it where the authority's is.
+        for (auto it = _standIns.begin(); it != _standIns.end();) {
+            auto& [authorityId, s] = *it;
+            if (s.local == 0 && s.result) {
+                const auto id = s.result->load();
+                if (id == 0 && now - s.requested < kSpawnTimeout) {
+                    ++it;
+                    continue;
+                }
+                if (id == 0 || avatars::IsSpawnError(id)) {
+                    log::Info("[crowd] stand-in for {:08X} failed: {}", authorityId, id == 0 ? "timed out" : avatars::DescribeSpawnError(id));
+                    it = _standIns.erase(it);
+                    continue;
+                }
+                s.local = id;
+                s.result.reset();
+                _idMap[authorityId] = id;
+                _unmatched.erase(authorityId);
+                avatars::PlaceRef(id, s.position, {});
+                if (++_standInsPlaced <= 20 || _standInsPlaced % 25 == 0) {
+                    log::Info("[crowd] placed {:08X} for the authority's walk-in {:08X} ({} so far)", id, authorityId, _standInsPlaced);
+                }
+            }
+            ++it;
+        }
+        // Gone on the authority: no state for a while, while others still arrive.
+        if (now - _lastAbsorb < 2s) {
+            for (auto it = _standIns.begin(); it != _standIns.end();) {
+                const auto t = it->second.local != 0 ? _tracked.find(it->second.local) : _tracked.end();
+                const bool stale = it->second.local != 0 && (t == _tracked.end() || now - t->second.receivedAt > kReleaseAfter * 2);
+                if (stale && now - it->second.requested > 15s) {
+                    avatars::DisableNoWait(it->second.local);
+                    _idMap.erase(it->first);
+                    ++_standInsRemoved;
+                    it = _standIns.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+        if (now >= _nextStandInLog) {
+            _nextStandInLog = now + 30s;
+            log::Info("[crowd] walk-ins: {} local spawns blocked in 30 s, {} placed for the authority's, {} removed, {} live, {} unmatched", crowd::TakeBlockedSpawns(),
+                      _standInsPlaced, _standInsRemoved, _standIns.size(), _unmatched.size());
+        }
+        std::size_t inFlight = 0;
+        for (const auto& [id, s] : _standIns) inFlight += s.local == 0 ? 1 : 0;
+        for (const auto& [authorityId, u] : _unmatched) {
+            if (inFlight >= kInFlight || _standIns.size() >= kMaxStandIns) break;
+            if (_standIns.contains(authorityId) || now - u.seen > 2s) continue;
+            const auto tmpl = _templates.find(authorityId);
+            if (tmpl == _templates.end() || !avatars::IsPlaceableBase(tmpl->second)) continue;
+            auto& first = _unmatchedSince[authorityId];
+            if (first == Clock::time_point{}) first = now;
+            if (now - first < kUnmatchedFor) continue;
+            auto result = std::make_shared<std::atomic<std::uint32_t>>(0);
+            std::string error, detail;
+            if (!avatars::RequestSpawn(tmpl->second, result, error, detail)) continue;
+            _standIns[authorityId] = { result, 0, u.position, now };
+            ++inFlight;
         }
     }
 

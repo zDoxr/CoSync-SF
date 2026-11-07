@@ -368,3 +368,16 @@ TEST(GameRuntime, PackingMatchesSfse)
     EXPECT_FALSE(game::ParseRuntimeVersion("1.16.5000"));
     EXPECT_FALSE(game::ParseRuntimeVersion("a.b.c"));
 }
+
+TEST(Protocol, OutfitTemplatesRoundTrip)
+{
+    NpcOutfits m;
+    m.outfits.push_back({ 0xFF011169, { 0x1234 }, 0xC4ED576B, 0x00269BD9 });
+    m.outfits.push_back({ 0x0006423E, {}, 0x1, 0 });
+    auto r = Decode(Encode(m));
+    ASSERT_TRUE(r.Ok());
+    const auto& got = std::get<NpcOutfits>(*r.message).outfits;
+    ASSERT_EQ(got.size(), 2u);
+    EXPECT_EQ(got[0].templateId, 0x00269BD9u);
+    EXPECT_EQ(got[1].templateId, 0u);
+}

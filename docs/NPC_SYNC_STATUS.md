@@ -17,7 +17,7 @@ Status words, used strictly:
 
 **Deaths of runtime NPCs, two copies.** A recording showed an NPC killed on the authority still alive on the other copy. Deaths were looked up under the authority's number, while a runtime NPC has another number on each copy, and crowd actors were not searched at all. Both are fixed: copy 1 killed `FF0111CD`, and copy 2 applied it to its own NPC 0.06 s later.
 
-**Walk-ins the authority does not have (issue #2), implemented.** Each copy's CrowdManager spawns its own walk-ins. A crowd actor on a guest copy that has no partner on the authority after 10 s, while states keep arriving, is now hidden. Spawning the authority's walk-ins on other copies is the other half and is not done. Not yet seen hiding anyone in a test.
+**Walk-ins follow the authority (issue #2), two copies.** Each copy's CrowdManager spawned its own walk-ins, so people walked in on one copy only (the user saw this in a play-test). Now a guest copy does not spawn walk-ins: a hook on the two calls in `0x1275B30` to `0x1276A70` (IDs 81575, 81577) returns at once on a guest. Instead, each outfit list (protocol 1.13) carries the data-file template of every generated NPC, and a guest places an NPC from that template where the authority's walk-in is, pairs it, and removes it when the authority stops reporting it. In 8 minutes: 16 placed, 7 removed again, 0 to 1 unmatched, no freeze. Seated on both copies rose to 82, seated on one side only fell to 13. The placed NPC is from the same template, so it can still look different in detail. A crowd actor with no partner after 10 s is also hidden, as a fallback.
 
 **Guest copy froze once (issue #23).** 90 s into a two-copy run, copy 2's actor update job never finished. Under investigation.
 

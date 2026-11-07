@@ -6,6 +6,8 @@
 #include <REL/Relocation.h>
 
 #include <atomic>
+#include <format>
+#include <string>
 #include <shared_mutex>
 #include <unordered_map>
 
@@ -19,6 +21,10 @@ namespace cosync::plugin::crowd
         constexpr std::uint64_t kSetStateId = 81547;           // 0x12718E0
         constexpr std::uint64_t kInhibitThresholdId = 914896;  // 0x5F107B0, uCrowdInhibitThresholdMinActor
         constexpr std::size_t kFsmCallOffset = 0x1EA;          // 0x127EAEA, the only caller
+        // 0x1275B30, CrowdManager's update, calls 0x1276A70 once per pending spawn, at these two places.
+        constexpr std::uint64_t kUpdateId = 81575;
+        constexpr std::uint64_t kSpawnId = 81577;
+        constexpr std::size_t kSpawnCallOffsets[] = { 0x5EE, 0x64A };
         constexpr std::size_t kTargetOffset = 0x04;
         constexpr std::size_t kStateOffset = 0x78;
 
@@ -72,6 +78,43 @@ namespace cosync::plugin::crowd
         }
     }
 
+    namespace
+    {
+        using Spawn_t = void (*)(void*, void*, std::int32_t, void*, void*);
+        Spawn_t g_spawn = nullptr;
+        std::atomic<bool> g_blockSpawns{ false };
+        std::atomic<std::uint64_t> g_blocked{ 0 };
+
+        void SpawnHook(void* manager, void* request, std::int32_t flag, void* a4, void* a5)
+        {
+            if (g_blockSpawns.load(std::memory_order_relaxed)) {
+                g_blocked.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+            g_spawn(manager, request, flag, a4, a5);
+        }
+
+        std::string InstallSpawnHook()
+        {
+            const REL::Relocation<std::uintptr_t> update{ REL::ID(kUpdateId) };
+            const REL::Relocation<std::uintptr_t> spawn{ REL::ID(kSpawnId) };
+            for (const auto offset : kSpawnCallOffsets) {
+                const auto* code = reinterpret_cast<const std::uint8_t*>(update.address() + offset);
+                if (code[0] != 0xE8 || update.address() + offset + 5 + *reinterpret_cast<const std::int32_t*>(code + 1) != spawn.address()) {
+                    return std::format("spawn hook refused: no call to the spawn at +{:#x}", offset);
+                }
+            }
+            for (const auto offset : kSpawnCallOffsets) {
+                REL::Relocation<std::uintptr_t> site{ update.address() + offset };
+                g_spawn = reinterpret_cast<Spawn_t>(site.write_call<5>(&SpawnHook));
+            }
+            return "spawn hook installed";
+        }
+    }
+
+    void SetSpawnBlocked(bool blocked) noexcept { g_blockSpawns.store(blocked && g_spawn != nullptr, std::memory_order_relaxed); }
+    std::uint64_t TakeBlockedSpawns() noexcept { return g_blocked.exchange(0, std::memory_order_relaxed); }
+
     bool Install(std::string& detail)
     {
         if (g_fsm) {
@@ -93,7 +136,7 @@ namespace cosync::plugin::crowd
         }
         REL::Relocation<std::uintptr_t> site{ call };
         g_fsm = reinterpret_cast<Fsm_t>(site.write_call<5>(&FsmHook));
-        detail = "crowd hook installed";
+        detail = "crowd hook installed; " + InstallSpawnHook();
         return true;
     }
 

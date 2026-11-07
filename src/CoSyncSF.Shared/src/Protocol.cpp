@@ -283,6 +283,9 @@ namespace cosync::proto
                 w.U8(static_cast<std::uint8_t>(items));
                 for (std::size_t j = 0; j < items; ++j) w.U32(o.items[j]);
             }
+            // 1.13: one template per outfit, in the same order, after the list.
+            w.U8(1);
+            for (std::size_t i = 0; i < count; ++i) w.U32(m.outfits[i].templateId);
         }
 
         bool ValidReject(std::uint16_t v) { return v >= 1 && v <= static_cast<std::uint16_t>(RejectReason::RateLimited); }
@@ -595,6 +598,12 @@ namespace cosync::proto
                         if (o.items.back() == 0) r.Fail();
                     }
                     m.outfits.push_back(std::move(o));
+                }
+                // 1.13: templates follow the list, always, so a cut message is never taken as whole.
+                if (r.Ok() && r.U8() != 1) r.Fail();
+                for (auto& o : m.outfits) {
+                    if (!r.Ok()) break;
+                    o.templateId = r.U32();
                 }
                 return m;
             }
