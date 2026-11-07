@@ -54,6 +54,7 @@ param(
     [string]$AutoLoad = '',          # dev: save every copy loads from the main menu, unattended
     [switch]$EventCensus,            # dev: log which global event sources fire, and their payloads
     [string]$TestCommands = '',      # dev: console commands for copy 1, ';' separated, once in the world
+    [string]$TestCommands2 = '',     # dev: the same for copy 2
     [int]$TestCommandDelay = 30,     # dev: seconds in the world before the first command
     [switch]$NoMenuPatch,            # dev: control runs, menus pause as in the unmodified game
     [switch]$FakeSteam,              # dev: copy n gets test identity steam:n (Steam-path testing on one PC)
@@ -238,7 +239,7 @@ function Write-InstanceConfig([int]$n) {
         "MenuPatch=$(if ($NoMenuPatch) { 0 } else { 1 })"
         "AutoLoad=$AutoLoad"
         "EventCensus=$(if ($EventCensus) { 1 } else { 0 })"
-        "TestCommands=$(if ($n -eq 1) { $TestCommands } else { '' })"
+        "TestCommands=$(if ($n -eq 1) { $TestCommands } elseif ($n -eq 2) { $TestCommands2 } else { '' })"
         "TestCommandDelay=$TestCommandDelay"
         '[Debug]'
         'LogLevel=debug'

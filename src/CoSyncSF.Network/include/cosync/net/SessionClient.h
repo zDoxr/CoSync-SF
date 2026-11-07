@@ -97,7 +97,8 @@ namespace cosync::net
                            const std::optional<proto::PlayerControls>& controls = std::nullopt,
                            const std::vector<proto::AnimEvent>& events = {},
                            const std::optional<proto::WeaponState>& weapon = std::nullopt,
-                           const std::optional<proto::PlayerStatus>& status = std::nullopt);
+                           const std::optional<proto::PlayerStatus>& status = std::nullopt,
+                           const std::optional<proto::ShipState>& ship = std::nullopt);
 
         [[nodiscard]] ClientState State() const noexcept { return _state; }
         [[nodiscard]] PlayerId LocalPlayerId() const noexcept { return _playerId; }

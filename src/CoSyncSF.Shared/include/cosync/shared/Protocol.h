@@ -22,7 +22,7 @@ namespace cosync::proto
 {
     inline constexpr std::uint32_t kMagic = 0x46535343;  // "CSSF" as little-endian bytes
     inline constexpr std::uint16_t kProtocolMajor = 1;   // incompatible changes
-    inline constexpr std::uint16_t kProtocolMinor = 11;   // backward-compatible additions
+    inline constexpr std::uint16_t kProtocolMinor = 12;   // backward-compatible additions
                                                          // 1.1: optional PlayerTransform::controls
                                                          // 1.2: tagged trailing sections, PlayerTransform::events
                                                          // 1.3: PlayerTransform::weapon
@@ -218,6 +218,17 @@ namespace cosync::proto
         std::string place;                 // planet name (or empty)
     };
 
+    // The sender's ship while they are in space (1.12): enough for others to show a stand-in of the
+    // same design where it is. Space cells use larger coordinates than the ground.
+    inline constexpr float kMaxShipCoordinate = 1.0e9f;
+    struct ShipState
+    {
+        std::uint32_t cellId = 0;  // stable location key of the ship's cell, as locationId
+        std::uint32_t baseId = 0;  // the ship's base form: its design
+        Vec3 position;
+        Vec3 rotation;  // radians
+    };
+
     struct PlayerTransform
     {
         PlayerId playerId = kInvalidPlayerId;
@@ -230,10 +241,12 @@ namespace cosync::proto
         //   tag 2 (1.2+): events   = u8 count (1..8), count x { u16 sequence, string name }
         //   tag 3 (1.3+): weapon   = u32 formId, u8 drawn (0/1)
         //   tag 4 (1.5+): status   = u8 health%, u16 level, u8 kind, string place
+        //   tag 5 (1.12+): ship    = u32 cellId, u32 baseId, 3 x f32 position, 3 x f32 rotation
         std::optional<PlayerControls> controls;
         std::vector<AnimEvent> events;
         std::optional<WeaponState> weapon;
         std::optional<PlayerStatus> status;
+        std::optional<ShipState> ship;
     };
 
     // An NPC (data-file reference, identical FormID on every machine with the same load order)

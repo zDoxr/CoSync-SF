@@ -432,6 +432,7 @@ namespace cosync::plugin
             SampleLocalPlayer(*worker);
         }
         UpdateRemotePlayers(*worker);
+        _ships.Tick();
         if (_avatarsEnabled) UpdateNpcCombat(*worker);
         if (_npcSyncEnabled) {
             std::vector<std::uint32_t> proxies;
@@ -526,7 +527,7 @@ namespace cosync::plugin
         }
         UpdateLocalStatus();
         worker.SubmitLocalTransform(sample->locationId, sample->position, rotation, controls, events,
-                                    _opt.controls ? _localWeapon : std::nullopt, _localStatus);
+                                    _opt.controls ? _localWeapon : std::nullopt, _localStatus, ships::ReadLocalShip());
 
         if (now >= _nextLocalLog) {
             _nextLocalLog = now + kLocalLogInterval;
@@ -559,6 +560,7 @@ namespace cosync::plugin
                     r.latestReceivedMs = s.transform.receivedMs;
                     if (s.transform.weapon) r.weapon = s.transform.weapon;
                     if (s.transform.status) r.status = s.transform.status;
+                    _ships.OnRemote(s.player, s.transform.ship);
                     r.latestSeq = s.transform.sequence;
                     r.haveLatest = true;
                 }

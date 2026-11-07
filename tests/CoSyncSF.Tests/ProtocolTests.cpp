@@ -284,6 +284,24 @@ TEST(Protocol, TransformStatusRoundTripAndValidation)
     EXPECT_FALSE(Decode(Encode(t)).Ok());
 }
 
+TEST(Protocol, TransformShipRoundTripAndValidation)
+{
+    PlayerTransform t;
+    t.ship = ShipState{ 0x00018343, 0x0000B730, { -29.9f, 284.8f, 5.0e7f }, { 1.57f, -1.3f, 3.14f } };
+    auto r = Decode(Encode(t));
+    ASSERT_TRUE(r.Ok());
+    const auto& ship = *std::get<PlayerTransform>(*r.message).ship;
+    EXPECT_EQ(ship.cellId, 0x00018343u);
+    EXPECT_EQ(ship.baseId, 0x0000B730u);
+    EXPECT_FLOAT_EQ(ship.position.z, 5.0e7f);  // space is larger than the ground's bound
+    EXPECT_FLOAT_EQ(ship.rotation.x, 1.57f);
+    t.ship->baseId = 0;
+    EXPECT_FALSE(Decode(Encode(t)).Ok());
+    t.ship->baseId = 0x0000B730;
+    t.ship->position.x = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FALSE(Decode(Encode(t)).Ok());
+}
+
 TEST(Protocol, RejectsNonFiniteOrHugeTransforms)
 {
     PlayerTransform t;

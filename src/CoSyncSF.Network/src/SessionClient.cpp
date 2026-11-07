@@ -385,7 +385,8 @@ namespace cosync::net
                                       const std::optional<proto::PlayerControls>& controls,
                                       const std::vector<proto::AnimEvent>& events,
                                       const std::optional<proto::WeaponState>& weapon,
-                                      const std::optional<proto::PlayerStatus>& status)
+                                      const std::optional<proto::PlayerStatus>& status,
+                                      const std::optional<proto::ShipState>& ship)
     {
         if (_state != ClientState::InSession) {
             return false;
@@ -399,6 +400,7 @@ namespace cosync::net
         t.events = events;
         t.weapon = weapon;
         t.status = status;
+        t.ship = ship;
         if (!proto::IsValidTransform(t)) {
             return false;
         }

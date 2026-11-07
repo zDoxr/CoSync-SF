@@ -10,6 +10,7 @@ add_library(cosync_plugin SHARED
     src/SelfTest.cpp
     src/DevHarness.cpp
     src/WorldSync.cpp
+    src/ShipSync.cpp
     src/MetroUi.cpp
     src/Overlay.cpp
     src/SteamInvite.cpp

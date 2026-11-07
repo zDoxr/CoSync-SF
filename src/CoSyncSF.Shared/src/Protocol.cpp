@@ -150,6 +150,13 @@ namespace cosync::proto
                 w.U8(static_cast<std::uint8_t>(m.status->kind));
                 w.String(m.status->place);
             }
+            if (m.ship) {
+                w.U8(5);
+                w.U32(m.ship->cellId);
+                w.U32(m.ship->baseId);
+                WriteVec3(w, m.ship->position);
+                WriteVec3(w, m.ship->rotation);
+            }
         }
 
         void WriteIds(ByteWriter& w, const std::vector<PlayerId>& ids)
@@ -437,6 +444,13 @@ namespace cosync::proto
                         if (st.healthPercent > 100 || kind > 2) r.Fail();
                         st.kind = static_cast<PlaceKind>(kind);
                         m.status = std::move(st);
+                    } else if (tag == 5 && !m.ship) {  // 1.12 ship
+                        ShipState ship;
+                        ship.cellId = r.U32();
+                        ship.baseId = r.U32();
+                        ship.position = ReadVec3(r);
+                        ship.rotation = ReadVec3(r);
+                        m.ship = ship;
                     } else if (tag == 3 && !m.weapon) {  // 1.3 weapon
                         WeaponState ws;
                         ws.formId = r.U32();
@@ -777,6 +791,8 @@ namespace cosync::proto
         return IsFiniteBounded(t.position, kMaxCoordinate) && IsFiniteBounded(t.rotation, kMaxRotation) &&
                (!t.controls || IsValidControls(*t.controls)) && t.events.size() <= kMaxAnimEventsPerTransform &&
                (!t.status || (t.status->healthPercent <= 100 && IsValidText(t.status->place, kMaxPlaceBytes))) &&
+               (!t.ship || (t.ship->baseId != 0 && IsFiniteBounded(t.ship->position, kMaxShipCoordinate) &&
+                            IsFiniteBounded(t.ship->rotation, kMaxRotation))) &&
                std::ranges::all_of(t.events, [](const AnimEvent& e) {
                    return !e.name.empty() && IsValidText(e.name, kMaxAnimEventNameBytes);
                });

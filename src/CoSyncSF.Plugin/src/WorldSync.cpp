@@ -885,17 +885,22 @@ namespace cosync::plugin::worldsync
             // A stand-in of the home ship's design, next to it.
             auto* ship = LookupRef(g_homeShip->load(), 0);
             if (!ship) return true;
-            // Anchored on something else in the same cell: placing at a ship refuses one already in use.
-            RE::TESObjectREFR* anchor = nullptr;
-            for (auto* r : CellRefs(ship->parentCell)) {
-                const auto base = r->GetBaseObject();
-                if (r != ship && base && static_cast<int>(base->GetFormType()) != 65 && !IsGone(r) && r->GetFormType() != RE::FormType::kACHR) {
-                    anchor = r;
-                    break;
-                }
-            }
-            log::Info("[ship] @placeship: anchor {:08X} in cell {:08X}", anchor ? anchor->GetFormID() : 0, ship->parentCell ? ship->parentCell->GetFormID() : 0);
-            if (anchor) log::Info("[ship] @placeship: dispatched {}", avatars::RequestPlaceShip(anchor->GetFormID(), BaseId(ship), g_standIn));
+            // In space the native creates the reference at once (0x1F56A10 -> 0x5A26C0) and only answers
+            // the script later, so the new ship is looked for directly as well (@ship lists it).
+            log::Info("[ship] @placeship: at {:08X} in cell {:08X}: dispatched {}", ship->GetFormID(), ship->parentCell ? ship->parentCell->GetFormID() : 0,
+                      avatars::RequestPlaceShip(ship->GetFormID(), BaseId(ship), g_standIn));
+            return true;
+        }
+        if (step.starts_with("@shiftship ")) {
+            // "@shiftship <dx>": moves the home ship itself along x, as flying would.
+            auto* ship = LookupRef(g_homeShip->load(), 0);
+            if (!ship) return true;
+            auto at = ship->GetPosition();
+            const auto before = at;
+            at.x += std::stof(step.substr(11));
+            const auto angle = ship->GetAngle();
+            avatars::PlaceRef(ship->GetFormID(), { at.x, at.y, at.z }, { angle.x, angle.y, angle.z });
+            log::Info("[ship] {}: from {:.1f} {:.1f} {:.1f}", step, before.x, before.y, before.z);
             return true;
         }
         if (step.starts_with("@moveship ")) {
@@ -966,6 +971,18 @@ namespace cosync::plugin::worldsync
                           standIn->parentCell ? standIn->parentCell->GetFormID() : 0, at.x, at.y, at.z, InSpace(standIn), avatars::Probe(standIn->GetFormID()).has3D);
             } else if (g_standIn->load() != 0) {
                 log::Info("[ship] stand-in result {:#x}", g_standIn->load());
+            }
+            if (ship) {
+                // Other references of the same design: a stand-in the script call has not reported yet.
+                for (std::uint32_t id = 0xFF000000; id < 0xFF080000; ++id) {
+                    auto* form = RE::TESForm::LookupByID(id);
+                    auto* r = form ? form->As<RE::TESObjectREFR>() : nullptr;
+                    if (!r || r == ship || BaseId(r) != BaseId(ship)) continue;
+                    const auto at = r->GetPosition();
+                    log::Info("[ship] same design: {:08X} cell {:08X} pos {:.1f} {:.1f} {:.1f} in space {} disabled {} 3D {}", id, r->parentCell ? r->parentCell->GetFormID() : 0, at.x,
+                              at.y, at.z, InSpace(r), r->IsDisabled(), avatars::Probe(id).has3D);
+                    if (g_standIn->load() == 0 || avatars::IsSpawnError(g_standIn->load())) g_standIn->store(id);
+                }
             }
             return true;
         }

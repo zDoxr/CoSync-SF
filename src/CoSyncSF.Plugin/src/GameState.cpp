@@ -59,6 +59,13 @@ namespace cosync::plugin
         }
     }
 
+    std::uint32_t StableCellId(std::uint32_t cellFormId)
+    {
+        LocalPlayerSample sample;
+        ResolveLocation(cellFormId, sample);
+        return sample.locationId & 0x7FFFFFFFu;
+    }
+
     void SetDataHandler(void* dataHandler) noexcept
     {
         g_dataHandler.store(static_cast<RE::TESDataHandler*>(dataHandler));

@@ -22,6 +22,7 @@ Every copy runs the full game from the same save, and CoSync keeps those copies 
 | Quest stages and quest start | Two copies | New. Quests a guest starts stay local |
 | Locks | Two copies | New |
 | Shared changes survive loading a save | Two copies | New. Container counts excluded |
+| Ship position in space reaches other players | Two copies | New. Showing it as a stand-in is blocked, see [SHIP_SYNC.md](SHIP_SYNC.md) |
 | Presence: NPC updates only to players who can see them | Two copies | New. `cosync/shared/Presence.h` |
 | Late join for world state | Two copies | New |
 | Unattended two-copy test harness | Working | Loads a save, runs steps, reads back |

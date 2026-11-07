@@ -61,10 +61,11 @@ namespace cosync::net
                                              const std::optional<proto::PlayerControls>& controls,
                                              const std::vector<proto::AnimEvent>& events,
                                              const std::optional<proto::WeaponState>& weapon,
-                                             const std::optional<proto::PlayerStatus>& status)
+                                             const std::optional<proto::PlayerStatus>& status,
+                                             const std::optional<proto::ShipState>& ship)
     {
         std::scoped_lock lock(_localMutex);
-        _localTransform = LocalTransform{ locationId, position, rotation, controls, events, weapon, status };
+        _localTransform = LocalTransform{ locationId, position, rotation, controls, events, weapon, status, ship };
     }
 
     void NetworkWorker::SubmitNpcCombat(std::uint32_t npcFormId, PlayerId targetPlayer)
@@ -309,7 +310,7 @@ namespace cosync::net
                     for (const auto id : kicks) server->Kick(id, "kicked by the host");
                 }
                 if (local) {
-                    client.SendTransform(local->locationId, local->position, local->rotation, local->controls, local->events, local->weapon, local->status);
+                    client.SendTransform(local->locationId, local->position, local->rotation, local->controls, local->events, local->weapon, local->status, local->ship);
                 }
             }
 
@@ -319,7 +320,7 @@ namespace cosync::net
                 if (auto* t = std::get_if<client_event::RemoteTransform>(&ev)) {
                     const auto& m = t->transform;
                     _remoteTransforms.PushDropOldest(
-                        { m.playerId, { SteadyNowMs(), m.sequence, m.locationId, m.position, m.rotation, m.controls, m.events, m.weapon, m.status } });
+                        { m.playerId, { SteadyNowMs(), m.sequence, m.locationId, m.position, m.rotation, m.controls, m.events, m.weapon, m.status, m.ship } });
                     continue;
                 }
                 if (auto* n = std::get_if<client_event::NpcStates>(&ev)) {
