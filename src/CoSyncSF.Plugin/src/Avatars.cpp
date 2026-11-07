@@ -309,6 +309,31 @@ namespace cosync::plugin::avatars
         return Dispatch(ScriptObjectFor(ref), "DisableNoWait", [](RE::BSScrapArray<Variable>& a) { Push(a, false); });
     }
 
+    bool SetLocked(std::uint32_t refId, bool locked)
+    {
+        auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refId);
+        if (!ref) return false;
+        return Dispatch(ScriptObjectFor(ref), "Lock", [locked](RE::BSScrapArray<Variable>& a) {
+            Push(a, locked);
+            Push(a, false);  // abAsOwner
+            Push(a, true);   // third flag of 0x2076B40: refresh the object afterwards
+        });
+    }
+
+    bool DamageObject(std::uint32_t refId, float amount)
+    {
+        auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refId);
+        if (!ref) return false;
+        return Dispatch(ScriptObjectFor(ref), "DamageObject", [amount](RE::BSScrapArray<Variable>& a) { Push(a, amount); });
+    }
+
+    bool SetDestroyed(std::uint32_t refId, bool destroyed)
+    {
+        auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refId);
+        if (!ref) return false;
+        return Dispatch(ScriptObjectFor(ref), "SetDestroyed", [destroyed](RE::BSScrapArray<Variable>& a) { Push(a, destroyed); });
+    }
+
     bool SetQuestStage(std::uint32_t questId, int stage)
     {
         auto* quest = RE::TESForm::LookupByID<RE::TESQuest>(questId);

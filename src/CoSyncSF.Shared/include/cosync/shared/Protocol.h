@@ -22,7 +22,7 @@ namespace cosync::proto
 {
     inline constexpr std::uint32_t kMagic = 0x46535343;  // "CSSF" as little-endian bytes
     inline constexpr std::uint16_t kProtocolMajor = 1;   // incompatible changes
-    inline constexpr std::uint16_t kProtocolMinor = 10;   // backward-compatible additions
+    inline constexpr std::uint16_t kProtocolMinor = 11;   // backward-compatible additions
                                                          // 1.1: optional PlayerTransform::controls
                                                          // 1.2: tagged trailing sections, PlayerTransform::events
                                                          // 1.3: PlayerTransform::weapon
@@ -351,6 +351,8 @@ namespace cosync::proto
         RefRemoved = 2,     // formId reference taken from the world, itemId its base, value 0
         QuestStage = 3,     // formId quest, value the stage set
         ContainerItem = 4,  // formId container, itemId the item, value the change in count
+        LockState = 5,      // formId reference, itemId its base, value 1 locked / 0 unlocked
+        Destroyed = 6,      // formId reference, itemId its base, value 1 destroyed / 0 repaired
     };
     struct WorldEvent
     {

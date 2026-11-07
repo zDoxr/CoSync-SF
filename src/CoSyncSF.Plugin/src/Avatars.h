@@ -208,5 +208,8 @@ namespace cosync::plugin::avatars
         float distanceToPlayer = -1.0f;
     };
     [[nodiscard]] ProxyState Probe(std::uint32_t refId);
+    bool SetLocked(std::uint32_t refId, bool locked);
+    bool DamageObject(std::uint32_t refId, float amount);
+    bool SetDestroyed(std::uint32_t refId, bool destroyed);
     [[nodiscard]] std::string Describe(const ProxyState& s);
 }

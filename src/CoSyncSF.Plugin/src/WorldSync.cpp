@@ -28,9 +28,14 @@ namespace cosync::plugin::worldsync
         constexpr std::uint64_t kGetOpenStateId = 47134;  // 0x5CDC70: 1 open, 2 opening, 3 closed, 4 closing
         constexpr std::uint64_t kIsStageDoneId = 68530;   // 0xD0DBD0; CommonLibSF has ID 0 for this game version
         constexpr std::uint64_t kSkyId = 938081;              // 0x61DF6F0, read by Weather.GetCurrentWeather
+        constexpr std::uint64_t kGetLockId = 64290;           // 0xBA0610, ObjectReference.IsLocked: +12 bit 0 locked, +13 level
+        constexpr std::uint64_t kDestructionStageId = 47007;  // 0x5C39A0: crashes on a base without the component
+        constexpr std::uint64_t kDestructibleKeyId = 46986;   // 0x5BF6D0: the name BGSDestructibleObject_Component
+        constexpr std::uint64_t kFindComponentId = 47392;     // 0x5DDB20: (form, key), null when it has none
         // Both identified at runtime by what fired after a scripted action, payloads included (RE 12.11).
         constexpr std::uint64_t kContainerChangedId = 64118;  // u32 from, to, item, count
         constexpr std::uint64_t kQuestStageId = 64161;        // u32 quest, stage
+        constexpr std::uint64_t kLockChangedId = 64148;       // the reference, then other words
         constexpr std::uint32_t kPlayerRef = 0x14;
         // quest+0x114, as Quest.IsRunning (0x20CDCA0) and Quest.IsActive (0x20CDC20) read them.
         constexpr std::size_t kQuestFlags = 0x114;
@@ -54,6 +59,7 @@ namespace cosync::plugin::worldsync
         std::vector<std::uint32_t> g_activations;
         std::vector<RawEvent> g_containerChanges;
         std::vector<RawEvent> g_questStages;
+        std::vector<std::uint32_t> g_lockChanges;
 
         // On whatever thread activated the reference, so it only notes the form ID.
         class ActivationSink final : public RE::BSTEventSink<RE::Activation::Event>
@@ -94,6 +100,23 @@ namespace cosync::plugin::worldsync
             }
         };
         QuestSink g_questSink;
+
+        // The payload starts with a pointer to the reference, good only during the call.
+        struct RefEvent
+        {
+            RE::TESObjectREFR* ref;
+        };
+        class LockSink final : public RE::BSTEventSink<RefEvent>
+        {
+        public:
+            RE::BSEventNotifyControl ProcessEvent(const RefEvent& event, RE::BSTEventSource<RefEvent>*) override
+            {
+                std::scoped_lock lock(g_activationLock);
+                if (event.ref && g_lockChanges.size() < 256) g_lockChanges.push_back(event.ref->GetFormID());
+                return RE::BSEventNotifyControl::kContinue;
+            }
+        };
+        LockSink g_lockSink;
 
         RE::BSTEventSource<RawEvent>* RawSource(std::uint64_t id)
         {
@@ -315,6 +338,35 @@ namespace cosync::plugin::worldsync
             return best;
         }
 
+        // 1 locked, 0 unlocked, -1 no lock.
+        int LockState(RE::TESObjectREFR* ref)
+        {
+            using Fn = const std::byte* (*)(RE::TESObjectREFR*);
+            static REL::Relocation<Fn> fn{ REL::ID(kGetLockId) };
+            const auto* lock = fn(ref);
+            return lock ? static_cast<int>(*reinterpret_cast<const std::uint8_t*>(lock + 12) & 1) : -1;
+        }
+
+        // -1 for something that cannot be destroyed.
+        int DestructionStage(RE::TESObjectREFR* ref)
+        {
+            using Key_t = const void* (*)();
+            using Find_t = const void* (*)(const void*, const void*);
+            using Stage_t = int (*)(RE::TESObjectREFR*);
+            static REL::Relocation<Key_t> key{ REL::ID(kDestructibleKeyId) };
+            static REL::Relocation<Find_t> find{ REL::ID(kFindComponentId) };
+            static REL::Relocation<Stage_t> stage{ REL::ID(kDestructionStageId) };
+            const auto base = ref->GetBaseObject();
+            if (!base || !find(base.get(), key())) return -1;
+            return stage(ref);
+        }
+
+        // ObjectReference.IsDestroyed (0x208BAA0) reads this flag.
+        bool IsDestroyed(const RE::TESObjectREFR* ref)
+        {
+            return (*reinterpret_cast<const std::uint32_t*>(reinterpret_cast<const std::byte*>(ref) + 0x20) & 0x800000) != 0;
+        }
+
         bool IsContainer(const RE::TESObjectREFR* ref)
         {
             const auto base = ref->GetBaseObject();
@@ -349,13 +401,28 @@ namespace cosync::plugin::worldsync
 
     void Replication::DrainActivations(Clock::time_point now)
     {
-        std::vector<std::uint32_t> ids;
+        std::vector<std::uint32_t> ids, locks;
         std::vector<RawEvent> changes, stages;
         {
             std::scoped_lock lock(g_activationLock);
             ids.swap(g_activations);
             changes.swap(g_containerChanges);
             stages.swap(g_questStages);
+            locks.swap(g_lockChanges);
+        }
+        for (const auto id : locks) {
+            // Runtime references are numbered per copy (issue #6). A change a script makes on every
+            // copy is sent too, and costs nothing: the receiver already has that state.
+            if (proto::IsRuntimeFormId(id)) continue;
+            auto* ref = LookupRef(id, 0);
+            if (!ref) continue;
+            const auto state = LockState(ref);
+            if (state < 0) continue;
+            const auto known = _knownLocks.find(id);
+            const bool changed = known == _knownLocks.end() || known->second != state;
+            _knownLocks[id] = state;
+            const WorldEvent e{ WorldEventKind::LockState, id, BaseId(ref), state };
+            if (changed && !_echo.Consume(e, NowMs())) _outgoing.push_back(e);
         }
         for (const auto& c : changes) {
             // Only what the local player moved. What an apply does on this copy never involves the
@@ -436,6 +503,27 @@ namespace cosync::plugin::worldsync
             avatars::DisableNoWait(e.formId);
             break;
         }
+        case WorldEventKind::LockState: {
+            auto* ref = LookupRef(e.formId, e.itemId);
+            if (!ref) {
+                ++_dropped;
+                return true;
+            }
+            _knownLocks[e.formId] = e.value;
+            if (LockState(ref) == e.value) return true;
+            avatars::SetLocked(e.formId, e.value != 0);
+            break;
+        }
+        case WorldEventKind::Destroyed: {
+            auto* ref = LookupRef(e.formId, e.itemId);
+            if (!ref) {
+                ++_dropped;
+                return true;
+            }
+            if (IsDestroyed(ref) == (e.value != 0)) return true;
+            avatars::SetDestroyed(e.formId, e.value != 0);
+            break;
+        }
         case WorldEventKind::QuestStage: {
             auto* quest = RE::TESForm::LookupByID<RE::TESQuest>(e.formId);
             if (!quest) {
@@ -506,6 +594,12 @@ namespace cosync::plugin::worldsync
                 log::Info("[world] verify door {:08X}: wanted {}, engine state {}", v.event.formId, v.event.value != 0 ? "open" : "closed",
                           ref ? DoorState(ref) : 0);
                 break;
+            case WorldEventKind::LockState:
+                log::Info("[world] verify lock {:08X}: wanted {}, engine {}", v.event.formId, v.event.value, ref ? LockState(ref) : -2);
+                break;
+            case WorldEventKind::Destroyed:
+                log::Info("[world] verify destroyed {:08X}: wanted {}, engine {}", v.event.formId, v.event.value, ref && IsDestroyed(ref));
+                break;
             case WorldEventKind::RefRemoved:
                 log::Info("[world] verify removed {:08X}: {}", v.event.formId, !ref || IsGone(ref) ? "gone" : "STILL THERE");
                 break;
@@ -563,6 +657,7 @@ namespace cosync::plugin::worldsync
             RE::Activation::Event::GetEventSource()->RegisterSink(&g_sink);
             RawSource(kContainerChangedId)->RegisterSink(&g_containerSink);
             RawSource(kQuestStageId)->RegisterSink(&g_questSink);
+            reinterpret_cast<RE::BSTEventSource<RefEvent>*>(RawSource(kLockChangedId))->RegisterSink(&g_lockSink);
             log::Info("[world] watching what the local player activates");
         }
         if (!context.ready) return;
@@ -655,6 +750,88 @@ namespace cosync::plugin::worldsync
             const auto id = static_cast<std::uint32_t>(std::stoul(step.substr(9), nullptr, 16));
             log::Info("[world] {}: was {:08X}", step, CurrentWeather());
             SetWeather(id);
+            return true;
+        }
+        if (step.starts_with("@lock ")) {
+            // "@lock <ref> 0|1"
+            const auto id = static_cast<std::uint32_t>(std::stoul(step.substr(6), nullptr, 16));
+            ref = LookupRef(id, 0);
+            if (ref) {
+                log::Info("[world] {}: lock state was {}", step, LockState(ref));
+                avatars::SetLocked(id, step.ends_with("1"));
+            }
+            return true;
+        }
+        if (step.starts_with("@show ")) {
+            const auto id = static_cast<std::uint32_t>(std::stoul(step.substr(6), nullptr, 16));
+            ref = LookupRef(id, 0);
+            if (ref) log::Info("[world] {}: lock {} destruction stage {} destroyed {}", step, LockState(ref), DestructionStage(ref), IsDestroyed(ref));
+            return true;
+        }
+        if (step.starts_with("@damage ")) {
+            // "@damage <ref> <amount>"
+            const auto space = step.find(' ', 8);
+            const auto id = static_cast<std::uint32_t>(std::stoul(step.substr(8, space - 8), nullptr, 16));
+            avatars::DamageObject(id, std::stof(step.substr(space + 1)));
+            return true;
+        }
+        if (step.starts_with("@destructibles")) {
+            // "@destructibles [<ref>]": anything breakable in the cell of that reference, or the player's.
+            const auto* anchor = step.size() > 15 ? LookupRef(static_cast<std::uint32_t>(std::stoul(step.substr(15), nullptr, 16)), 0) : nullptr;
+            const auto* cell = anchor ? anchor->parentCell : nullptr;
+            std::size_t breakable = 0, locked = 0;
+            std::string breakables, lockeds;
+            std::vector<RE::TESObjectREFR*> refs;
+            if (cell) {
+                refs = CellRefs(cell);
+            } else {
+                // No anchor: every data-file reference in a loaded cell.
+                for (std::uint32_t id = 1; id < 0x400000; ++id) {
+                    auto* form = RE::TESForm::LookupByID(id);
+                    auto* r = form ? form->As<RE::TESObjectREFR>() : nullptr;
+                    if (r && r->parentCell && r->parentCell->IsAttached()) refs.push_back(r);
+                }
+            }
+            for (auto* r : refs) {
+                if (r->GetFormType() == RE::FormType::kACHR || IsGone(r)) continue;
+                if (DestructionStage(r) >= 0) {
+                    ++breakable;
+                    if (breakables.size() < 240) breakables += std::format(" {:08X}:{}", r->GetFormID(), DestructionStage(r));
+                }
+                if (LockState(r) >= 0) {
+                    ++locked;
+                    if (lockeds.size() < 240) lockeds += std::format(" {:08X}:{}", r->GetFormID(), LockState(r));
+                }
+            }
+            log::Info("[world] {} breakable:{}", breakable, breakables);
+            log::Info("[world] {} with locks:{}", locked, lockeds);
+            return true;
+        }
+        if (step == "@ship") {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto* ship = player->GetSpaceship(true);
+            log::Info("[ship] player cell {:08X} pos {:.1f} {:.1f} {:.1f} in ship {:08X}", player->parentCell ? player->parentCell->GetFormID() : 0, player->GetPosition().x,
+                      player->GetPosition().y, player->GetPosition().z, ship ? ship->GetFormID() : 0);
+            // Console landing (0xC7BC80) reads the player's ship here before falling back.
+            std::uint64_t word = 0;
+            ReadWord(reinterpret_cast<std::uintptr_t>(player) + 0xDE8, word);
+            if (IsRefPointer(word)) {
+                log::Info("[ship] player+0xDE8 is {:08X}", reinterpret_cast<RE::TESObjectREFR*>(word)->GetFormID());
+                if (!ship) ship = reinterpret_cast<RE::TESObjectREFR*>(word);
+            } else {
+                std::uint64_t head = 0, type = 0;
+                ReadWord(word, head);
+                ReadWord(word + 0x20, type);
+                log::Info("[ship] player+0xDE8 is {:#x}, {} words {:#x}", word, RttiName(reinterpret_cast<const void*>(word)), type);
+            }
+            if (ship) {
+                const auto base = ship->GetBaseObject();
+                const auto at = ship->GetPosition();
+                const auto angle = ship->GetAngle();
+                log::Info("[ship] {:08X} base {:08X} type {:#x} {} cell {:08X} worldspace {:08X} pos {:.1f} {:.1f} {:.1f} angle {:.3f} {:.3f} {:.3f} landed {}", ship->GetFormID(),
+                          BaseId(ship), base ? static_cast<int>(base->GetFormType()) : 0, base ? RttiName(base.get()) : "?", ship->parentCell ? ship->parentCell->GetFormID() : 0,
+                          ship->GetParentWorldSpace() ? ship->GetParentWorldSpace()->GetFormID() : 0, at.x, at.y, at.z, angle.x, angle.y, angle.z, ship->IsSpaceshipLanded());
+            }
             return true;
         }
         if (step == "@cell") {

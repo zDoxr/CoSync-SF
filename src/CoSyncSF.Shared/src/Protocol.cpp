@@ -746,7 +746,9 @@ namespace cosync::proto
     {
         if (e.formId == 0) return false;
         switch (e.kind) {
-        case WorldEventKind::DoorOpen: return e.value == 0 || e.value == 1;
+        case WorldEventKind::DoorOpen:
+        case WorldEventKind::LockState:
+        case WorldEventKind::Destroyed: return e.value == 0 || e.value == 1;
         case WorldEventKind::RefRemoved: return e.value == 0;
         case WorldEventKind::QuestStage: return e.value >= 0 && e.value <= 0xFFFF;
         case WorldEventKind::ContainerItem: return e.itemId != 0 && e.value != 0;

@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -85,6 +86,7 @@ namespace cosync::plugin::worldsync
         std::uint64_t _ambientStages = 0;
         std::uint64_t _localContainers = 0;
         std::set<std::uint32_t> _awaitedContainers;  // applied here: log what the engine reports
+        std::map<std::uint32_t, std::int32_t> _knownLocks;  // the event also fires when nothing changed
         Clock::time_point _nextLog{};
     };
 }
