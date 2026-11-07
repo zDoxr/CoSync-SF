@@ -316,16 +316,6 @@ namespace cosync::plugin::avatars
         return Dispatch(ScriptObjectFor(quest), "SetCurrentStageID", [stage](RE::BSScrapArray<Variable>& a) { Push(a, stage); });
     }
 
-    bool SetWeatherActive(std::uint32_t weatherId)
-    {
-        auto* weather = RE::TESForm::LookupByID(weatherId);
-        if (!weather) return false;
-        return Dispatch(ScriptObjectFor(weather), "SetActive", [](RE::BSScrapArray<Variable>& a) {
-            Push(a, true);   // abOverride
-            Push(a, false);  // abAccelerate
-        });
-    }
-
     bool ContainerAdd(std::uint32_t refId, std::uint32_t itemId, int count)
     {
         auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refId);

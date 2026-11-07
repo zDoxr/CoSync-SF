@@ -123,7 +123,6 @@ namespace cosync::plugin::avatars
     bool SetOpen(std::uint32_t refId, bool open);      // ObjectReference.SetOpen(bool)
     bool DisableNoWait(std::uint32_t refId);           // ObjectReference.DisableNoWait(bool fade)
     bool SetQuestStage(std::uint32_t questId, int stage);  // Quest.SetCurrentStageID(int)
-    bool SetWeatherActive(std::uint32_t weatherId);    // Weather.SetActive(bool override, bool accelerate)
     bool ActivateAsPlayer(std::uint32_t refId);        // ObjectReference.Activate(player, false)
     bool ContainerAdd(std::uint32_t refId, std::uint32_t itemId, int count);     // AddItem(item, count, silent)
     bool ContainerRemove(std::uint32_t refId, std::uint32_t itemId, int count);  // RemoveItem(item, count, silent, None)

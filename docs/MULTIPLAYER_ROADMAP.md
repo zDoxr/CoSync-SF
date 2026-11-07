@@ -18,9 +18,9 @@ Every copy runs the full game from the same save, and CoSync keeps those copies 
 | Remote player movement, animation, weapons, status | Two copies | Through replayed controls |
 | NPC position, health, death, damage, outfits | Two copies | One authority per session |
 | Ambient crowd follows the authority | Two copies | Median 75 seated on both, was 27 |
-| Doors, world pickups, data-file containers, clock | Two copies | New, 2026-11-07 |
+| Doors, world pickups, data-file containers, clock, weather | Two copies | New, 2026-11-07 |
+| Quest stages and quest start | Two copies | New. Quests a guest starts stay local |
 | Late join for world state | Two copies | New |
-| Quest stages, weather | Implemented | Paths not yet run |
 | Unattended two-copy test harness | Working | Loads a save, runs steps, reads back |
 
 ## Priorities
@@ -29,7 +29,7 @@ Rank combines importance, feasibility, dependencies and regression risk.
 
 | # | Work | Why now | Depends on | Risk |
 |---|---|---|---|---|
-| 1 | Prove quest stage sync with a real tracked quest | Core of co-op, code exists | Save with a tracked quest | Low |
+| 1 | Decide what a guest-started quest does, and test rewards | Stages work, the policy is the gap | | Low |
 | 2 | Crowd spawn and despawn (#2) | The largest remaining NPC divergence | | Medium, needs hooks |
 | 3 | Runtime reference identity | Unblocks runtime containers, dropped items, spawned loot | | Medium |
 | 4 | Item transfers arbitrated by the server | Prevents duplication | 3 | Medium |
@@ -71,14 +71,15 @@ Addresses, offsets and evidence are in RE 12.10 and 12.11.
 | Cell references | Array data at cell `+0x88` |
 | Ship events in CommonLibSF | Take-off, landing, dock, grav jump, far travel, damage, have real IDs |
 | Ship natives | `TakeOff`, `InstantDock`, `InstantUndock`, `PlaceShipAtMe`, `GetDockedShips`, `IsLanded` |
-| Quest flags | `quest+0x114`: bit 0 running, `0x80` stopping, `0x800` active |
+| Quest flags | `quest+0x114`: bit 0 running, `0x80` stopping, `0x800` tracked |
+| Quest objectives and stages | `+0x148` count, `+0x150` objectives, state at `+40`. `+0x138` count, `+0x140` stages, index at `+16`, done at `+18` |
+| CommonLibSF IDs of 0 | `TESQuest::IsStageDone` is 0 here and calling it froze the game. The real ID is 68530. Check any helper's ID before use |
 
 ## Blocked or unknown
 
 | Item | What is missing |
 |---|---|
-| Quest stage apply | A save with a tracked quest. The test save reported 0 active quests from events |
-| `TESDataHandler::formArrays` | Reads as empty for quests on 1.16.244, so quests cannot be listed that way |
+| `TESDataHandler::formArrays` | Reads as empty for quests on 1.16.244. Quests are found by scanning `LookupByID` instead |
 | Cause of the 2026-11-07 crash | Walking `references` the plain way read a pointer of `2`. The array location was correct, so the fault is elsewhere and unexplained |
 | `set gamehour` from the console entry | No effect, cause unknown |
 | Spawn and despawn suppression | Needs hooks at `0x1276A70` and `0x1281250` |
@@ -92,7 +93,7 @@ Named targets from the brief, by how far they have been taken.
 
 | Depth | Systems |
 |---|---|
-| Synced and tested | Doors, containers, world items, clock, crowd, NPC movement, animation, equipment, death |
-| Entry points known, not synced | Quests (sink only), weather (not run), dialogue, scenes, ships, locks, destruction, outposts |
+| Synced and tested | Doors, containers, world items, clock, weather, quest stages, crowd, NPC movement, animation, equipment, death |
+| Entry points known, not synced | Dialogue, scenes, ships, locks, destruction, outposts |
 | Script API surveyed only | Crew, factions, crime, crafting, research, fast travel |
 | Not investigated | Havok, projectiles, damage calculation, AI packages, world streaming, spaceflight simulation, camera |

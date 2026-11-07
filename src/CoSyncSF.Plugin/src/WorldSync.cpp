@@ -1,6 +1,7 @@
 #include "WorldSync.h"
 
 #include "Avatars.h"
+#include "DevHarness.h"
 
 #include "cosync/shared/Log.h"
 
@@ -25,6 +26,7 @@ namespace cosync::plugin::worldsync
         using proto::WorldEventKind;
 
         constexpr std::uint64_t kGetOpenStateId = 47134;  // 0x5CDC70: 1 open, 2 opening, 3 closed, 4 closing
+        constexpr std::uint64_t kIsStageDoneId = 68530;   // 0xD0DBD0; CommonLibSF has ID 0 for this game version
         constexpr std::uint64_t kSkyId = 938081;              // 0x61DF6F0, read by Weather.GetCurrentWeather
         // Both identified at runtime by what fired after a scripted action, payloads included (RE 12.11).
         constexpr std::uint64_t kContainerChangedId = 64118;  // u32 from, to, item, count
@@ -104,7 +106,41 @@ namespace cosync::plugin::worldsync
             return *reinterpret_cast<const std::uint32_t*>(reinterpret_cast<const std::byte*>(quest) + kQuestFlags);
         }
 
+        bool StageDone(const RE::TESQuest* quest, std::int32_t stage)
+        {
+            using Fn = bool (*)(const RE::TESQuest*, std::uint16_t);
+            static REL::Relocation<Fn> fn{ REL::ID(kIsStageDoneId) };
+            return fn(quest, static_cast<std::uint16_t>(stage));
+        }
+
         bool QuestIsActive(const RE::TESQuest* quest) { return (QuestFlags(quest) & 0x800) != 0; }
+
+        // quest+0x148 count, +0x150 objectives (0xD09230 walks them), each with its state at +40.
+        // 1, 3 and 5 are the states Quest.IsObjectiveDisplayed (0x20CB700) counts as shown.
+        bool QuestShowsObjective(const RE::TESQuest* quest)
+        {
+            const auto* bytes = reinterpret_cast<const std::byte*>(quest);
+            const auto count = *reinterpret_cast<const std::uint32_t*>(bytes + 0x148);
+            const auto* objectives = *reinterpret_cast<const std::byte* const* const*>(bytes + 0x150);
+            for (std::uint32_t i = 0; i < count; ++i) {
+                const auto state = *reinterpret_cast<const std::uint32_t*>(objectives[i] + 40);
+                if (state == 1 || state == 3 || state == 5) return true;
+            }
+            return false;
+        }
+
+        // quest+0x138 count, +0x140 stages (0xD0DBD0), each with its index at +16 and done bit at +18.
+        std::vector<std::pair<std::uint16_t, bool>> QuestStages(const RE::TESQuest* quest)
+        {
+            const auto* bytes = reinterpret_cast<const std::byte*>(quest);
+            const auto count = *reinterpret_cast<const std::uint32_t*>(bytes + 0x138);
+            const auto* stages = *reinterpret_cast<const std::byte* const* const*>(bytes + 0x140);
+            std::vector<std::pair<std::uint16_t, bool>> out;
+            for (std::uint32_t i = 0; i < count && i < 4096; ++i) {
+                out.emplace_back(*reinterpret_cast<const std::uint16_t*>(stages[i] + 16), (*reinterpret_cast<const std::uint8_t*>(stages[i] + 18) & 1) != 0);
+            }
+            return out;
+        }
 
         bool QuestIsRunning(const RE::TESQuest* quest)
         {
@@ -242,6 +278,9 @@ namespace cosync::plugin::worldsync
             return calendar && calendar->gameDaysPassed && calendar->gameHour ? calendar : nullptr;
         }
 
+        // Weather forms have no script object to call SetActive on, so this is the engine's own command.
+        void SetWeather(std::uint32_t id) { dev::RunConsole(std::format("fw {:08X}", id)); }
+
         std::uint32_t CurrentWeather()
         {
             auto* sky = *REL::Relocation<RE::Sky**>{ REL::ID(kSkyId) };
@@ -300,7 +339,9 @@ namespace cosync::plugin::worldsync
                 ++_dropped;
                 continue;
             }
-            _pending.push_back(e);
+            // History from the server has no sender and is treated as the authority's.
+            const bool mayStart = events.playerId == _authority || events.playerId == kInvalidPlayerId;
+            _pending.push_back({ e, mayStart });
         }
     }
 
@@ -340,8 +381,8 @@ namespace cosync::plugin::worldsync
             if (!quest) continue;
             const proto::WorldEvent e{ WorldEventKind::QuestStage, s.a, 0, static_cast<std::int32_t>(s.b & 0xFFFF) };
             if (_echo.Consume(e, NowMs())) continue;
-            // Ambient quests run on each copy for themselves. Only what a player follows is shared.
-            if (!QuestIsActive(quest)) {
+            // Ambient quests run on each copy for themselves. Only what a player can see is shared.
+            if (!QuestShowsObjective(quest)) {
                 ++_ambientStages;
                 continue;
             }
@@ -374,7 +415,7 @@ namespace cosync::plugin::worldsync
         });
     }
 
-    bool Replication::Apply(const WorldEvent& e, Clock::time_point now)
+    bool Replication::Apply(const WorldEvent& e, bool mayStart, Clock::time_point now)
     {
         switch (e.kind) {
         case WorldEventKind::DoorOpen: {
@@ -401,12 +442,17 @@ namespace cosync::plugin::worldsync
                 ++_dropped;
                 return true;
             }
-            if (quest->IsStageDone(static_cast<std::uint16_t>(e.value))) return true;
-            // Setting a stage starts a quest that is not running, and that is never this copy's to do.
+            if (StageDone(quest, e.value)) return true;
+            // Setting a stage starts a quest that is not running. Only quests with an objective on show
+            // are reported, but each copy also picks some at random (00193266, 00193269, 0019326B on one
+            // test), so one source decides, or every pick would spread to everyone.
             if (!QuestIsRunning(quest)) {
-                ++_dropped;
-                log::Info("[world] quest {:08X} stage {} not applied: not running here", e.formId, e.value);
-                return true;
+                if (!mayStart) {
+                    ++_dropped;
+                    log::Info("[world] quest {:08X} stage {} kept out: not running here, not from the authority", e.formId, e.value);
+                    return true;
+                }
+                log::Info("[world] quest {:08X} starts here with stage {}", e.formId, e.value);
             }
             _echo.Expect(e, NowMs());
             avatars::SetQuestStage(e.formId, e.value);
@@ -438,12 +484,12 @@ namespace cosync::plugin::worldsync
     {
         if (now < _nextRetry) return;
         std::size_t budget = kMaxPerFrame;
-        std::deque<WorldEvent> later;
+        std::deque<Incoming> later;
         while (!_pending.empty() && budget > 0) {
             const auto e = _pending.front();
             _pending.pop_front();
             --budget;
-            if (!Apply(e, now)) later.push_back(e);
+            if (!Apply(e.event, e.mayStart, now)) later.push_back(e);
         }
         // Everything was tried and nothing moved: wait, rather than spinning on it every frame.
         if (_pending.empty() && !later.empty()) _nextRetry = now + kRetryEvery;
@@ -466,7 +512,7 @@ namespace cosync::plugin::worldsync
             case WorldEventKind::QuestStage: {
                 const auto* quest = RE::TESForm::LookupByID<RE::TESQuest>(v.event.formId);
                 log::Info("[world] verify quest {:08X} stage {}: {}", v.event.formId, v.event.value,
-                          quest && quest->IsStageDone(static_cast<std::uint16_t>(v.event.value)) ? "done" : "NOT DONE");
+                          quest && StageDone(quest, v.event.value) ? "done" : "NOT DONE");
                 break;
             }
             case WorldEventKind::ContainerItem:
@@ -506,7 +552,7 @@ namespace cosync::plugin::worldsync
             now - _weatherAppliedAt >= kWeatherHold) {
             _weatherAppliedAt = now;
             log::Info("[world] weather {:08X} -> {:08X}", CurrentWeather(), clock.weather);
-            avatars::SetWeatherActive(clock.weather);
+            SetWeather(clock.weather);
         }
     }
 
@@ -547,25 +593,68 @@ namespace cosync::plugin::worldsync
     {
         RE::TESObjectREFR* ref = nullptr;
         if (step == "@quests") {
-            auto* data = RE::TESDataHandler::GetSingleton();
+            // TESDataHandler's form arrays read as empty here (RE 12.11), so ask the form table itself.
+            std::size_t quests = 0, running = 0, active = 0, shown = 0, weathers = 0;
+            std::string activeIds, weatherIds;
+            for (std::uint32_t id = 1; id < 0x400000; ++id) {
+                auto* form = RE::TESForm::LookupByID(id);
+                if (!form) continue;
+                if (form->Is(RE::FormType::kQUST)) {
+                    const auto* quest = form->As<RE::TESQuest>();
+                    ++quests;
+                    running += QuestIsRunning(quest) ? 1 : 0;
+                    active += QuestIsActive(quest) ? 1 : 0;
+                    if (QuestIsRunning(quest) && QuestShowsObjective(quest)) {
+                        ++shown;
+                        if (activeIds.size() < 200) activeIds += std::format(" {:08X}{}", id, QuestIsActive(quest) ? "*" : "");
+                    }
+                } else if (form->Is(RE::FormType::kWTHS)) {
+                    ++weathers;
+                    if (weatherIds.size() < 120) weatherIds += std::format(" {:08X}", id);
+                }
+            }
+            log::Info("[world] {} quests, {} running, {} active, {} running with an objective shown:{}", quests, running, active, shown, activeIds);
+            log::Info("[world] {} weathers:{}; current {:08X} is {}", weathers, weatherIds, CurrentWeather(), RttiName(RE::TESForm::LookupByID(CurrentWeather())));
+            return true;
+        }
+        if (step.starts_with("@next ")) {
+            // "@next <quest>": sets the first stage after the last one done.
+            const auto id = static_cast<std::uint32_t>(std::stoul(step.substr(6), nullptr, 16));
+            auto* quest = RE::TESForm::LookupByID<RE::TESQuest>(id);
+            if (!quest) return true;
+            auto stages = QuestStages(quest);
+            std::ranges::sort(stages);
             std::string line;
-            int n = 0;
-            for (const auto& form : data->formArrays[std::to_underlying(RE::FormType::kQUST)].formArray) {
-                const auto* quest = form ? form->As<RE::TESQuest>() : nullptr;
-                if (quest && QuestIsActive(quest) && QuestIsRunning(quest) && n++ < 24) line += std::format(" {:08X}", quest->GetFormID());
+            int last = -1, next = -1;
+            for (const auto& [index, done] : stages) {
+                line += std::format(" {}{}", index, done ? "*" : "");
+                if (done) last = index;
             }
-            const auto& all = data->formArrays[std::to_underlying(RE::FormType::kQUST)].formArray;
-            std::size_t forms = 0, quests = 0, running = 0, active = 0;
-            for (const auto& form : all) {
-                ++forms;
-                const auto* quest = form ? form->As<RE::TESQuest>() : nullptr;
-                if (!quest) continue;
-                ++quests;
-                running += QuestIsRunning(quest) ? 1 : 0;
-                active += QuestIsActive(quest) ? 1 : 0;
-                if (QuestIsRunning(quest) && running <= 6) line += std::format(" {:08X}/{:08X}", quest->GetFormID(), QuestFlags(quest));
+            for (const auto& [index, done] : stages) {
+                if (!done && index > last) {
+                    next = index;
+                    break;
+                }
             }
-            log::Info("[world] {} quest array entries, {} quests, {} running, {} active, both {}:{}", forms, quests, running, active, n, line);
+            log::Info("[world] {}: running {} shown {} stages{}; setting {}", step, QuestIsRunning(quest), QuestShowsObjective(quest), line, next);
+            if (next >= 0) avatars::SetQuestStage(id, next);
+            return true;
+        }
+        if (step.starts_with("@stage ")) {
+            // "@stage <quest> <stage>"
+            const auto space = step.find(' ', 7);
+            const auto id = static_cast<std::uint32_t>(std::stoul(step.substr(7, space - 7), nullptr, 16));
+            const auto stage = std::stoi(step.substr(space + 1));
+            auto* quest = RE::TESForm::LookupByID<RE::TESQuest>(id);
+            if (!quest) return true;
+            log::Info("[world] {}: running {} active {} already done {}", step, QuestIsRunning(quest), QuestIsActive(quest), StageDone(quest, stage));
+            avatars::SetQuestStage(id, stage);
+            return true;
+        }
+        if (step.starts_with("@weather ")) {
+            const auto id = static_cast<std::uint32_t>(std::stoul(step.substr(9), nullptr, 16));
+            log::Info("[world] {}: was {:08X}", step, CurrentWeather());
+            SetWeather(id);
             return true;
         }
         if (step == "@cell") {

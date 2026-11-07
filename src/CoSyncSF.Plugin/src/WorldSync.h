@@ -52,6 +52,12 @@ namespace cosync::plugin::worldsync
             Clock::time_point at{};
         };
 
+        struct Incoming
+        {
+            proto::WorldEvent event;
+            bool mayStart = false;  // may start a quest that is not running here
+        };
+
         void DrainActivations(Clock::time_point now);
         void UpdateWatches(net::NetworkWorker& worker, Clock::time_point now);
         void ApplyPending(Clock::time_point now);
@@ -59,14 +65,14 @@ namespace cosync::plugin::worldsync
         void PublishClock(net::NetworkWorker& worker, const Context& context, Clock::time_point now);
         void ApplyClock(const Context& context, Clock::time_point now);
         // False to try again later: the thing is not somewhere it can be changed yet.
-        [[nodiscard]] bool Apply(const proto::WorldEvent& event, Clock::time_point now);
+        [[nodiscard]] bool Apply(const proto::WorldEvent& event, bool mayStart, Clock::time_point now);
 
         PlayerId _authority = kInvalidPlayerId;
         bool _sinkInstalled = false;
         world::EchoFilter _echo;
         std::vector<Watch> _watches;
         std::vector<proto::WorldEvent> _outgoing;
-        std::deque<proto::WorldEvent> _pending;
+        std::deque<Incoming> _pending;
         std::vector<Verify> _verifies;
         Clock::time_point _nextRetry{};
         Clock::time_point _nextClock{};
