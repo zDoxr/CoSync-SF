@@ -117,6 +117,13 @@ namespace cosync::net
         }
     }
 
+    void NetworkWorker::SubmitDialogueLine(const proto::DialogueLine& line)
+    {
+        std::scoped_lock lock(_localMutex);
+        if (_dialogueOut.size() >= 32) _dialogueOut.pop_front();
+        _dialogueOut.push_back(line);
+    }
+
     void NetworkWorker::SubmitWorldClock(const proto::WorldClock& clock)
     {
         std::scoped_lock lock(_localMutex);
@@ -282,13 +289,16 @@ namespace cosync::net
                 }
                 std::vector<proto::WorldEvent> worldEvents;
                 std::optional<proto::WorldClock> worldClock;
+                std::deque<proto::DialogueLine> dialogue;
                 {
                     std::scoped_lock lock(_localMutex);
                     const auto n = static_cast<std::ptrdiff_t>(std::min(_worldEventsOut.size(), proto::kMaxWorldEvents));
                     worldEvents.assign(_worldEventsOut.begin(), _worldEventsOut.begin() + n);
                     _worldEventsOut.erase(_worldEventsOut.begin(), _worldEventsOut.begin() + n);
                     worldClock.swap(_worldClockOut);
+                    dialogue.swap(_dialogueOut);
                 }
+                for (const auto& line : dialogue) client.SendDialogueLine(line);
                 client.SendWorldEvents(std::move(worldEvents));
                 if (worldClock) client.SendWorldClock(*worldClock);
                 for (auto& part : npc::SplitOutfits(std::move(npcOutfits))) client.SendNpcOutfits(std::move(part));

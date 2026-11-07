@@ -412,6 +412,8 @@ namespace cosync::plugin
                         if (_worldSyncEnabled) _world.OnEvents(e.world);
                     } else if constexpr (std::is_same_v<T, ce::WorldClock>) {
                         if (_worldSyncEnabled) _world.OnClock(e.clock);
+                    } else if constexpr (std::is_same_v<T, ce::DialogueLine>) {
+                        _dialogue.OnLine(e.line);
                     } else if constexpr (std::is_same_v<T, ce::NpcDeath>) {
                         if (_npcSyncEnabled) _npcs.OnDeath(e.death.npcFormId);
                     } else if constexpr (std::is_same_v<T, ce::NpcDamage>) {
@@ -433,6 +435,7 @@ namespace cosync::plugin
         }
         UpdateRemotePlayers(*worker);
         _ships.Tick();
+        _dialogue.Tick(*worker, _inWorld && worker->Status().state == net::ClientState::InSession);
         if (_avatarsEnabled) UpdateNpcCombat(*worker);
         if (_npcSyncEnabled) {
             std::vector<std::uint32_t> proxies;

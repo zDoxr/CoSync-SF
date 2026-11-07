@@ -22,7 +22,7 @@ namespace cosync::proto
 {
     inline constexpr std::uint32_t kMagic = 0x46535343;  // "CSSF" as little-endian bytes
     inline constexpr std::uint16_t kProtocolMajor = 1;   // incompatible changes
-    inline constexpr std::uint16_t kProtocolMinor = 13;   // backward-compatible additions
+    inline constexpr std::uint16_t kProtocolMinor = 14;   // backward-compatible additions
                                                          // 1.1: optional PlayerTransform::controls
                                                          // 1.2: tagged trailing sections, PlayerTransform::events
                                                          // 1.3: PlayerTransform::weapon
@@ -66,6 +66,7 @@ namespace cosync::proto
         NpcOutfits = 19,        // authority->S->others, reliable (1.7)
         WorldEvents = 20,       // C->S->others, reliable; replayed to late joiners (1.10)
         WorldClock = 21,        // authority->S->others, reliable (1.10)
+        DialogueLine = 22,      // C->S->players nearby, reliable (1.14)
     };
 
     enum class RejectReason : std::uint16_t
@@ -419,10 +420,23 @@ namespace cosync::proto
         std::vector<GroupInfo> groups;
     };
 
+    // A line said in a conversation one player is in, as the game subtitled it (1.14). Others nearby
+    // see it, so a conversation is not silent for the players watching (issue #16). Clients send
+    // playerId = 0; the server stamps the sender and passes it only to players who may share the place.
+    inline constexpr std::size_t kMaxSpeakerBytes = 64;
+    inline constexpr std::size_t kMaxLineBytes = 512;
+    struct DialogueLine
+    {
+        PlayerId playerId = kInvalidPlayerId;
+        std::string speaker;
+        std::string text;
+        bool isPlayer = false;  // the sending player's own line, not the NPC's
+    };
+
     using Message = std::variant<Hello, Welcome, Reject, SessionSnapshot, PlayerJoined, PlayerLeft,
                                  Heartbeat, HeartbeatAck, Disconnect, PlayerTransform, NpcCombat, GroupRequest,
                                  GroupState, NpcAuthority, NpcStates, NpcDeath, NpcDamage, NpcEvents, NpcOutfits,
-                                 WorldEvents, WorldClock>;
+                                 WorldEvents, WorldClock, DialogueLine>;
 
     enum class DecodeError
     {

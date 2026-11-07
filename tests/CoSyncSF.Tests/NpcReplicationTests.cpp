@@ -662,3 +662,22 @@ TEST_F(Session, NpcStatesGoOnlyToPlayersWhoCanSeeThem)
     Pump();
     EXPECT_FALSE(away.Got<client_event::NpcDeath>().empty());
 }
+
+TEST_F(Session, DialogueReachesOnlyPlayersNearby)
+{
+    auto& talker = Add("Talker");
+    auto& near = Add("Near");
+    auto& away = Add("Away");
+    talker.session->SendTransform(0x00005678, { 0, 0, 0 }, { 0, 0, 0 });
+    near.session->SendTransform(0x00005678, { 50, 0, 0 }, { 0, 0, 0 });
+    away.session->SendTransform(0x00009999, { 0, 0, 0 }, { 0, 0, 0 });
+    Pump();
+    ASSERT_TRUE(talker.session->SendDialogueLine({ 0, "UC Security", "Move along.", false }));
+    Pump();
+    const auto heard = near.Got<client_event::DialogueLine>();
+    ASSERT_EQ(heard.size(), 1u);
+    EXPECT_EQ(heard[0].line.playerId, talker.session->LocalPlayerId());
+    EXPECT_EQ(heard[0].line.text, "Move along.");
+    EXPECT_TRUE(away.Got<client_event::DialogueLine>().empty());
+    EXPECT_TRUE(talker.Got<client_event::DialogueLine>().empty());
+}

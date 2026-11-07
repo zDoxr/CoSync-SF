@@ -270,6 +270,14 @@ namespace cosync::proto
             w.U32(m.weather);
         }
 
+        void Encode(ByteWriter& w, const DialogueLine& m)
+        {
+            w.U32(m.playerId);
+            w.String(m.speaker.substr(0, kMaxSpeakerBytes));
+            w.String(m.text.substr(0, kMaxLineBytes));
+            w.Bool(m.isPlayer);
+        }
+
         void Encode(ByteWriter& w, const NpcOutfits& m)
         {
             w.U32(m.playerId);
@@ -569,6 +577,15 @@ namespace cosync::proto
                 }
                 return m;
             }
+            case MessageType::DialogueLine: {
+                DialogueLine m;
+                m.playerId = r.U32();
+                m.speaker = ReadText(r, kMaxSpeakerBytes);
+                m.text = ReadText(r, kMaxLineBytes);
+                m.isPlayer = r.Bool();
+                if (r.Ok() && m.text.empty()) r.Fail();
+                return m;
+            }
             case MessageType::WorldClock: {
                 WorldClock m;
                 m.playerId = r.U32();
@@ -622,7 +639,7 @@ namespace cosync::proto
         bool IsKnownType(std::uint16_t t)
         {
             return t >= static_cast<std::uint16_t>(MessageType::Hello) &&
-                   t <= static_cast<std::uint16_t>(MessageType::WorldClock);
+                   t <= static_cast<std::uint16_t>(MessageType::DialogueLine);
         }
 
         bool IsFiniteBounded(const Vec3& v, float bound)
@@ -662,6 +679,7 @@ namespace cosync::proto
                 else if constexpr (std::is_same_v<T, NpcOutfits>) return MessageType::NpcOutfits;
                 else if constexpr (std::is_same_v<T, WorldEvents>) return MessageType::WorldEvents;
                 else if constexpr (std::is_same_v<T, WorldClock>) return MessageType::WorldClock;
+                else if constexpr (std::is_same_v<T, DialogueLine>) return MessageType::DialogueLine;
                 else static_assert(kAlwaysFalse<T>, "unhandled message type");
             },
             message);
@@ -831,6 +849,7 @@ namespace cosync::proto
         case MessageType::NpcOutfits: return "NpcOutfits";
         case MessageType::WorldEvents: return "WorldEvents";
         case MessageType::WorldClock: return "WorldClock";
+        case MessageType::DialogueLine: return "DialogueLine";
         }
         return "Unknown";
     }

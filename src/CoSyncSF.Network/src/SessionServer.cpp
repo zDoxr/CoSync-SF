@@ -278,6 +278,9 @@ namespace cosync::net
         case proto::MessageType::WorldClock:
             OnWorldMessage(conn, player, msg);
             break;
+        case proto::MessageType::DialogueLine:
+            OnDialogue(conn, player, std::get<proto::DialogueLine>(std::move(msg)));
+            break;
         case proto::MessageType::Disconnect:
             log::Info("player {} '{}' left", player.id, player.name);
             DropConnection(id, CloseCode::Normal, "client quit", proto::LeaveReason::Quit);
@@ -424,6 +427,23 @@ namespace cosync::net
             }
             _worldClock = *clock;
             Broadcast(*clock, player.id);
+        }
+    }
+
+    void SessionServer::OnDialogue(Connection& conn, Player& player, proto::DialogueLine line)
+    {
+        if (line.playerId != kInvalidPlayerId && line.playerId != player.id) {
+            ++_stats.protocolViolations;
+            DropConnection(conn.id, CloseCode::ProtocolViolation, "dialogue for another player", proto::LeaveReason::ProtocolViolation);
+            return;
+        }
+        line.playerId = player.id;
+        // Only those who can hear it: the same place as the speaker's player.
+        const auto bytes = proto::Encode(line);
+        for (const auto& [id, p] : _players) {
+            if (id == player.id || p.connection == kInvalidConnection || !presence::MayShare(player.place, p.place)) continue;
+            _transport.Send(p.connection, bytes, Delivery::Reliable);
+            ++_stats.dialogueLinesRelayed;
         }
     }
 

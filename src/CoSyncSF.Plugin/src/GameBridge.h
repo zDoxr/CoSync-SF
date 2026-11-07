@@ -4,6 +4,7 @@
 #include "AnimProbe.h"
 #include "Avatars.h"
 #include "NpcReplication.h"
+#include "DialogueSync.h"
 #include "ShipSync.h"
 #include "WorldSync.h"
 #include "cosync/net/LanDiscovery.h"
@@ -170,6 +171,7 @@ namespace cosync::plugin
         bool _worldSyncEnabled = false;
         worldsync::Replication _world;
         ships::Replication _ships;
+        dialogue::Replication _dialogue;
         float _avatarScale = 1.0f;
         AvatarOptions _opt;
         // Animation diagnostics (AvatarAnimDiag).

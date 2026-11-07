@@ -84,6 +84,15 @@ namespace cosync::plugin::avatars
             return vm->DispatchMethodCall(self, function, packer, callback, 0);
         }
 
+        // LookupByID<TESObjectREFR> refuses actors (2026-11-07: the player, NPCs), so every reference
+        // is looked up as a form first.
+        RE::TESObjectREFR* LookupRefAny(std::uint32_t refId)
+        {
+            if (refId == 0x14) return RE::PlayerCharacter::GetSingleton();
+            auto* form = RE::TESForm::LookupByID(refId);
+            return form ? form->As<RE::TESObjectREFR>() : nullptr;
+        }
+
         RE::Actor* LookupActor(std::uint32_t refId)
         {
             auto* form = RE::TESForm::LookupByID(refId);
@@ -297,14 +306,14 @@ namespace cosync::plugin::avatars
 
     bool SetOpen(std::uint32_t refId, bool open)
     {
-        auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refId);
+        auto* ref = LookupRefAny(refId);
         if (!ref) return false;
         return Dispatch(ScriptObjectFor(ref), "SetOpen", [open](RE::BSScrapArray<Variable>& a) { Push(a, open); });
     }
 
     bool DisableNoWait(std::uint32_t refId)
     {
-        auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refId);
+        auto* ref = LookupRefAny(refId);
         if (!ref) return false;
         return Dispatch(ScriptObjectFor(ref), "DisableNoWait", [](RE::BSScrapArray<Variable>& a) { Push(a, false); });
     }
@@ -325,7 +334,7 @@ namespace cosync::plugin::avatars
 
     bool RequestSetHomeShip(std::uint32_t shipId, std::shared_ptr<std::atomic<std::uint32_t>> result)
     {
-        auto* ship = RE::TESForm::LookupByID<RE::TESObjectREFR>(shipId);
+        auto* ship = LookupRefAny(shipId);
         if (!ship) return false;
         const auto object = ScriptObjectFor(ship);
         log::Info("[ship] script type of {:08X}: {}", shipId, TypeChain(object));
@@ -431,9 +440,20 @@ namespace cosync::plugin::avatars
         return Dispatch(ScriptObjectFor(actor), "Kill", [](RE::BSScrapArray<Variable>& a) { PushNone(a); });
     }
 
+    bool Notify(const std::string& text)
+    {
+        return DispatchStatic(
+            "Debug", "Notification",
+            [text](RE::BSScrapArray<Variable>& a) {
+                a.emplace_back();
+                a.back() = RE::BSFixedString(text.c_str());
+            },
+            [](const Variable&) {}, [] {});
+    }
+
     bool SetLocked(std::uint32_t refId, bool locked)
     {
-        auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refId);
+        auto* ref = LookupRefAny(refId);
         if (!ref) return false;
         return Dispatch(ScriptObjectFor(ref), "Lock", [locked](RE::BSScrapArray<Variable>& a) {
             Push(a, locked);
@@ -444,14 +464,14 @@ namespace cosync::plugin::avatars
 
     bool DamageObject(std::uint32_t refId, float amount)
     {
-        auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refId);
+        auto* ref = LookupRefAny(refId);
         if (!ref) return false;
         return Dispatch(ScriptObjectFor(ref), "DamageObject", [amount](RE::BSScrapArray<Variable>& a) { Push(a, amount); });
     }
 
     bool SetDestroyed(std::uint32_t refId, bool destroyed)
     {
-        auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refId);
+        auto* ref = LookupRefAny(refId);
         if (!ref) return false;
         return Dispatch(ScriptObjectFor(ref), "SetDestroyed", [destroyed](RE::BSScrapArray<Variable>& a) { Push(a, destroyed); });
     }
@@ -465,7 +485,7 @@ namespace cosync::plugin::avatars
 
     bool ContainerAdd(std::uint32_t refId, std::uint32_t itemId, int count)
     {
-        auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refId);
+        auto* ref = LookupRefAny(refId);
         auto* item = RE::TESForm::LookupByID(itemId);
         if (!ref || !item) return false;
         return Dispatch(ScriptObjectFor(ref), "AddItem", [item, count](RE::BSScrapArray<Variable>& a) {
@@ -477,7 +497,7 @@ namespace cosync::plugin::avatars
 
     bool ContainerRemove(std::uint32_t refId, std::uint32_t itemId, int count)
     {
-        auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refId);
+        auto* ref = LookupRefAny(refId);
         auto* item = RE::TESForm::LookupByID(itemId);
         if (!ref || !item) return false;
         return Dispatch(ScriptObjectFor(ref), "RemoveItem", [item, count](RE::BSScrapArray<Variable>& a) {
@@ -490,7 +510,7 @@ namespace cosync::plugin::avatars
 
     bool ContainerTakeAll(std::uint32_t refId)
     {
-        auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refId);
+        auto* ref = LookupRefAny(refId);
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!ref || !player) return false;
         return Dispatch(ScriptObjectFor(ref), "RemoveAllItems", [player](RE::BSScrapArray<Variable>& a) {
@@ -502,7 +522,9 @@ namespace cosync::plugin::avatars
 
     bool ActivateAsPlayer(std::uint32_t refId)
     {
-        auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refId);
+        // LookupByID<TESObjectREFR> refuses actors, so talking to an NPC was never sent.
+        auto* form = RE::TESForm::LookupByID(refId);
+        auto* ref = form ? form->As<RE::TESObjectREFR>() : nullptr;
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!ref || !player) return false;
         return Dispatch(ScriptObjectFor(ref), "Activate", [player](RE::BSScrapArray<Variable>& a) {

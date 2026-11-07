@@ -223,6 +223,8 @@ namespace cosync::plugin::avatars
     // Actor.StartCombat against the local player, and Actor.Kill with no killer.
     bool StartCombatWithPlayer(std::uint32_t actorId);
     bool KillActor(std::uint32_t actorId);
+    // Debug.Notification: a line at the top left of the HUD.
+    bool Notify(const std::string& text);
     bool SetLocked(std::uint32_t refId, bool locked);
     bool DamageObject(std::uint32_t refId, float amount);
     bool SetDestroyed(std::uint32_t refId, bool destroyed);

@@ -912,6 +912,8 @@ namespace cosync::plugin::worldsync
             }
             for (auto* r : actors) {
                 if (r == player || IsGone(r) || !r->parentCell->IsAttached()) continue;
+                if (r->GetBaseObject() == player->GetBaseObject()) continue;  // a remote player's stand-in
+                if (proto::IsRuntimeFormId(r->GetFormID())) continue;        // generated crowd: nothing to say
                 auto* actor = static_cast<RE::Actor*>(r);
                 if (actor->IsDead()) continue;
                 const auto base = r->GetBaseObject();

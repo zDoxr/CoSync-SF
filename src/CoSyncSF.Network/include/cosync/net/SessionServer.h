@@ -42,6 +42,7 @@ namespace cosync::net
         std::uint64_t npcMessagesRefused = 0;  // NPC state or damage from a player without the right
         std::uint64_t worldEventsNotRemembered = 0;  // the ledger was full, late joiners miss these
         std::uint64_t npcMessagesNotRelevant = 0;    // NPC updates not sent to a player who is elsewhere
+        std::uint64_t dialogueLinesRelayed = 0;
     };
 
     struct PlayerInfo
@@ -131,6 +132,7 @@ namespace cosync::net
         void ElectNpcAuthority();
         void OnNpcMessage(Connection& conn, Player& player, proto::Message& msg);
         void OnWorldMessage(Connection& conn, Player& player, proto::Message& msg);
+        void OnDialogue(Connection& conn, Player& player, proto::DialogueLine line);
         [[nodiscard]] Player* FindByToken(const ResumeToken& token);
         [[nodiscard]] bool NameTaken(std::string_view name) const;
         [[nodiscard]] ResumeToken NewToken();

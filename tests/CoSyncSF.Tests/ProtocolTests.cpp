@@ -381,3 +381,16 @@ TEST(Protocol, OutfitTemplatesRoundTrip)
     EXPECT_EQ(got[0].templateId, 0x00269BD9u);
     EXPECT_EQ(got[1].templateId, 0u);
 }
+
+TEST(Protocol, DialogueLineRoundTripAndValidation)
+{
+    DialogueLine m{ 0, "UC Security", "Move along, citizen.", false };
+    auto r = Decode(Encode(m));
+    ASSERT_TRUE(r.Ok());
+    const auto& got = std::get<DialogueLine>(*r.message);
+    EXPECT_EQ(got.speaker, "UC Security");
+    EXPECT_EQ(got.text, "Move along, citizen.");
+    EXPECT_FALSE(got.isPlayer);
+    m.text.clear();
+    EXPECT_FALSE(Decode(Encode(m)).Ok());
+}
