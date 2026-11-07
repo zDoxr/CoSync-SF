@@ -2,7 +2,7 @@
 
 Cooperative multiplayer and dedicated session hosting for **Starfield** (PC), built as an SFSE plugin plus a standalone session server.
 
-> **Status: early foundation.** The networking layer, session server and protocol are implemented and tested over real UDP on one machine. **No game state is synchronized yet.** The plugin has not been loaded in Starfield yet. See [Current status](#current-status).
+> **Status: early, experimental.** Two copies of Starfield connect and see each other as animated stand-ins. NPC replication is written but has not been run in game. See [Current status](#current-status).
 
 ## Intended experience
 
@@ -22,6 +22,7 @@ Two to eight players join one session, over LAN by direct address or discovery, 
 | Multiplayer UI | Core (`CoSyncSF.UI`: validated commands, versioned snapshots, themes, JSON) implemented and tested. The in-game Scaleform menu is not built yet; see [docs/UI_FRAMEWORK.md](docs/UI_FRAMEWORK.md) |
 | Steam networking, NAT traversal | Researched, not implemented |
 | Player/NPC/world synchronization | **Position exchange verified in game** (two copies on one PC, ~20 Hz, same-cell detection) |
+| NPC replication (experimental, `-NpcSync`) | Protocol, authority and routing are tested. **The game side has not been run in game.** See [docs/NPC_SYNC_STATUS.md](docs/NPC_SYNC_STATUS.md) |
 | Remote player proxies (experimental, `-Avatars`) | **Visible in game** (2026-11-02): an engine-spawned NPC actor per remote player in your cell. It is validated (actor, enabled, in the player's cell, 3D loaded), moved to the remote pose at 10 Hz and despawned cleanly. No appearance copy or animation yet. See [docs/REMOTE_PROXY_RESEARCH.md](docs/REMOTE_PROXY_RESEARCH.md) |
 
 ## Architecture
@@ -113,6 +114,9 @@ Start the game once normally first, so Starfield creates `StarfieldPrefs.ini`. I
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): boundaries, threading, protocol, authority model, proxy lifecycle
 - [docs/REVERSE_ENGINEERING.md](docs/REVERSE_ENGINEERING.md): verified engine functions, offsets and evidence (Starfield 1.16.244)
 - [docs/REMOTE_PROXY_RESEARCH.md](docs/REMOTE_PROXY_RESEARCH.md): how remote players are represented, and why
+- [docs/NPC_SYNC_STATUS.md](docs/NPC_SYNC_STATUS.md): NPC sync checklist, test plan and results
+- [docs/NPC_SYNC_ROADMAP.md](docs/NPC_SYNC_ROADMAP.md): staged plan toward a fully shared world
+- [docs/NPC_SYNC_ARCHITECTURE.md](docs/NPC_SYNC_ARCHITECTURE.md): NPC authority, messages and client takeover
 - [docs/UI_FRAMEWORK.md](docs/UI_FRAMEWORK.md): multiplayer UI recommendation and architecture
 - `tools/re/`: the static-analysis scripts used for the RE evidence
 - [docs/DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md): milestones and status

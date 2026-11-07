@@ -8,6 +8,8 @@
 #include "GameBridge.h"
 #include "GameState.h"
 #include "AnimEvents.h"
+#include "MenuPause.h"
+#include "SelfTest.h"
 #include "MoveControls.h"
 #include "MultiInstance.h"
 #include "PluginConfig.h"
@@ -197,7 +199,7 @@ SFSE_PLUGIN_VERSION = []() noexcept {
 SFSE_PLUGIN_LOAD(const SFSE::LoadInterface* a_sfse)
 {
     // CoSync keeps its own log; no CommonLibSF hooks or trampoline are used.
-    SFSE::Init(a_sfse, { .log = false, .hook = false });
+    SFSE::Init(a_sfse, { .log = false, .trampoline = true, .trampolineSize = 64, .hook = false });
 
     OpenLog();
     g_runtimeVersion = a_sfse->RuntimeVersion().pack();
@@ -245,6 +247,18 @@ SFSE_PLUGIN_LOAD(const SFSE::LoadInterface* a_sfse)
     }
     plugin::GameBridge::Get().EnableLocalPlayerReads(haveAddressLibrary);
     plugin::GameBridge::Get().EnableAvatars(haveAddressLibrary && g_config.remoteAvatars);
+    plugin::GameBridge::Get().EnableNpcSync(haveAddressLibrary && g_config.npcSync);
+    if (haveAddressLibrary) plugin::selftest::Configure(g_config.selfTest);
+    plugin::GameBridge::Get().EnableMenuPatch(g_config.menuPatch);
+    if (haveAddressLibrary && g_config.npcSync) {
+        std::string detail;
+        plugin::movecontrols::InstallControllerHold(detail);
+        log::Info("{}", detail);
+        plugin::npcsync::Replication::Install(detail);
+        log::Info("{}", detail);
+        plugin::menupause::Install(detail);
+        log::Info("{}", detail);
+    }
     plugin::GameBridge::Get().SetAvatarScale(g_config.avatarScale);
     if (haveAddressLibrary && g_config.remoteAvatars && g_config.avatarAnimDiag > 0) {
         std::string capture;

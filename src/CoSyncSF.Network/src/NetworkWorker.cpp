@@ -6,9 +6,11 @@
 #include <memory>
 #include "cosync/net/LanDiscovery.h"
 #include "cosync/shared/Log.h"
+#include "cosync/shared/NpcReplication.h"
 
 #include <chrono>
 #include <algorithm>
+#include <iterator>
 
 namespace cosync::net
 {
@@ -69,6 +71,49 @@ namespace cosync::net
     {
         std::scoped_lock lock(_localMutex);
         if (_npcCombatOut.size() < 256) _npcCombatOut.emplace_back(npcFormId, targetPlayer);
+    }
+
+    void NetworkWorker::SubmitNpcStates(std::uint32_t locationId, std::vector<proto::NpcState> npcs)
+    {
+        std::scoped_lock lock(_localMutex);
+        _npcStatesOut = proto::NpcStates{ kInvalidPlayerId, 0, locationId, std::move(npcs) };
+    }
+
+    void NetworkWorker::SubmitNpcDeath(std::uint32_t npcFormId)
+    {
+        std::scoped_lock lock(_localMutex);
+        if (_npcDeathOut.size() < 256) _npcDeathOut.push_back(npcFormId);
+    }
+
+    void NetworkWorker::SubmitNpcDamage(std::uint32_t npcFormId, float amount)
+    {
+        std::scoped_lock lock(_localMutex);
+        if (_npcDamageOut.size() < 256) _npcDamageOut.emplace_back(npcFormId, amount);
+    }
+
+    void NetworkWorker::SubmitNpcEvents(std::vector<proto::NpcEvent> events)
+    {
+        constexpr std::size_t kMaxQueued = 512;
+        std::scoped_lock lock(_localMutex);
+        for (auto& e : events) {
+            if (_npcEventsOut.size() >= kMaxQueued) _npcEventsOut.pop_front();
+            _npcEventsOut.push_back(std::move(e));
+        }
+    }
+
+    void NetworkWorker::SubmitNpcOutfits(std::vector<proto::NpcOutfit> outfits)
+    {
+        std::scoped_lock lock(_localMutex);
+        _npcOutfitsOut = std::move(outfits);  // full state: a newer one replaces an unsent one
+    }
+
+    std::vector<proto::NpcStates> NetworkWorker::TakeNpcStates()
+    {
+        std::scoped_lock lock(_localMutex);
+        std::vector<proto::NpcStates> out(std::make_move_iterator(_npcStatesIn.begin()),
+                                          std::make_move_iterator(_npcStatesIn.end()));
+        _npcStatesIn.clear();
+        return out;
     }
 
     void NetworkWorker::SubmitGroupRequest(const proto::GroupRequest& request)
@@ -172,6 +217,7 @@ namespace cosync::net
             }
 
             {
+                static thread_local std::uint32_t npcEventTick = 0;
                 std::optional<LocalTransform> local;
                 {
                     std::scoped_lock lock(_localMutex);
@@ -189,6 +235,38 @@ namespace cosync::net
                     groupRequests.swap(_groupOut);
                 }
                 for (const auto& g : groupRequests) client.SendGroupRequest(g);
+                std::optional<proto::NpcStates> npcStates;
+                std::vector<std::uint32_t> npcDeaths;
+                std::vector<std::pair<std::uint32_t, float>> npcDamage;
+                {
+                    std::scoped_lock lock(_localMutex);
+                    npcStates.swap(_npcStatesOut);
+                    npcDeaths.swap(_npcDeathOut);
+                    npcDamage.swap(_npcDamageOut);
+                }
+                std::vector<proto::NpcOutfit> npcOutfits;
+                std::vector<proto::NpcEvent> npcEvents;
+                {
+                    std::scoped_lock lock(_localMutex);
+                    npcOutfits.swap(_npcOutfitsOut);
+                    // One message every sixth tick (10 Hz at the default rate). With position at 60 Hz,
+                    // snapshots at 30 and outfits at 5 this stays well under what the server allows.
+                    const auto n = ++npcEventTick % 6 == 0 ? std::min(_npcEventsOut.size(), proto::kMaxNpcEvents)
+                                                           : std::size_t{ 0 };
+                    npcEvents.assign(std::make_move_iterator(_npcEventsOut.begin()),
+                                     std::make_move_iterator(_npcEventsOut.begin() + static_cast<std::ptrdiff_t>(n)));
+                    _npcEventsOut.erase(_npcEventsOut.begin(), _npcEventsOut.begin() + static_cast<std::ptrdiff_t>(n));
+                }
+                for (auto& part : npc::SplitOutfits(std::move(npcOutfits))) client.SendNpcOutfits(std::move(part));
+                client.SendNpcEvents(std::move(npcEvents));
+                // Deaths first: a snapshot sent after them already shows the NPC dead.
+                for (const auto npc : npcDeaths) client.SendNpcDeath(npc);
+                for (const auto& [npc, amount] : npcDamage) client.SendNpcDamage(npc, amount);
+                if (npcStates) {
+                    for (auto& part : npc::SplitForWire(npcStates->npcs)) {
+                        client.SendNpcStates(npcStates->locationId, std::move(part));
+                    }
+                }
                 std::vector<PlayerId> kicks;
                 {
                     std::scoped_lock lock(_localMutex);
@@ -209,6 +287,13 @@ namespace cosync::net
                     const auto& m = t->transform;
                     _remoteTransforms.PushDropOldest(
                         { m.playerId, { SteadyNowMs(), m.sequence, m.locationId, m.position, m.rotation, m.controls, m.events, m.weapon, m.status } });
+                    continue;
+                }
+                if (auto* n = std::get_if<client_event::NpcStates>(&ev)) {
+                    constexpr std::size_t kMaxQueuedParts = 256;
+                    std::scoped_lock lock(_localMutex);
+                    if (_npcStatesIn.size() >= kMaxQueuedParts) _npcStatesIn.pop_front();
+                    _npcStatesIn.push_back(std::move(n->states));
                     continue;
                 }
                 if (!_events.TryPush(std::move(ev))) {

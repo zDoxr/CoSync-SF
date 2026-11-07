@@ -48,6 +48,9 @@ param(
     [int]$AvatarAnimDiagLevel = 0,  # 1 = same as -AvatarAnimDiag; 2 = also float variables at 2 Hz
     [switch]$AvatarAnimate,          # drive proxy locomotion variables from network velocity
     [switch]$AvatarNoMove,           # experiment: do not SetPosition/SetAngle stand-ins
+    [switch]$NpcSync,                # experimental: replicate NPCs from the first copy to the others
+    [int]$SelfTest = 0,              # dev: seconds in the world before the unattended menu test (0 = off)
+    [switch]$NoMenuPatch,            # dev: control runs, menus pause as in the unmodified game
     [switch]$FakeSteam,              # dev: copy n gets test identity steam:n (Steam-path testing on one PC)
     [double]$RenderScale = 0.5,      # test instances share one GPU: render at this scale (DLSS/FSR upscales)
     [switch]$NoVsync,                # vsync stops the focused copy from starving the other of GPU time
@@ -219,11 +222,14 @@ function Write-InstanceConfig([int]$n) {
         "AvatarFreezeDelay=$($AvatarFreezeDelay.ToString([Globalization.CultureInfo]::InvariantCulture))"
         "AvatarBase=$AvatarBase"
         "AvatarMoveMode=$AvatarMoveMode"
+        "NpcSync=$(if ($NpcSync) { 1 } else { 0 })"
         "AvatarAnimDiag=$(if ($AvatarAnimDiagLevel -gt 0) { $AvatarAnimDiagLevel } elseif ($AvatarAnimDiag) { 1 } else { 0 })"
         "AvatarAnimate=$(if ($AvatarAnimate) { 1 } else { 0 })"
         "AvatarMove=$(if ($AvatarNoMove) { 0 } else { 1 })"
         '[Dev]'
         "FakeSteamId=$(if ($FakeSteam) { $n } else { 0 })"
+        "SelfTest=$(if ($SelfTest -gt 0) { $SelfTest + ($n - 1) * 120 } else { 0 })"
+        "MenuPatch=$(if ($NoMenuPatch) { 0 } else { 1 })"
         '[Debug]'
         'LogLevel=debug'
     ) | Set-Content -LiteralPath $ini -Encoding ASCII

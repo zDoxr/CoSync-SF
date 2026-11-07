@@ -48,11 +48,19 @@ namespace cosync::net
         struct RttSample { std::uint32_t rttMs; };
         struct NpcCombat { proto::NpcCombat combat; };
         struct Groups { proto::GroupState state; };
+        struct NpcAuthority { PlayerId authority; };
+        struct NpcStates { proto::NpcStates states; };
+        struct NpcDeath { proto::NpcDeath death; };
+        struct NpcDamage { proto::NpcDamage damage; };
+        struct NpcEvents { proto::NpcEvents events; };
+        struct NpcOutfits { proto::NpcOutfits outfits; };
     }
 
     using ClientEvent = std::variant<client_event::StateChanged, client_event::Welcomed, client_event::Rejected,
                                      client_event::PeerJoined, client_event::PeerLeft, client_event::RemoteTransform,
-                                     client_event::RttSample, client_event::NpcCombat, client_event::Groups>;
+                                     client_event::RttSample, client_event::NpcCombat, client_event::Groups,
+                                     client_event::NpcAuthority, client_event::NpcStates, client_event::NpcDeath,
+                                     client_event::NpcDamage, client_event::NpcEvents, client_event::NpcOutfits>;
 
     // Client side of the session protocol. Single-threaded; see ITransport.
     class SessionClient
@@ -73,6 +81,14 @@ namespace cosync::net
         // Reports an NPC that entered combat against `targetPlayer` here (reliable).
         bool SendNpcCombat(std::uint32_t npcFormId, PlayerId targetPlayer);
         bool SendGroupRequest(const proto::GroupRequest& request);
+        // NPC replication (1.6). States and deaths are refused by the server unless this client is
+        // the NPC authority.
+        bool SendNpcStates(std::uint32_t locationId, std::vector<proto::NpcState> npcs);
+        bool SendNpcDeath(std::uint32_t npcFormId);
+        bool SendNpcDamage(std::uint32_t npcFormId, float amount);
+        bool SendNpcEvents(std::vector<proto::NpcEvent> events);
+        bool SendNpcOutfits(std::vector<proto::NpcOutfit> outfits);
+        [[nodiscard]] PlayerId NpcAuthority() const noexcept { return _npcAuthority; }
         bool SendTransform(std::uint32_t locationId, const Vec3& position, const Vec3& rotation,
                            const std::optional<proto::PlayerControls>& controls = std::nullopt,
                            const std::vector<proto::AnimEvent>& events = {},
@@ -119,6 +135,10 @@ namespace cosync::net
 
         std::map<PlayerId, std::string> _roster;  // remote players only
         std::map<PlayerId, std::uint32_t> _lastRemoteSequence;
+        PlayerId _npcAuthority = kInvalidPlayerId;
+        std::uint32_t _npcStatesSequence = 0;  // outgoing
+        std::uint32_t _lastNpcSequence = 0;    // incoming, from the current authority
+        bool _haveNpcSequence = false;
         std::vector<TransportEvent> _transportEvents;
     };
 }

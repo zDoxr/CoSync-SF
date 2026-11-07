@@ -117,6 +117,13 @@ namespace cosync::plugin::avatars
     bool RequestCombatTarget(std::uint32_t actorId, std::shared_ptr<std::atomic<std::uint32_t>> result);
     bool StartCombat(std::uint32_t actorId, std::uint32_t targetRefId);
     bool StopCombat(std::uint32_t actorId);  // Papyrus Actor.StopCombat()
+    bool KillSilent(std::uint32_t actorId);  // Papyrus Actor.KillSilent(None)
+    // Armor, clothing or a weapon: added if missing, then equipped. Unequip leaves it in the inventory.
+    bool EquipForm(std::uint32_t actorId, std::uint32_t itemFormId);
+    bool UnequipForm(std::uint32_t actorId, std::uint32_t itemFormId);
+    // Papyrus ObjectReference.DamageValue(Game.GetHealthAV(), amount): the engine's whole damage
+    // path, with its bleedout and death handling (RE 12.1).
+    bool DamageHealth(std::uint32_t actorId, float amount);
 
     // ---- Local player status (game.pex: actorvalue GetHealthAV(); objectreference.pex:
     // Float GetValuePercentage(actorvalue), planet GetCurrentPlanet(), Bool IsInSpace();

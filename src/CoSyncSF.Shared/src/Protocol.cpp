@@ -195,6 +195,66 @@ namespace cosync::proto
             w.U32(m.targetPlayer);
         }
 
+        void Encode(ByteWriter& w, const NpcAuthority& m) { w.U32(m.authority); }
+
+        void Encode(ByteWriter& w, const NpcStates& m)
+        {
+            w.U32(m.playerId);
+            w.U32(m.sequence);
+            w.U32(m.locationId);
+            const auto count = std::min(m.npcs.size(), kMaxNpcStates);
+            w.U8(static_cast<std::uint8_t>(count));
+            for (std::size_t i = 0; i < count; ++i) {
+                const auto& n = m.npcs[i];
+                w.U32(n.formId);
+                w.U32(n.baseId);
+                WriteVec3(w, n.position);
+                w.F32(n.yaw);
+                w.U8(n.healthPercent);
+                w.U8(n.flags);
+                if ((n.flags & kNpcCrowdTarget) != 0) WriteVec3(w, n.crowdTarget);
+            }
+        }
+
+        void Encode(ByteWriter& w, const NpcDeath& m)
+        {
+            w.U32(m.playerId);
+            w.U32(m.npcFormId);
+        }
+
+        void Encode(ByteWriter& w, const NpcDamage& m)
+        {
+            w.U32(m.playerId);
+            w.U32(m.npcFormId);
+            w.F32(m.amount);
+        }
+
+        void Encode(ByteWriter& w, const NpcEvents& m)
+        {
+            w.U32(m.playerId);
+            const auto count = std::min(m.events.size(), kMaxNpcEvents);
+            w.U8(static_cast<std::uint8_t>(count));
+            for (std::size_t i = 0; i < count; ++i) {
+                w.U32(m.events[i].formId);
+                w.String(m.events[i].name);
+            }
+        }
+
+        void Encode(ByteWriter& w, const NpcOutfits& m)
+        {
+            w.U32(m.playerId);
+            const auto count = std::min(m.outfits.size(), kMaxNpcOutfits);
+            w.U8(static_cast<std::uint8_t>(count));
+            for (std::size_t i = 0; i < count; ++i) {
+                const auto& o = m.outfits[i];
+                w.U32(o.formId);
+                w.U32(o.look);
+                const auto items = std::min(o.items.size(), kMaxNpcOutfitItems);
+                w.U8(static_cast<std::uint8_t>(items));
+                for (std::size_t j = 0; j < items; ++j) w.U32(o.items[j]);
+            }
+        }
+
         bool ValidReject(std::uint16_t v) { return v >= 1 && v <= static_cast<std::uint16_t>(RejectReason::RateLimited); }
         bool ValidLeave(std::uint8_t v) { return v >= 1 && v <= static_cast<std::uint8_t>(LeaveReason::ServerShutdown); }
         bool ValidDisconnect(std::uint16_t v) { return v >= 1 && v <= static_cast<std::uint16_t>(DisconnectReason::Kicked); }
@@ -395,6 +455,83 @@ namespace cosync::proto
                 }
                 return m;
             }
+            case MessageType::NpcAuthority: {
+                NpcAuthority m;
+                m.authority = r.U32();
+                return m;
+            }
+            case MessageType::NpcStates: {
+                NpcStates m;
+                m.playerId = r.U32();
+                m.sequence = r.U32();
+                m.locationId = r.U32();
+                const std::size_t count = r.U8();
+                if (count > kMaxNpcStates) r.Fail();
+                for (std::size_t i = 0; r.Ok() && i < count; ++i) {
+                    NpcState n;
+                    n.formId = r.U32();
+                    n.baseId = r.U32();
+                    n.position = ReadVec3(r);
+                    n.yaw = r.F32();
+                    n.healthPercent = r.U8();
+                    n.flags = r.U8();
+                    if ((n.flags & kNpcCrowdTarget) != 0) n.crowdTarget = ReadVec3(r);
+                    if (r.Ok() && !IsValidNpcState(n)) r.Fail();
+                    m.npcs.push_back(n);
+                }
+                return m;
+            }
+            case MessageType::NpcDeath: {
+                NpcDeath m;
+                m.playerId = r.U32();
+                m.npcFormId = r.U32();
+                if (r.Ok() && !IsReplicatedNpcId(m.npcFormId)) r.Fail();
+                return m;
+            }
+            case MessageType::NpcDamage: {
+                NpcDamage m;
+                m.playerId = r.U32();
+                m.npcFormId = r.U32();
+                m.amount = r.F32();
+                if (r.Ok() && (!IsReplicatedNpcId(m.npcFormId) || !std::isfinite(m.amount) || m.amount <= 0.0f ||
+                               m.amount > kMaxNpcDamage)) {
+                    r.Fail();
+                }
+                return m;
+            }
+            case MessageType::NpcEvents: {
+                NpcEvents m;
+                m.playerId = r.U32();
+                const std::size_t count = r.U8();
+                if (count > kMaxNpcEvents) r.Fail();
+                for (std::size_t i = 0; r.Ok() && i < count; ++i) {
+                    NpcEvent e;
+                    e.formId = r.U32();
+                    e.name = r.String(kMaxAnimEventNameBytes);
+                    if (r.Ok() && (!IsReplicatedNpcId(e.formId) || e.name.empty())) r.Fail();
+                    m.events.push_back(std::move(e));
+                }
+                return m;
+            }
+            case MessageType::NpcOutfits: {
+                NpcOutfits m;
+                m.playerId = r.U32();
+                const std::size_t count = r.U8();
+                if (count > kMaxNpcOutfits) r.Fail();
+                for (std::size_t i = 0; r.Ok() && i < count; ++i) {
+                    NpcOutfit o;
+                    o.formId = r.U32();
+                    o.look = r.U32();
+                    const std::size_t items = r.U8();
+                    if (!IsReplicatedNpcId(o.formId) || items > kMaxNpcOutfitItems) r.Fail();
+                    for (std::size_t j = 0; r.Ok() && j < items; ++j) {
+                        o.items.push_back(r.U32());
+                        if (o.items.back() == 0) r.Fail();
+                    }
+                    m.outfits.push_back(std::move(o));
+                }
+                return m;
+            }
             case MessageType::NpcCombat: {
                 NpcCombat m;
                 m.playerId = r.U32();
@@ -410,7 +547,7 @@ namespace cosync::proto
         bool IsKnownType(std::uint16_t t)
         {
             return t >= static_cast<std::uint16_t>(MessageType::Hello) &&
-                   t <= static_cast<std::uint16_t>(MessageType::GroupState);
+                   t <= static_cast<std::uint16_t>(MessageType::NpcOutfits);
         }
 
         bool IsFiniteBounded(const Vec3& v, float bound)
@@ -442,6 +579,12 @@ namespace cosync::proto
                 else if constexpr (std::is_same_v<T, NpcCombat>) return MessageType::NpcCombat;
                 else if constexpr (std::is_same_v<T, GroupRequest>) return MessageType::GroupRequest;
                 else if constexpr (std::is_same_v<T, GroupState>) return MessageType::GroupState;
+                else if constexpr (std::is_same_v<T, NpcAuthority>) return MessageType::NpcAuthority;
+                else if constexpr (std::is_same_v<T, NpcStates>) return MessageType::NpcStates;
+                else if constexpr (std::is_same_v<T, NpcDeath>) return MessageType::NpcDeath;
+                else if constexpr (std::is_same_v<T, NpcDamage>) return MessageType::NpcDamage;
+                else if constexpr (std::is_same_v<T, NpcEvents>) return MessageType::NpcEvents;
+                else if constexpr (std::is_same_v<T, NpcOutfits>) return MessageType::NpcOutfits;
                 else static_assert(kAlwaysFalse<T>, "unhandled message type");
             },
             message);
@@ -545,6 +688,12 @@ namespace cosync::proto
         return name.front() != ' ' && name.back() != ' ';
     }
 
+    bool IsValidNpcState(const NpcState& s) noexcept
+    {
+        return IsReplicatedNpcId(s.formId) && IsFiniteBounded(s.position, kMaxCoordinate) && std::isfinite(s.yaw) &&
+               s.healthPercent <= 100 && (s.flags & ~kNpcKnownFlags) == 0 && IsFiniteBounded(s.crowdTarget, kMaxCoordinate);
+    }
+
     bool IsValidControls(const PlayerControls& c) noexcept
     {
         if (c.flag > 1) return false;
@@ -581,6 +730,12 @@ namespace cosync::proto
         case MessageType::NpcCombat: return "NpcCombat";
         case MessageType::GroupRequest: return "GroupRequest";
         case MessageType::GroupState: return "GroupState";
+        case MessageType::NpcAuthority: return "NpcAuthority";
+        case MessageType::NpcStates: return "NpcStates";
+        case MessageType::NpcDeath: return "NpcDeath";
+        case MessageType::NpcDamage: return "NpcDamage";
+        case MessageType::NpcEvents: return "NpcEvents";
+        case MessageType::NpcOutfits: return "NpcOutfits";
         }
         return "Unknown";
     }

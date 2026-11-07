@@ -4,6 +4,10 @@ add_library(cosync_plugin SHARED
     src/AnimProbe.cpp
     src/MoveControls.cpp
     src/NpcSync.cpp
+    src/CrowdSync.cpp
+    src/NpcReplication.cpp
+    src/MenuPause.cpp
+    src/SelfTest.cpp
     src/MetroUi.cpp
     src/Overlay.cpp
     src/SteamInvite.cpp
