@@ -25,6 +25,8 @@ Every copy runs the full game from the same save, and CoSync keeps those copies 
 | A dead player's stand-in dies, and comes back with them | Two copies | New. Copy 2 sent 0% health: copy 1's proxy read back dead 3 s later, alive 3 s after health returned. Tested with `@fakehealth`, not a real death |
 | Dropped connection resumes without duplicating items | Two copies | New |
 | Two players picking up one item: the first keeps it | Two copies | New, protocol 1.15 |
+| Two players emptying one container: what was already gone goes back | Two copies | New, protocol 1.17 |
+| Looting a runtime NPC reaches its pair on the other copies | Two copies | New, protocol 1.16 |
 | Shared changes survive loading a save | Two copies | New. Container counts excluded |
 | Ship position in space reaches other players | Two copies | New. Showing it as a stand-in is blocked, see [SHIP_SYNC.md](SHIP_SYNC.md) |
 | Presence: NPC updates only to players who can see them | Two copies | New. `cosync/shared/Presence.h` |
