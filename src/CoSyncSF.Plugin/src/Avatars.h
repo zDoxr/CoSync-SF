@@ -223,6 +223,9 @@ namespace cosync::plugin::avatars
     // Actor.StartCombat against the local player, and Actor.Kill with no killer.
     bool StartCombatWithPlayer(std::uint32_t actorId);
     bool KillActor(std::uint32_t actorId);
+    bool ResurrectActor(std::uint32_t actorId);  // Papyrus Actor.Resurrect()
+    // The engine's own IsDead (vtable slot 269, 0x1FC7FB0). Main thread. False if not an actor.
+    [[nodiscard]] bool IsActorDead(std::uint32_t actorId);
     // Debug.Notification: a line at the top left of the HUD.
     bool Notify(const std::string& text);
     // ObjectReference.GetItemCount on the player, -1 into `result` when the call fails. Main thread.

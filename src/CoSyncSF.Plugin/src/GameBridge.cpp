@@ -243,6 +243,7 @@ namespace cosync::plugin
         if (_statusQuery && _statusQuery->pending.load() <= 0) {
             proto::PlayerStatus st = _localStatus.value_or(proto::PlayerStatus{});
             if (const int h = _statusQuery->healthPercent.load(); h >= 0) st.healthPercent = static_cast<std::uint8_t>(std::min(h, 100));
+            if (_fakeHealth >= 0) st.healthPercent = static_cast<std::uint8_t>(_fakeHealth);
             if (const int l = _statusQuery->level.load(); l > 0) st.level = static_cast<std::uint16_t>(std::min(l, 65535));
             const int space = _statusQuery->inSpace.load();
             std::string planet;
@@ -362,7 +363,18 @@ namespace cosync::plugin
     void GameBridge::EnableWorldSync(bool enable)
     {
         _worldSyncEnabled = enable;
-        if (enable) dev::SetCommandHandler([this](const std::string& step) { return _world.RunStep(step); });
+        if (enable) {
+            dev::SetCommandHandler([this](const std::string& step) {
+                if (step.starts_with("@fakehealth ")) {
+                    // "@fakehealth <0..100|off>": the health this copy sends, for testing what others show.
+                    const auto value = step.substr(12);
+                    _fakeHealth = value == "off" ? -1 : std::clamp(std::stoi(value), 0, 100);
+                    log::Info("[avatar] {}: sending health {}", step, _fakeHealth);
+                    return true;
+                }
+                return _world.RunStep(step);
+            });
+        }
     }
 
     void GameBridge::Tick()
@@ -863,6 +875,26 @@ namespace cosync::plugin
                         log::Info("[avatar] player {} '{}': proxy entered combat on its own; stopped (#{})", id,
                                   remote.name, avatar.combatStops);
                     }
+                }
+            }
+            // A remote player at 0 health is dead on their own copy: the proxy dies here too, and comes
+            // back when they do (issue #15). Health arrives about once a second with the status.
+            if (remote.status && avatar.motionApplied && now >= avatar.deathCheckAt) {
+                avatar.deathCheckAt = now + std::chrono::milliseconds(500);
+                const bool dead = remote.status->healthPercent == 0;
+                if (dead && !avatar.shownDead) {
+                    avatar.shownDead = true;
+                    avatars::KillActor(avatar.refId);
+                    avatar.deathVerifyAt = now + std::chrono::seconds(3);
+                    log::Info("[avatar] player {} '{}' is dead on their copy: killing the proxy {:08X}", id, remote.name, avatar.refId);
+                } else if (!dead && avatar.shownDead) {
+                    avatar.shownDead = false;
+                    avatars::ResurrectActor(avatar.refId);
+                    avatar.deathVerifyAt = now + std::chrono::seconds(3);
+                    log::Info("[avatar] player {} '{}' is alive again ({}%): resurrecting the proxy {:08X}", id, remote.name, remote.status->healthPercent, avatar.refId);
+                } else if (avatar.deathVerifyAt != std::chrono::steady_clock::time_point{} && now >= avatar.deathVerifyAt) {
+                    avatar.deathVerifyAt = {};
+                    log::Info("[avatar] player {} '{}': verify proxy {:08X} engine dead {}, wanted {}", id, remote.name, avatar.refId, avatars::IsActorDead(avatar.refId), avatar.shownDead);
                 }
             }
             if (_opt.controls && avatar.motionApplied) {

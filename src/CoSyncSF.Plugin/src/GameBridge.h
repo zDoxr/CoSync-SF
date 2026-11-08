@@ -60,6 +60,7 @@ namespace cosync::plugin
             bool controls = false;    // proxies replay the remote player's IMovementPlayerControls data (network)
         };
         void SetAvatarOptions(const AvatarOptions& o) noexcept { _opt = o; }
+        int _fakeHealth = -1;  // '@fakehealth': sent instead of the real health, -1 = off
         void Tick();
 
     private:
@@ -84,6 +85,9 @@ namespace cosync::plugin
             std::uint32_t snaps = 0;  // controls mode: drift corrections
             std::chrono::steady_clock::time_point nextStopCombat{};
             std::uint32_t combatStops = 0;
+            bool shownDead = false;  // the remote player is at 0 health, and the proxy was killed
+            std::chrono::steady_clock::time_point deathCheckAt{};
+            std::chrono::steady_clock::time_point deathVerifyAt{};
             std::chrono::steady_clock::time_point nextLookLog{};
             std::chrono::steady_clock::time_point lastTurnAt{};
             float bodyYaw = 0.0f;

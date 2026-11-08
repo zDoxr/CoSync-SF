@@ -487,6 +487,21 @@ namespace cosync::plugin::avatars
         return Dispatch(ScriptObjectFor(actor), "Kill", [](RE::BSScrapArray<Variable>& a) { PushNone(a); });
     }
 
+    bool ResurrectActor(std::uint32_t actorId)
+    {
+        auto* actor = LookupActor(actorId);
+        if (!actor) return false;
+        return Dispatch(ScriptObjectFor(actor), "Resurrect", [](RE::BSScrapArray<Variable>&) {});
+    }
+
+    bool IsActorDead(std::uint32_t actorId)
+    {
+        auto* actor = LookupActor(actorId);
+        if (!actor) return false;
+        const auto vtbl = *reinterpret_cast<void* const* const*>(actor);
+        return reinterpret_cast<bool (*)(RE::Actor*, bool)>(vtbl[269])(actor, true);
+    }
+
     bool Notify(const std::string& text)
     {
         return DispatchStatic(
