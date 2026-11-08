@@ -172,7 +172,7 @@ The model that fits the architecture: one copy (the NPC authority) decides what 
 |---|---|---|---|---|---|---|---|---|
 | Stable location IDs | VERIFIED | `GameState.cpp`, bit 31 outdoors | Procedural cell IDs are FF per copy, so bit-31 distance logic may be all that matches | | | Key by planet and position | Two copies on a planet → same place recognized | P1 |
 | Presence | VERIFIED | `Presence.h` for NPC traffic | World events, combat | | | Extend | | P1 |
-| Procedural planets | BLOCKED by test | | Never run. PULSAR's `parentCell` crash | `0xB4EB40`; PULSAR's note on SetPosition stage 1 is a lead | Needs a surface save | Move a proxy's parent cell with the player's; never write to a stale one | Planet soak | P1 |
+| Procedural planets | PARTIAL | `CoSyncPlanet` save on Jemison's generated terrain. Stand-ins followed through 21 generated cells on each copy with no crash (section 9) | Moved by script in 80 m steps, not walking. No fights, creatures or long soak. Other planets | PULSAR's stale `parentCell` crash did not appear | | Soak with creatures and combat | Two-copy planet run → no crash, stand-in stays valid | P1 |
 | POI and landing zone parity | MISSING | | Seeds per copy. PULSAR's top bug is POIs that differ in space | `BGSPlanet` content tree | | Send the landing site; force the same seed | Land → same POIs near | P1 |
 | Fast travel | MISSING | | Each copy alone | `PlayerFastTravel::Event` | D9 | Follow the leader, or regroup | | P3 |
 | Interior and elevators | PARTIAL | Proxy despawns per cell | Flicker on load | | | | | P2 |
@@ -402,6 +402,16 @@ On the build just before it, which had the same hooks, NPCs in a real fight brou
 ```
 
 Pass: `[respawn] verify` shows a distance under 1 m, health 100% and life state `0x0`, with no `VM frozen` line after the first load.
+
+### Planet test and moves without a loading screen
+
+**Planet save.** `CoSyncPlanet` was made from `CoSyncTest` by moving the player west past New Atlantis until the cell was generated at runtime (`FF01B000`). New Atlantis is in Jemison's planet worldspace, so its surroundings are procedural terrain.
+
+**Planet run, two copies.** Both copies moved 80 m at a time, 24 times, across 21 generated cells each, about 2 km. No crash and no new dump file. The stand-in stayed loaded and followed: the `INCOMPLETE` lines only mean it was in the neighboring cell for a moment. Both lethal returns worked. Each copy's generated cells have different numbers, so only the outdoors bit and the distance tell the copies they are in the same place.
+
+**Loading screens.** Measured with `@watchload` on one copy. `ObjectReference.SetPosition` and `MoveTo` on the player opened the loading screen every time, for 1.6 to 2.4 s. `Actor::SetPosition` (vtable slot 0x137) did not, including across a cell border. Checkpoint returns now use it whenever the target is already loaded in the same worldspace, and `MoveTo` only otherwise. Two copies on the planet: 190 m returns and a 500 m move showed no loading screen.
+
+Only moves within a loaded place avoid the screen. Going to another planet or into an interior still needs one, which is issue #22.
 
 ### Next feasible work
 

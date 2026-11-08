@@ -17,6 +17,7 @@
 #include <format>
 #include <memory>
 #include <optional>
+#include <sstream>
 
 namespace cosync::plugin::respawn
 {
@@ -159,6 +160,31 @@ namespace cosync::plugin::respawn
             return base && base->GetFormID() == kMarkerBaseId;
         }
 
+        // '@watchload': when the loading screen and the fade open and close, to see what a move costs.
+        bool g_watchLoad = false;
+        bool g_loadingOpen = false;
+        bool g_faderOpen = false;
+        Clock::time_point g_loadingSince{};
+
+        void WatchLoad()
+        {
+            auto* ui = RE::UI::GetSingleton();
+            if (!ui) return;
+            const auto now = Clock::now();
+            const bool loading = ui->IsMenuOpen("LoadingMenu");
+            const bool fader = ui->IsMenuOpen("FaderMenu");
+            if (loading != g_loadingOpen) {
+                g_loadingOpen = loading;
+                if (loading) g_loadingSince = now;
+                log::Info("[move] loading screen {}{}", loading ? "open" : "closed",
+                          loading ? std::string() : std::format(" after {} ms", std::chrono::duration_cast<std::chrono::milliseconds>(now - g_loadingSince).count()));
+            }
+            if (fader != g_faderOpen) {
+                g_faderOpen = fader;
+                log::Info("[move] fade {}", fader ? "open" : "closed");
+            }
+        }
+
         void UpdateSaveBlock(const Context& context)
         {
             const bool want = context.inSession && !context.ownsWorld;
@@ -239,6 +265,14 @@ namespace cosync::plugin::respawn
             return 0;
         }
 
+        bool SameLoadedPlace(RE::PlayerCharacter* player, RE::TESObjectREFR* target)
+        {
+            if (!target->parentCell || !target->parentCell->IsAttached() || !player->parentCell) return false;
+            if (target->parentCell == player->parentCell) return true;
+            auto* world = player->GetParentWorldSpace();
+            return world && world == target->GetParentWorldSpace();
+        }
+
         void Return(const Context& context, RE::PlayerCharacter* player, std::uint32_t caught, Clock::time_point now)
         {
             const auto id = avatars::PlayerRefId();
@@ -251,9 +285,22 @@ namespace cosync::plugin::respawn
             RE::NiPoint3 to{};
             const auto target = ChooseReturn(context, kind, to);
             bool sent = false;
-            if (target != 0) sent = avatars::MoveRefTo(id, target);
-            log::Info("[respawn] the player would have died (blow caught {}x) at {:.1f} {:.1f} {:.1f}; return #{} to {} {:08X} at {:.1f} {:.1f} {:.1f}: {}", caught, from.x, from.y, from.z,
-                      g_returns, kind, target, to.x, to.y, to.z, target == 0 ? "stayed put" : sent ? "sent" : "refused");
+            const char* how = "";
+            if (target != 0) {
+                // Somewhere already loaded needs no loading screen: the script MoveTo always shows one
+                // (1.6 s measured), the actor's own SetPosition does not. Elsewhere only MoveTo can reach.
+                auto* ref = avatars::AsRef(RE::TESForm::LookupByID(target));
+                if (ref && SameLoadedPlace(player, ref)) {
+                    static_cast<RE::Actor*>(player)->SetPosition(to, true);
+                    sent = true;
+                    how = " directly";
+                } else {
+                    sent = avatars::MoveRefTo(id, target);
+                    how = " with a loading screen";
+                }
+            }
+            log::Info("[respawn] the player would have died (blow caught {}x) at {:.1f} {:.1f} {:.1f}; return #{} to {} {:08X} at {:.1f} {:.1f} {:.1f}: {}{}", caught, from.x, from.y, from.z,
+                      g_returns, kind, target, to.x, to.y, to.z, target == 0 ? "stayed put" : sent ? "sent" : "refused", how);
             avatars::Notify(target == 0 ? "You were saved from death." : "You were brought back from death.");
             g_verifyAt = now + kVerifyAfter;
             g_verifyTarget = target == 0 ? from : to;
@@ -278,6 +325,7 @@ namespace cosync::plugin::respawn
 
     void Tick(const Context& context)
     {
+        if (g_watchLoad) WatchLoad();
         UpdateSaveBlock(context);
         const bool live = context.inSession && context.inWorld;
         // The whole session, not only while in the world: a blow during a stall must not reload a save.
@@ -352,6 +400,24 @@ namespace cosync::plugin::respawn
         }
         if (step.starts_with("@savetest ")) {
             dev::RunConsole("save " + step.substr(10));
+            return true;
+        }
+        if (step == "@watchload") {
+            g_watchLoad = true;
+            return true;
+        }
+        if (step.starts_with("@nudgedirect ")) {
+            // "@nudgedirect <dx> <dy> <dz>": moves the player through Actor::SetPosition, without the script VM.
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            float dx = 0.0f, dy = 0.0f, dz = 0.0f;
+            std::istringstream(step.substr(13)) >> dx >> dy >> dz;
+            auto at = player->GetPosition();
+            at.x += dx;
+            at.y += dy;
+            at.z += dz;
+            static_cast<RE::Actor*>(player)->SetPosition(at, true);
+            const auto now = player->GetPosition();
+            log::Info("[move] {}: now {:.1f} {:.1f} {:.1f}", step, now.x, now.y, now.z);
             return true;
         }
         if (step == "@checkpoint") {

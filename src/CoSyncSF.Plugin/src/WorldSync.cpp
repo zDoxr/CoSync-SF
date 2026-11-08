@@ -3,6 +3,7 @@
 #include "Avatars.h"
 #include "NpcSync.h"
 #include "DevHarness.h"
+#include <sstream>
 
 #include "cosync/shared/Log.h"
 
@@ -1501,6 +1502,45 @@ namespace cosync::plugin::worldsync
             log::Info("[world] cell {:08X}: {} refs, {} gone, {} without base, types{}", player->parentCell->GetFormID(), refs.size(), gone, nobase, line);
             return true;
         }
+        if (step.starts_with("@saveifproc ")) {
+            // "@saveifproc <name>": saves once, if the player stands in a generated cell, off the data files.
+            static bool saved = false;
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const auto cell = player && player->parentCell ? player->parentCell->GetFormID() : 0u;
+            log::Info("[world] {}: cell {:08X}{}", step, cell, saved ? ", already saved" : "");
+            if (!saved && proto::IsRuntimeFormId(cell)) {
+                saved = true;
+                dev::RunConsole("save " + step.substr(12));
+            }
+            return true;
+        }
+        if (step == "@markers") {
+            // One map marker per worldspace, the way to reach a place by script ('@moveto').
+            constexpr std::uint32_t kMapMarkerBase = 0x10;
+            std::map<std::uint32_t, std::size_t> perWorld;
+            for (std::uint32_t id = 1; id < 0x400000; ++id) {
+                auto* form = RE::TESForm::LookupByID(id);
+                if (!form || form->GetFormType() != RE::FormType::kREFR) continue;
+                auto* r = static_cast<RE::TESObjectREFR*>(form);
+                const auto base = r->GetBaseObject();
+                if (!base || base->GetFormID() != kMapMarkerBase || !r->parentCell) continue;
+                auto* world = r->GetParentWorldSpace();
+                const auto worldId = world ? world->GetFormID() : 0u;
+                if (++perWorld[worldId] > 1) continue;
+                const auto at = r->GetPosition();
+                const char* name = world ? world->GetFullName() : nullptr;
+                const char* editor = world ? world->GetFormEditorID() : nullptr;
+                log::Info("[world] marker {:08X} world {:08X} '{}' ({}) cell {:08X} at {:.0f} {:.0f} {:.0f}", id, worldId, name ? name : "", editor ? editor : "", r->parentCell->GetFormID(), at.x, at.y, at.z);
+            }
+            log::Info("[world] @markers: {} worldspaces", perWorld.size());
+            return true;
+        }
+        if (step.starts_with("@moveto ")) {
+            // "@moveto <ref>": the player goes there, loading screen and all.
+            const auto target = static_cast<std::uint32_t>(std::stoul(step.substr(8), nullptr, 16));
+            log::Info("[world] {}: {}", step, avatars::MoveRefTo(avatars::PlayerRefId(), target) ? "sent" : "refused");
+            return true;
+        }
         if (step == "@take") {
             ref = Nearest([](RE::TESObjectREFR* r) { return IsContainer(r); });
             if (ref) {
@@ -1574,13 +1614,17 @@ namespace cosync::plugin::worldsync
             return true;
         }
         if (step.starts_with("@nudge ")) {
-            // "@nudge <dx> [<dy>]": moves the local player that far, as walking would.
+            // "@nudge <dx> [<dy> [<dz>]]": moves the local player that far, as walking would.
             auto* player = RE::PlayerCharacter::GetSingleton();
             auto at = player->GetPosition();
-            const auto space = step.find(' ', 7);
-            at.x += std::stof(step.substr(7, space - 7));
-            if (space != std::string::npos) at.y += std::stof(step.substr(space + 1));
-            log::Info("[world] {}: {}", step, avatars::PlaceRef(0x14, { at.x, at.y, at.z }, {}) ? "sent" : "refused");
+            float dx = 0.0f, dy = 0.0f, dz = 0.0f;
+            std::istringstream(step.substr(7)) >> dx >> dy >> dz;
+            at.x += dx;
+            at.y += dy;
+            at.z += dz;
+            // Not through the script SetPosition, which brings up a loading screen for the player.
+            static_cast<RE::Actor*>(player)->SetPosition(at, true);
+            log::Info("[world] {}: moved", step);
             return true;
         }
         if (step.starts_with("@takefrom ")) {
