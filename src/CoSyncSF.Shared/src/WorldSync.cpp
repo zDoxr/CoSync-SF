@@ -17,7 +17,7 @@ namespace cosync::world
 
     bool Ledger::Apply(const proto::WorldEvent& event)
     {
-        if (event.kind == WorldEventKind::ItemReturned) return true;
+        if (event.kind == WorldEventKind::ItemReturned || event.kind == WorldEventKind::ContainerRemaining) return true;
         const auto kind = static_cast<std::uint8_t>(event.kind);
         // A quest keeps every stage it reached; anything else has one current value per item.
         const bool counts = event.kind == WorldEventKind::ContainerItem || event.kind == WorldEventKind::NpcContainerItem;
@@ -62,6 +62,18 @@ namespace cosync::world
         out.reserve(entries.size());
         for (const auto* entry : entries) out.push_back(entry->event);
         return out;
+    }
+
+    std::int32_t ContainerStock::Take(std::uint32_t container, std::uint32_t item, std::int32_t taken, std::int32_t remaining)
+    {
+        const auto key = (static_cast<std::uint64_t>(container) << 32) | item;
+        const auto it = _known.find(key);
+        std::int32_t excess = 0;
+        // The sender had remaining + taken before taking. More than the container held since the last
+        // report means part of it was taken twice.
+        if (taken > 0 && it != _known.end() && remaining + taken > it->second) excess = std::min(taken, remaining + taken - it->second);
+        if (it != _known.end() || _known.size() < kMaxEntries) _known[key] = remaining;
+        return excess;
     }
 
     bool Pickups::Claim(std::uint64_t key, PlayerId player)

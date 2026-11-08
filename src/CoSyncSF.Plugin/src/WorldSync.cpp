@@ -590,6 +590,7 @@ namespace cosync::plugin::worldsync
             const WorldEvent e{ WorldEventKind::LockState, id, BaseId(ref), state };
             if (changed && !_echo.Consume(e, NowMs())) _outgoing.push_back(e);
         }
+        std::map<std::pair<std::uint32_t, std::uint32_t>, std::int32_t> containerChanges;  // (container, item) -> change
         for (const auto& c : changes) {
             // Only what the local player moved. What an apply does on this copy never involves the
             // player, so it cannot come back round.
@@ -637,7 +638,23 @@ namespace cosync::plugin::worldsync
             const auto* ref = LookupRef(other, 0);
             if (!ref || !IsContainer(ref)) continue;
             const auto count = static_cast<std::int32_t>(c.d);
-            _outgoing.push_back({ WorldEventKind::ContainerItem, other, c.c, c.b == kPlayerRef ? -count : count });
+            containerChanges[{ other, c.c }] += c.b == kPlayerRef ? -count : count;
+        }
+        // Each change with what the container holds of that item now, for the server to check.
+        for (const auto& [key, delta] : containerChanges) {
+            if (delta == 0) continue;
+            const auto [container, item] = key;
+            std::int32_t left = 0;
+            if (auto* ref = LookupRef(container, 0)) {
+                ref->ForEachInventoryItem([&](const RE::BGSInventoryItem& i) {
+                    if (i.object && i.object->GetFormID() == item) {
+                        for (const auto& s : i.stacks) left += static_cast<std::int32_t>(s.count);
+                    }
+                    return RE::BSContainer::ForEachResult::kContinue;
+                });
+            }
+            _outgoing.push_back({ WorldEventKind::ContainerItem, container, item, delta });
+            _outgoing.push_back({ WorldEventKind::ContainerRemaining, container, item, left });
         }
         for (const auto& s : stages) {
             const auto* quest = RE::TESForm::LookupByID<RE::TESQuest>(s.a);
@@ -788,6 +805,8 @@ namespace cosync::plugin::worldsync
             ++_applied;
             return true;
         }
+        case WorldEventKind::ContainerRemaining:
+            return true;  // only ever sent to the server
         case WorldEventKind::ItemReturned: {
             // Someone else picked this up first: what this player got goes back.
             avatars::ContainerRemove(kPlayerRef, e.itemId, e.value);
@@ -873,6 +892,7 @@ namespace cosync::plugin::worldsync
             case WorldEventKind::ItemReturned:
             case WorldEventKind::SharedRemoved:
             case WorldEventKind::NpcContainerItem:
+            case WorldEventKind::ContainerRemaining:
                 break;
             }
             return true;
@@ -1463,6 +1483,12 @@ namespace cosync::plugin::worldsync
             } else {
                 avatars::ActivateAsPlayer(found->GetFormID());
             }
+            return true;
+        }
+        if (step.starts_with("@takefrom ")) {
+            // "@takefrom <ref>": the player empties that container.
+            const auto id = static_cast<std::uint32_t>(std::stoul(step.substr(10), nullptr, 16));
+            log::Info("[world] {}: {}", step, avatars::ContainerTakeAll(id) ? "sent" : "refused");
             return true;
         }
         if (step.starts_with("@netdrop ")) {

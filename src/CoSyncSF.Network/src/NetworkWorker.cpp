@@ -304,7 +304,12 @@ namespace cosync::net
                     // World changes and drops wait while the connection is being resumed (issue #14):
                     // sent then, they would be lost, and the others would never hear of them.
                     if (client.State() == ClientState::InSession) {
-                        const auto n = static_cast<std::ptrdiff_t>(std::min(_worldEventsOut.size(), proto::kMaxWorldEvents));
+                        auto n = static_cast<std::ptrdiff_t>(std::min(_worldEventsOut.size(), proto::kMaxWorldEvents));
+                        // A container change and the count after it go in the same message: the server reads them as a pair.
+                        if (n > 1 && static_cast<std::size_t>(n) < _worldEventsOut.size() &&
+                            _worldEventsOut[static_cast<std::size_t>(n)].kind == proto::WorldEventKind::ContainerRemaining) {
+                            --n;
+                        }
                         worldEvents.assign(_worldEventsOut.begin(), _worldEventsOut.begin() + n);
                         _worldEventsOut.erase(_worldEventsOut.begin(), _worldEventsOut.begin() + n);
                         drops.swap(_dropsOut);

@@ -801,3 +801,42 @@ TEST(WorldLedger, ResumedCopyAppliesOnlyTheContainerChangesItMissed)
     ASSERT_TRUE(seen.Apply({ WorldEventKind::ContainerItem, 0x0022ED8A, 0x55, -2 }));
     EXPECT_EQ(world::MissingContainerChange(seen, history), 0);
 }
+
+TEST(WorldContainers, StockFindsATakeOfWhatWasAlreadyGone)
+{
+    world::ContainerStock stock;
+    EXPECT_EQ(stock.Take(0x0022ED8A, 0x0F, 3000, 2000), 0);  // first report: nothing to compare with
+    EXPECT_EQ(stock.Take(0x0022ED8A, 0x0F, 1000, 1000), 0);  // had 2000, took 1000: fine
+    EXPECT_EQ(stock.Take(0x0022ED8A, 0x0F, 5000, 0), 4000);  // a copy that still saw 5000: 4000 of it was gone
+    EXPECT_EQ(stock.Take(0x0022ED8A, 0x0F, 0, 50), 0);       // a put sets the count
+    EXPECT_EQ(stock.Take(0x0022ED8A, 0x0F, 50, 0), 0);
+}
+
+TEST_F(Session, SecondPlayerToEmptyAContainerGivesBackWhatWasGone)
+{
+    auto& first = Add("First");
+    auto& second = Add("Second");
+    auto& watcher = Add("Watcher");
+    Pump();
+    // Both had 5000 credits in the box. The first took them all, the second did too before hearing of it.
+    ASSERT_TRUE(first.session->SendWorldEvents({ { WorldEventKind::ContainerItem, 0x0022ED8A, 0x0F, -5000 }, { WorldEventKind::ContainerRemaining, 0x0022ED8A, 0x0F, 0 } }));
+    Pump();
+    ASSERT_TRUE(second.session->SendWorldEvents({ { WorldEventKind::ContainerItem, 0x0022ED8A, 0x0F, -5000 }, { WorldEventKind::ContainerRemaining, 0x0022ED8A, 0x0F, 0 } }));
+    Pump();
+    std::vector<proto::WorldEvent> returned;
+    for (const auto& m : second.Got<client_event::WorldEvents>()) {
+        for (const auto& e : m.world.events) {
+            if (e.kind == WorldEventKind::ItemReturned) returned.push_back(e);
+        }
+    }
+    ASSERT_EQ(returned.size(), 1u);
+    EXPECT_EQ(returned[0].value, 5000);
+    std::int32_t relayed = 0;
+    for (const auto& m : watcher.Got<client_event::WorldEvents>()) {
+        for (const auto& e : m.world.events) {
+            EXPECT_NE(e.kind, WorldEventKind::ContainerRemaining);
+            if (e.kind == WorldEventKind::ContainerItem) relayed += e.value;
+        }
+    }
+    EXPECT_EQ(relayed, -5000);  // the first player's take only
+}

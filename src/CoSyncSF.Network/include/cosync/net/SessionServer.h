@@ -154,6 +154,7 @@ namespace cosync::net
         std::set<std::uint32_t> _deadNpcs;  // replayed to late joiners
         world::Ledger _world;               // likewise
         world::Pickups _pickups;            // likewise
+        world::ContainerStock _stock;       // likewise
         std::map<std::uint32_t, proto::DroppedItem> _drops;  // by shared ID, until picked up
         std::optional<proto::WorldClock> _worldClock;
         std::vector<TransportEvent> _events;

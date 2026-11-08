@@ -419,6 +419,25 @@ namespace cosync::net
         if (auto* events = std::get_if<proto::WorldEvents>(&msg)) {
             if (!stamped(*events)) return;
             std::vector<proto::WorldEvent> returns;
+            // A container take followed by what is left: whatever was already gone goes back.
+            auto& list = events->events;
+            for (std::size_t i = 0; i + 1 < list.size(); ++i) {
+                auto& e = list[i];
+                const auto& r = list[i + 1];
+                if (e.kind != proto::WorldEventKind::ContainerItem || r.kind != proto::WorldEventKind::ContainerRemaining || r.formId != e.formId ||
+                    r.itemId != e.itemId) {
+                    continue;
+                }
+                const auto excess = _stock.Take(e.formId, e.itemId, e.value < 0 ? -e.value : 0, r.value);
+                if (excess > 0) {
+                    returns.push_back({ proto::WorldEventKind::ItemReturned, e.formId, e.itemId, excess });
+                    e.value += excess;  // only what was really there reaches the others
+                    ++_stats.itemsReturned;
+                }
+            }
+            std::erase_if(list, [](const proto::WorldEvent& e) {
+                return e.kind == proto::WorldEventKind::ContainerRemaining || (e.kind == proto::WorldEventKind::ContainerItem && e.value == 0);
+            });
             std::erase_if(events->events, [&](const proto::WorldEvent& e) {
                 if (e.kind == proto::WorldEventKind::ItemReturned) {
                     ++_stats.protocolViolations;  // only the server answers with these

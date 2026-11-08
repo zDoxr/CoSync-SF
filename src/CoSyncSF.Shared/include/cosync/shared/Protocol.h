@@ -22,7 +22,7 @@ namespace cosync::proto
 {
     inline constexpr std::uint32_t kMagic = 0x46535343;  // "CSSF" as little-endian bytes
     inline constexpr std::uint16_t kProtocolMajor = 1;   // incompatible changes
-    inline constexpr std::uint16_t kProtocolMinor = 16;   // backward-compatible additions
+    inline constexpr std::uint16_t kProtocolMinor = 17;   // backward-compatible additions
                                                          // 1.1: optional PlayerTransform::controls
                                                          // 1.2: tagged trailing sections, PlayerTransform::events
                                                          // 1.3: PlayerTransform::weapon
@@ -380,6 +380,10 @@ namespace cosync::proto
         // A runtime NPC's inventory changed (1.16): formId the NPC under the NPC authority's number,
         // which every copy maps to its own (issue #6). itemId the item, value the change in count.
         NpcContainerItem = 9,
+        // C->S only (1.17), right after a ContainerItem: how many of that item the container holds now
+        // on the sender's copy. The server compares it with what it last heard, so two players taking
+        // the same stack cannot both keep it (issue #17). Never relayed or remembered.
+        ContainerRemaining = 10,
     };
     struct WorldEvent
     {

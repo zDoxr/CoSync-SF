@@ -824,6 +824,7 @@ namespace cosync::proto
         case WorldEventKind::QuestStage: return e.value >= 0 && e.value <= 0xFFFF;
         case WorldEventKind::ContainerItem:
         case WorldEventKind::NpcContainerItem: return e.itemId != 0 && e.value != 0;
+        case WorldEventKind::ContainerRemaining: return e.itemId != 0 && e.value >= 0;
         }
         return false;
     }

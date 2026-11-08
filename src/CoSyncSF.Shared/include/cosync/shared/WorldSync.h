@@ -86,6 +86,21 @@ namespace cosync::world
         std::map<std::uint64_t, PlayerId> _takenBy;
     };
 
+    // How many of each item each container held at the last report (issue #17). A take reported from
+    // a copy that had not yet heard of an earlier one finds more there than is left: that excess is
+    // answered with ItemReturned.
+    class ContainerStock
+    {
+    public:
+        static constexpr std::size_t kMaxEntries = 65536;
+        // `taken` > 0 for a take, 0 for a put; `remaining` what the sender's container holds after.
+        // Returns how much of the take was already gone.
+        [[nodiscard]] std::int32_t Take(std::uint32_t container, std::uint32_t item, std::int32_t taken, std::int32_t remaining);
+
+    private:
+        std::map<std::uint64_t, std::int32_t> _known;
+    };
+
     [[nodiscard]] constexpr bool CanShareContainer(std::uint32_t formId) noexcept
     {
         return formId != 0 && !proto::IsRuntimeFormId(formId);
