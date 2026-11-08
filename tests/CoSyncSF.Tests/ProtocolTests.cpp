@@ -58,6 +58,12 @@ namespace
             NpcCombat{ 4, 0x00015062, 2 },
             GroupRequest{ GroupAction::Invite, 3, 0 },
             GroupState{ 7, { GroupInfo{ 1, 2, { 2, 3 }, { 4 } } } },
+            NpcAuthority{ 3 },
+            NpcStates{ 3, 77, 0x1234, { NpcState{ 0x15062, 0x15061, { 1.0f, 2.0f, 3.0f }, 0.5f, 42, kNpcWeaponDrawn } } },
+            NpcDeath{ 3, 0x15062 },
+            NpcDamage{ 4, 0x15062, 12.5f },
+            NpcEvents{ 3, { NpcEvent{ 0x15062, "weaponDraw" } } },
+            NpcOutfits{ 3, { { 0x15062, { 0x1234, 0x5678 } }, { 0x15063, {} } } },
         };
     }
 
@@ -278,6 +284,24 @@ TEST(Protocol, TransformStatusRoundTripAndValidation)
     EXPECT_FALSE(Decode(Encode(t)).Ok());
 }
 
+TEST(Protocol, TransformShipRoundTripAndValidation)
+{
+    PlayerTransform t;
+    t.ship = ShipState{ 0x00018343, 0x0000B730, { -29.9f, 284.8f, 5.0e7f }, { 1.57f, -1.3f, 3.14f } };
+    auto r = Decode(Encode(t));
+    ASSERT_TRUE(r.Ok());
+    const auto& ship = *std::get<PlayerTransform>(*r.message).ship;
+    EXPECT_EQ(ship.cellId, 0x00018343u);
+    EXPECT_EQ(ship.baseId, 0x0000B730u);
+    EXPECT_FLOAT_EQ(ship.position.z, 5.0e7f);  // space is larger than the ground's bound
+    EXPECT_FLOAT_EQ(ship.rotation.x, 1.57f);
+    t.ship->baseId = 0;
+    EXPECT_FALSE(Decode(Encode(t)).Ok());
+    t.ship->baseId = 0x0000B730;
+    t.ship->position.x = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FALSE(Decode(Encode(t)).Ok());
+}
+
 TEST(Protocol, RejectsNonFiniteOrHugeTransforms)
 {
     PlayerTransform t;
@@ -343,4 +367,30 @@ TEST(GameRuntime, PackingMatchesSfse)
     EXPECT_FALSE(game::ParseRuntimeVersion("1.16.244.0"));
     EXPECT_FALSE(game::ParseRuntimeVersion("1.16.5000"));
     EXPECT_FALSE(game::ParseRuntimeVersion("a.b.c"));
+}
+
+TEST(Protocol, OutfitTemplatesRoundTrip)
+{
+    NpcOutfits m;
+    m.outfits.push_back({ 0xFF011169, { 0x1234 }, 0xC4ED576B, 0x00269BD9 });
+    m.outfits.push_back({ 0x0006423E, {}, 0x1, 0 });
+    auto r = Decode(Encode(m));
+    ASSERT_TRUE(r.Ok());
+    const auto& got = std::get<NpcOutfits>(*r.message).outfits;
+    ASSERT_EQ(got.size(), 2u);
+    EXPECT_EQ(got[0].templateId, 0x00269BD9u);
+    EXPECT_EQ(got[1].templateId, 0u);
+}
+
+TEST(Protocol, DialogueLineRoundTripAndValidation)
+{
+    DialogueLine m{ 0, "UC Security", "Move along, citizen.", false };
+    auto r = Decode(Encode(m));
+    ASSERT_TRUE(r.Ok());
+    const auto& got = std::get<DialogueLine>(*r.message);
+    EXPECT_EQ(got.speaker, "UC Security");
+    EXPECT_EQ(got.text, "Move along, citizen.");
+    EXPECT_FALSE(got.isPlayer);
+    m.text.clear();
+    EXPECT_FALSE(Decode(Encode(m)).Ok());
 }

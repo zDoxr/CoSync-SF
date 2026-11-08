@@ -267,6 +267,29 @@ namespace cosync::net
             Broadcast(m, player.id, Delivery::Reliable);
             break;
         }
+        case proto::MessageType::NpcStates:
+        case proto::MessageType::NpcDeath:
+        case proto::MessageType::NpcDamage:
+        case proto::MessageType::NpcEvents:
+        case proto::MessageType::NpcOutfits:
+            OnNpcMessage(conn, player, msg);
+            break;
+        case proto::MessageType::WorldEvents:
+        case proto::MessageType::WorldClock:
+            OnWorldMessage(conn, player, msg);
+            break;
+        case proto::MessageType::DialogueLine:
+            OnDialogue(conn, player, std::get<proto::DialogueLine>(std::move(msg)));
+            break;
+        case proto::MessageType::DroppedItem:
+            OnDroppedItem(conn, player, std::get<proto::DroppedItem>(std::move(msg)));
+            break;
+        case proto::MessageType::PlayerHit:
+            OnPlayerHit(conn, player, std::get<proto::PlayerHit>(std::move(msg)));
+            break;
+        case proto::MessageType::PlayerOutfit:
+            OnPlayerOutfit(conn, player, std::get<proto::PlayerOutfit>(std::move(msg)));
+            break;
         case proto::MessageType::Disconnect:
             log::Info("player {} '{}' left", player.id, player.name);
             DropConnection(id, CloseCode::Normal, "client quit", proto::LeaveReason::Quit);
@@ -374,6 +397,150 @@ namespace cosync::net
         std::ranges::sort(snapshot.players, {}, &proto::PlayerEntry::playerId);
         Send(conn.id, snapshot);
         Send(conn.id, _groups.State());
+
+        ElectNpcAuthority();
+        Send(conn.id, proto::NpcAuthority{ _npcAuthority });
+        for (const auto npc : _deadNpcs) Send(conn.id, proto::NpcDeath{ _npcAuthority, npc });
+        const auto history = _world.Snapshot();
+        for (std::size_t at = 0; at < history.size(); at += proto::kMaxWorldEvents) {
+            const auto end = std::min(at + proto::kMaxWorldEvents, history.size());
+            Send(conn.id, proto::WorldEvents{ kInvalidPlayerId, { history.begin() + static_cast<std::ptrdiff_t>(at), history.begin() + static_cast<std::ptrdiff_t>(end) } });
+        }
+        for (const auto& [id, drop] : _drops) Send(conn.id, drop);
+        std::erase_if(_outfits, [this](const auto& entry) { return !_players.contains(entry.first); });
+        for (const auto& [id, outfit] : _outfits) {
+            if (id != player.id) Send(conn.id, outfit);
+        }
+        if (_worldClock) Send(conn.id, *_worldClock);
+    }
+
+    void SessionServer::OnWorldMessage(Connection& conn, Player& player, proto::Message& msg)
+    {
+        const auto stamped = [&](auto& m) {
+            if (m.playerId != kInvalidPlayerId && m.playerId != player.id) {
+                ++_stats.protocolViolations;
+                DropConnection(conn.id, CloseCode::ProtocolViolation, "world message for another player",
+                               proto::LeaveReason::ProtocolViolation);
+                return false;
+            }
+            m.playerId = player.id;
+            return true;
+        };
+        if (auto* events = std::get_if<proto::WorldEvents>(&msg)) {
+            if (!stamped(*events)) return;
+            std::vector<proto::WorldEvent> returns;
+            // A container take followed by what is left: whatever was already gone goes back.
+            auto& list = events->events;
+            for (std::size_t i = 0; i + 1 < list.size(); ++i) {
+                auto& e = list[i];
+                const auto& r = list[i + 1];
+                if (e.kind != proto::WorldEventKind::ContainerItem || r.kind != proto::WorldEventKind::ContainerRemaining || r.formId != e.formId ||
+                    r.itemId != e.itemId) {
+                    continue;
+                }
+                const auto excess = _stock.Take(e.formId, e.itemId, e.value < 0 ? -e.value : 0, r.value);
+                if (excess > 0) {
+                    returns.push_back({ proto::WorldEventKind::ItemReturned, e.formId, e.itemId, excess });
+                    e.value += excess;  // only what was really there reaches the others
+                    ++_stats.itemsReturned;
+                }
+            }
+            std::erase_if(list, [](const proto::WorldEvent& e) {
+                return e.kind == proto::WorldEventKind::ContainerRemaining || (e.kind == proto::WorldEventKind::ContainerItem && e.value == 0);
+            });
+            std::erase_if(events->events, [&](const proto::WorldEvent& e) {
+                if (e.kind == proto::WorldEventKind::ItemReturned) {
+                    ++_stats.protocolViolations;  // only the server answers with these
+                    return true;
+                }
+                const bool shared = e.kind == proto::WorldEventKind::SharedRemoved;
+                if (shared) _drops.erase(e.formId);
+                if ((e.kind != proto::WorldEventKind::RefRemoved && !shared) ||
+                    _pickups.Claim((static_cast<std::uint64_t>(e.kind) << 32) | e.formId, player.id)) {
+                    return false;
+                }
+                // Already gone for everyone else: nothing to tell them, but this player gives it back.
+                if (e.value > 0) returns.push_back({ proto::WorldEventKind::ItemReturned, e.formId, e.itemId, e.value });
+                ++_stats.itemsReturned;
+                return true;
+            });
+            if (!returns.empty()) Send(conn.id, proto::WorldEvents{ kInvalidPlayerId, std::move(returns) });
+            if (events->events.empty()) return;
+            for (const auto& e : events->events) {
+                if (!_world.Apply(e)) ++_stats.worldEventsNotRemembered;
+            }
+            Broadcast(*events, player.id);
+        } else if (auto* clock = std::get_if<proto::WorldClock>(&msg)) {
+            if (!stamped(*clock)) return;
+            // The authority's alone: one clock, or two copies would keep correcting each other.
+            if (player.id != _npcAuthority) {
+                ++_stats.npcMessagesRefused;
+                return;
+            }
+            _worldClock = *clock;
+            Broadcast(*clock, player.id);
+        }
+    }
+
+    void SessionServer::OnDroppedItem(Connection& conn, Player& player, proto::DroppedItem drop)
+    {
+        if ((drop.playerId != kInvalidPlayerId && drop.playerId != player.id) || proto::SharedIdOwner(drop.sharedId) != player.id) {
+            ++_stats.protocolViolations;
+            DropConnection(conn.id, CloseCode::ProtocolViolation, "drop for another player", proto::LeaveReason::ProtocolViolation);
+            return;
+        }
+        drop.playerId = player.id;
+        // Kept for players who join later, like the rest of the world, until someone picks it up.
+        if (_drops.size() < 4096 || _drops.contains(drop.sharedId)) _drops[drop.sharedId] = drop;
+        Broadcast(drop, player.id);
+        ++_stats.dropsRelayed;
+    }
+
+    void SessionServer::OnPlayerHit(Connection& conn, Player& player, proto::PlayerHit hit)
+    {
+        if (hit.playerId != kInvalidPlayerId && hit.playerId != player.id) {
+            ++_stats.protocolViolations;
+            DropConnection(conn.id, CloseCode::ProtocolViolation, "hit from another player", proto::LeaveReason::ProtocolViolation);
+            return;
+        }
+        // Only the authority's engine decides what its NPCs hit, or one shot could count on every copy.
+        // A player that just lost the role can still have messages in flight, so this is not a violation.
+        const auto target = _players.find(hit.target);
+        if (player.id != _npcAuthority || hit.target == player.id || target == _players.end() || target->second.connection == kInvalidConnection) {
+            ++_stats.npcMessagesRefused;
+            return;
+        }
+        hit.playerId = player.id;
+        Send(target->second.connection, hit);
+    }
+
+    void SessionServer::OnPlayerOutfit(Connection& conn, Player& player, proto::PlayerOutfit outfit)
+    {
+        if (outfit.playerId != kInvalidPlayerId && outfit.playerId != player.id) {
+            ++_stats.protocolViolations;
+            DropConnection(conn.id, CloseCode::ProtocolViolation, "outfit for another player", proto::LeaveReason::ProtocolViolation);
+            return;
+        }
+        outfit.playerId = player.id;
+        _outfits[player.id] = outfit;
+        Broadcast(outfit, player.id);
+    }
+
+    void SessionServer::OnDialogue(Connection& conn, Player& player, proto::DialogueLine line)
+    {
+        if (line.playerId != kInvalidPlayerId && line.playerId != player.id) {
+            ++_stats.protocolViolations;
+            DropConnection(conn.id, CloseCode::ProtocolViolation, "dialogue for another player", proto::LeaveReason::ProtocolViolation);
+            return;
+        }
+        line.playerId = player.id;
+        // Only those who can hear it: the same place as the speaker's player.
+        const auto bytes = proto::Encode(line);
+        for (const auto& [id, p] : _players) {
+            if (id == player.id || p.connection == kInvalidConnection || !presence::MayShare(player.place, p.place)) continue;
+            _transport.Send(p.connection, bytes, Delivery::Reliable);
+            ++_stats.dialogueLinesRelayed;
+        }
     }
 
     void SessionServer::OnTransform(Connection&, Player& player, proto::PlayerTransform transform)
@@ -391,6 +558,7 @@ namespace cosync::net
         }
         player.hasTransform = true;
         player.lastTransformSequence = transform.sequence;
+        player.place = { transform.locationId, transform.position };
         transform.playerId = player.id;  // server stamps the authenticated identity
         Broadcast(transform, player.id, Delivery::Unreliable);
         ++_stats.transformsRelayed;
@@ -424,6 +592,12 @@ namespace cosync::net
             log::Info("player {} '{}' resume window expired", id, _players.at(id).name);
             _players.erase(id);  // PlayerLeft(ConnectionLost) was already broadcast at drop time
         }
+    }
+
+    presence::Place SessionServer::PlaceOf(PlayerId id) const
+    {
+        const auto it = _players.find(id);
+        return it == _players.end() ? presence::Place{} : it->second.place;
     }
 
     void SessionServer::Send(ConnectionId id, const proto::Message& msg, Delivery delivery)
@@ -487,6 +661,80 @@ namespace cosync::net
             Broadcast(proto::PlayerLeft{ id, reason }, id);
         }
         if (_groups.RemovePlayer(id)) Broadcast(_groups.State(), id);
+        ElectNpcAuthority();
+    }
+
+    void SessionServer::ElectNpcAuthority()
+    {
+        if (const auto it = _players.find(_npcAuthority);
+            it != _players.end() && it->second.connection != kInvalidConnection) {
+            return;
+        }
+        PlayerId next = kInvalidPlayerId;
+        for (const auto& [id, p] : _players) {
+            if (p.connection == kInvalidConnection || p.gameRuntime == 0) continue;  // tool clients have no NPCs
+            if (next == kInvalidPlayerId || id < next) next = id;
+        }
+        if (next == _npcAuthority) return;
+        _npcAuthority = next;
+        log::Info("NPC authority: player {}", next);
+        Broadcast(proto::NpcAuthority{ next }, kInvalidPlayerId);
+    }
+
+    void SessionServer::OnNpcMessage(Connection& conn, Player& player, proto::Message& msg)
+    {
+        const auto stamped = [&](auto& m) {
+            if (m.playerId != kInvalidPlayerId && m.playerId != player.id) {
+                ++_stats.protocolViolations;
+                DropConnection(conn.id, CloseCode::ProtocolViolation, "NPC message for another player",
+                               proto::LeaveReason::ProtocolViolation);
+                return false;
+            }
+            m.playerId = player.id;
+            return true;
+        };
+        if (auto* damage = std::get_if<proto::NpcDamage>(&msg)) {
+            if (!stamped(*damage)) return;
+            const auto authority = _players.find(_npcAuthority);
+            if (authority == _players.end() || authority->first == player.id ||
+                authority->second.connection == kInvalidConnection) {
+                ++_stats.npcMessagesRefused;
+                return;
+            }
+            Send(authority->second.connection, *damage);
+            return;
+        }
+        // State and death: the authority's alone. A player that just lost the role can still have
+        // messages in flight, so this is not a violation.
+        if (player.id != _npcAuthority) {
+            ++_stats.npcMessagesRefused;
+            return;
+        }
+        // What NPCs do only matters to players who can see them. Deaths go to everyone: they change
+        // the world for good.
+        const auto nearby = [&](const proto::Message& m, Delivery delivery) {
+            const auto bytes = proto::Encode(m);
+            for (const auto& [id, p] : _players) {
+                if (id == player.id || p.connection == kInvalidConnection) continue;
+                if (!presence::MayShare(player.place, p.place)) {
+                    ++_stats.npcMessagesNotRelevant;
+                    continue;
+                }
+                _transport.Send(p.connection, bytes, delivery);
+            }
+        };
+        if (auto* states = std::get_if<proto::NpcStates>(&msg)) {
+            if (stamped(*states)) nearby(*states, Delivery::Unreliable);
+        } else if (auto* events = std::get_if<proto::NpcEvents>(&msg)) {
+            if (stamped(*events)) nearby(*events, Delivery::Reliable);
+        } else if (auto* outfits = std::get_if<proto::NpcOutfits>(&msg)) {
+            if (stamped(*outfits)) nearby(*outfits, Delivery::Unreliable);
+        } else if (auto* death = std::get_if<proto::NpcDeath>(&msg)) {
+            if (!stamped(*death)) return;
+            constexpr std::size_t kMaxRememberedDeaths = 4096;
+            if (_deadNpcs.size() < kMaxRememberedDeaths) _deadNpcs.insert(death->npcFormId);
+            Broadcast(*death, player.id);
+        }
     }
 
     void SessionServer::ReservePlayer(Player& player)
@@ -499,6 +747,7 @@ namespace cosync::net
         if (_config.resumeWindowMs == 0) {
             _players.erase(id);
         }
+        ElectNpcAuthority();
     }
 
     SessionServer::Player* SessionServer::FindByToken(const ResumeToken& token)

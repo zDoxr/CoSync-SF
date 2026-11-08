@@ -28,4 +28,7 @@ namespace cosync::plugin
     // (main menu, loading screens). Must not be called unless the Address
     // Library is installed (PlayerCharacter::GetSingleton uses it).
     std::optional<LocalPlayerSample> ReadLocalPlayer();
+
+    // The load-order-independent key ReadLocalPlayer uses for a cell, for any cell. MAIN THREAD ONLY.
+    [[nodiscard]] std::uint32_t StableCellId(std::uint32_t cellFormId);
 }

@@ -3,9 +3,13 @@
 #include <RE/Starfield.h>
 #include <REL/Relocation.h>
 
+#include <array>
+#include <atomic>
 #include <cstddef>
+#include <cstring>
 #include <deque>
 #include <format>
+#include <map>
 #include <mutex>
 
 namespace cosync::plugin::animevents
@@ -107,6 +111,106 @@ namespace cosync::plugin::animevents
             g_queue.pop_front();
         }
         dropped = g_dropped;
+    }
+
+    namespace
+    {
+        constexpr std::uint64_t kActorHolderVtableId = 451626;  // Actor vtable, COL offset 0x60
+        constexpr std::size_t kFormIdOffset = 0x28;
+        constexpr std::size_t kMaxNpcQueued = 4096;
+
+        NotifyHook_t g_originalActorNotify = nullptr;
+        std::atomic<bool> g_npcCapture{ false };
+        std::atomic<std::uint64_t> g_blocked{ 0 };
+        std::mutex g_npcLock;
+        std::deque<NpcGraphEvent> g_npcQueue;
+        std::uint64_t g_npcDropped = 0;
+        // Indexed by the low FormID bits: runs on every graph event of every NPC, so no search and
+        // no lock. A collision only means one more NPC is treated as locked.
+        std::array<std::atomic<std::uint8_t>, 65536> g_locked{};
+        thread_local bool t_replaying = false;
+        std::mutex g_blockedLock;
+        std::map<std::string, std::uint32_t> g_blockedNames;
+
+        // The engine sends these to set up or re-anchor a graph on its own machine (runtime list,
+        // 2026-11-04). Each copy needs its own, and replaying one would reset a live graph.
+        bool IsHousekeeping(const char* name) noexcept
+        {
+            return std::strcmp(name, "InitializeMTGraph") == 0 || std::strcmp(name, "InstantInitializeMTGraph") == 0 ||
+                   std::strcmp(name, "PositionChange") == 0;
+        }
+
+        bool ActorNotifyHook(void* holder, const RE::BSFixedString* name, void* extra)
+        {
+            const auto formId = *reinterpret_cast<const std::uint32_t*>(static_cast<const std::byte*>(holder) -
+                                                                        kHolderOffset + kFormIdOffset);
+            const char* text = name ? name->c_str() : nullptr;
+            const bool housekeeping = text && IsHousekeeping(text);
+            if (!t_replaying && !housekeeping && g_locked[formId & 0xFFFF].load(std::memory_order_relaxed)) {
+                g_blocked.fetch_add(1, std::memory_order_relaxed);
+                if (text) {
+                    std::lock_guard lock(g_blockedLock);
+                    if (g_blockedNames.size() < 256 || g_blockedNames.contains(text)) ++g_blockedNames[text];
+                }
+                return false;
+            }
+            const bool accepted = g_originalActorNotify(holder, name, extra);
+            if (accepted && text && !housekeeping && g_npcCapture.load(std::memory_order_relaxed)) {
+                {
+                    std::lock_guard lock(g_npcLock);
+                    if (g_npcQueue.size() < kMaxNpcQueued) g_npcQueue.push_back({ formId, text });
+                    else ++g_npcDropped;
+                }
+            }
+            return accepted;
+        }
+    }
+
+    bool InstallNpcCapture(std::string& detail)
+    {
+        if (g_originalActorNotify) {
+            detail = "NPC graph hook already installed";
+            return true;
+        }
+        REL::Relocation<std::uintptr_t> vtbl{ REL::ID(kActorHolderVtableId) };
+        // Original first, then patch: the hook must never run with a null original.
+        g_originalActorNotify = reinterpret_cast<NotifyHook_t>(reinterpret_cast<void* const*>(vtbl.address())[kNotifySlot]);
+        vtbl.write_vfunc(kNotifySlot, &ActorNotifyHook);
+        detail = std::format("NPC graph hook installed (vtable ID {} slot {})", kActorHolderVtableId, kNotifySlot);
+        return true;
+    }
+
+    void SetNpcCapture(bool enable) noexcept { g_npcCapture.store(enable, std::memory_order_relaxed); }
+
+    void DrainNpcEvents(std::vector<NpcGraphEvent>& out, std::uint64_t& dropped)
+    {
+        std::lock_guard lock(g_npcLock);
+        while (!g_npcQueue.empty()) {
+            out.push_back(std::move(g_npcQueue.front()));
+            g_npcQueue.pop_front();
+        }
+        dropped = g_npcDropped;
+    }
+
+    void SetGraphLocked(std::uint32_t formId, bool locked) noexcept
+    {
+        g_locked[formId & 0xFFFF].store(locked ? 1 : 0, std::memory_order_relaxed);
+    }
+
+    bool NotifyLocked(std::uint32_t refId, const char* eventName)
+    {
+        t_replaying = true;
+        const bool ok = Notify(refId, eventName);
+        t_replaying = false;
+        return ok;
+    }
+
+    std::uint64_t BlockedLocalEvents() noexcept { return g_blocked.load(std::memory_order_relaxed); }
+
+    std::map<std::string, std::uint32_t> BlockedEventNames()
+    {
+        std::lock_guard lock(g_blockedLock);
+        return g_blockedNames;
     }
 
     bool Notify(std::uint32_t refId, const char* eventName)

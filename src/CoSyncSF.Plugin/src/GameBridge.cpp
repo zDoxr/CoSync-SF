@@ -3,6 +3,9 @@
 #include "AnimEvents.h"
 #include "AnimProbe.h"
 #include "MoveControls.h"
+#include "MenuPause.h"
+#include "SelfTest.h"
+#include "DevHarness.h"
 #include "NpcSync.h"
 #include "Overlay.h"
 #include "SessionControl.h"
@@ -10,6 +13,9 @@
 #include "Avatars.h"
 #include "GameState.h"
 #include "GameCamera.h"
+#include "NpcReplication.h"
+#include "PlayerRespawn.h"
+#include "cosync/shared/NpcReplication.h"
 
 #include "cosync/net/Util.h"
 #include "cosync/shared/Log.h"
@@ -240,6 +246,13 @@ namespace cosync::plugin
         if (_statusQuery && _statusQuery->pending.load() <= 0) {
             proto::PlayerStatus st = _localStatus.value_or(proto::PlayerStatus{});
             if (const int h = _statusQuery->healthPercent.load(); h >= 0) st.healthPercent = static_cast<std::uint8_t>(std::min(h, 100));
+            // With respawn on, 0 is only the moment before the player is sent back, not a death to show.
+            if (_respawn && st.healthPercent == 0) st.healthPercent = 1;
+            if (_fakeHealth >= 0) st.healthPercent = static_cast<std::uint8_t>(_fakeHealth);
+            if (!_localStatus || _localStatus->healthPercent != st.healthPercent) {
+                static int logged = 0;
+                if (++logged <= 60) log::Info("[status] local health {}%", st.healthPercent);
+            }
             if (const int l = _statusQuery->level.load(); l > 0) st.level = static_cast<std::uint16_t>(std::min(l, 65535));
             const int space = _statusQuery->inSpace.load();
             std::string planet;
@@ -331,7 +344,7 @@ namespace cosync::plugin
                 m.distance = DistanceTo(r);
                 const auto& av = r.avatar;
                 if (haveCamera && m.distance >= 0.0f && m.distance < kFadeEnd && av.refId != 0 && av.loaded3DAt != kNever) {
-                    if (auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(av.refId)) {
+                    if (auto* ref = avatars::AsRef(RE::TESForm::LookupByID(av.refId))) {  // the proxy is an actor
                         const auto p = ref->GetPosition();
                         float x = 0.0f, y = 0.0f;
                         if (gamecamera::Project(view, { p.x, p.y, p.z + kHeadClearance }, x, y)) {
@@ -348,15 +361,112 @@ namespace cosync::plugin
         overlay::PublishHud(std::move(hud));
     }
 
+    void GameBridge::EnablePlayerRespawn(bool enable)
+    {
+        if (!enable) return;
+        std::string detail;
+        _respawn = respawn::Install(detail);
+        log::Info("[respawn] {}", detail);
+    }
+
     void GameBridge::Detach()
     {
+        respawn::Leave();
+        _npcs.Reset("session closed");
+        menupause::SetActive(false);
         RemoveAllRemotes();
         _worker.store(nullptr);
+    }
+
+    void GameBridge::EnableWorldSync(bool enable)
+    {
+        _worldSyncEnabled = enable;
+        _world.SetNpcIds([this](std::uint32_t id) { return _npcSyncEnabled ? _npcs.SharedNpcId(id) : 0u; },
+                         [this](std::uint32_t id) { return _npcSyncEnabled ? _npcs.LocalNpcId(id) : 0u; });
+        if (enable) {
+            dev::SetCommandHandler([this](const std::string& step) {
+                if (step == "@hostileproxy" || step.starts_with("@hostileproxy ")) {
+                    std::uint32_t proxy = 0;
+                    for (const auto& [id, remote] : _remotes) {
+                        if (remote.avatar.refId != 0) proxy = remote.avatar.refId;
+                    }
+                    return _world.RunStep(std::format("@hostileproxy {:08X}{}", proxy, step.size() > 13 ? step.substr(13) : std::string()));
+                }
+                if (step == "@groupcreate" || step == "@groupinvite" || step == "@groupaccept") {
+                    // Dev: form a group with the other player, as the invite UI would.
+                    auto* worker = _worker.load();
+                    if (!worker) return true;
+                    proto::GroupRequest request;
+                    if (step == "@groupcreate") {
+                        request.action = proto::GroupAction::Create;
+                    } else if (step == "@groupinvite") {
+                        request.action = proto::GroupAction::Invite;
+                        for (const auto& [id, remote] : _remotes) request.target = id;
+                    } else {
+                        request.action = proto::GroupAction::Accept;
+                        const auto self = worker->Status().localPlayer;
+                        for (const auto& group : _groupState.groups) {
+                            if (std::ranges::find(group.invited, self) != group.invited.end()) request.groupId = group.id;
+                        }
+                    }
+                    worker->SubmitGroupRequest(request);
+                    log::Info("[group] {}: target {} group {}", step, request.target, request.groupId);
+                    return true;
+                }
+                if (step == "@worn") {
+                    // What the local player and every proxy wear, as the engine has it.
+                    const auto list = [](const std::vector<std::uint32_t>& items) {
+                        std::string out;
+                        for (const auto item : items) out += std::format(" {:08X}", item);
+                        return out;
+                    };
+                    log::Info("[outfit] @worn local:{}", list(npcsync::ReadWornArmor(avatars::PlayerRefId())));
+                    for (const auto& [id, remote] : _remotes) {
+                        if (remote.avatar.refId != 0) log::Info("[outfit] @worn proxy of player {}:{}", id, list(npcsync::ReadWornArmor(remote.avatar.refId)));
+                    }
+                    return true;
+                }
+                if (step.starts_with("@equip ") || step.starts_with("@unequip ")) {
+                    const bool on = step.starts_with("@equip ");
+                    const auto item = static_cast<std::uint32_t>(std::stoul(step.substr(step.find(' ') + 1), nullptr, 16));
+                    const bool sent = on ? avatars::EquipForm(avatars::PlayerRefId(), item) : avatars::UnequipForm(avatars::PlayerRefId(), item);
+                    log::Info("[outfit] {}: {}", step, sent ? "sent" : "refused");
+                    return true;
+                }
+                if (step.starts_with("@damageproxy ")) {
+                    // "@damageproxy <percent>": hurts every stand-in as a hit would, to test the path to its player.
+                    const float percent = std::stof(step.substr(13));
+                    for (const auto& [id, remote] : _remotes) {
+                        if (remote.avatar.refId != 0) log::Info("[combat] {}: proxy of player {}: {}", step, id, npcsync::DamageActorPercent(remote.avatar.refId, percent) ? "sent" : "refused");
+                    }
+                    return true;
+                }
+                if (respawn::RunStep(step)) return true;
+                if (step == "@watchhealth") {
+                    _watchHealth = true;
+                    return true;
+                }
+                if (step == "@keepalive") {
+                    _keepAlive = true;
+                    log::Info("[status] @keepalive: health restored under 60%");
+                    return true;
+                }
+                if (step.starts_with("@fakehealth ")) {
+                    // "@fakehealth <0..100|off>": the health this copy sends, for testing what others show.
+                    const auto value = step.substr(12);
+                    _fakeHealth = value == "off" ? -1 : std::clamp(std::stoi(value), 0, 100);
+                    log::Info("[avatar] {}: sending health {}", step, _fakeHealth);
+                    return true;
+                }
+                return _world.RunStep(step);
+            });
+        }
     }
 
     void GameBridge::Tick()
     {
         UpdateUi();  // first: a UI host/join/leave replaces the worker
+        dev::Tick(_inWorld && _vmSettled);
         auto* worker = _worker.load();
         if (!worker) {
             return;
@@ -378,6 +488,10 @@ namespace cosync::plugin
                         log::Info("[game] session state: {} ({})", net::ToString(e.state), e.detail);
                         if (e.state == net::ClientState::Disconnected) {
                             _groupState = {};
+                            _sentOutfit.reset();
+                            respawn::Leave();
+                            _npcs.Reset("disconnected");
+                            _world.Reset("disconnected");
                             RemoveAllRemotes();
                         }
                     } else if constexpr (std::is_same_v<T, ce::Welcomed>) {
@@ -391,6 +505,35 @@ namespace cosync::plugin
                         _groupState = e.state;
                     } else if constexpr (std::is_same_v<T, ce::NpcCombat>) {
                         ApplyNpcCombat(e.combat, *_worker.load());
+                    } else if constexpr (std::is_same_v<T, ce::NpcAuthority>) {
+                        _npcAuthorityId = e.authority;
+                        if (_npcSyncEnabled) _npcs.OnAuthority(e.authority);
+                        _world.OnAuthority(e.authority);
+                    } else if constexpr (std::is_same_v<T, ce::WorldEvents>) {
+                        if (_worldSyncEnabled) _world.OnEvents(e.world);
+                    } else if constexpr (std::is_same_v<T, ce::WorldClock>) {
+                        if (_worldSyncEnabled) _world.OnClock(e.clock);
+                    } else if constexpr (std::is_same_v<T, ce::DialogueLine>) {
+                        _dialogue.OnLine(e.line);
+                    } else if constexpr (std::is_same_v<T, ce::DroppedItem>) {
+                        if (_worldSyncEnabled) _world.OnDrop(e.drop);
+                    } else if constexpr (std::is_same_v<T, ce::PlayerHit>) {
+                        const float before = npcsync::ActorHealthPercent(avatars::PlayerRefId());
+                        const bool applied = _playerHits && e.hit.target == _localPlayerId && npcsync::DamageActorPercent(avatars::PlayerRefId(), e.hit.percent);
+                        log::Info("[combat] hit reported by player {}: {:.1f}% of maximum, health was {:.1f}%, {}", e.hit.playerId, e.hit.percent, before, applied ? "applied" : "not applied");
+                    } else if constexpr (std::is_same_v<T, ce::PlayerOutfit>) {
+                        if (e.outfit.playerId != _localPlayerId) {
+                            _remotes[e.outfit.playerId].outfit = e.outfit.items;
+                            log::Info("[outfit] player {} now wears {} items", e.outfit.playerId, e.outfit.items.size());
+                        }
+                    } else if constexpr (std::is_same_v<T, ce::NpcDeath>) {
+                        if (_npcSyncEnabled) _npcs.OnDeath(e.death.npcFormId);
+                    } else if constexpr (std::is_same_v<T, ce::NpcDamage>) {
+                        if (_npcSyncEnabled) _npcs.OnDamage(e.damage);
+                    } else if constexpr (std::is_same_v<T, ce::NpcEvents>) {
+                        if (_npcSyncEnabled) _npcs.OnEvents(e.events);
+                    } else if constexpr (std::is_same_v<T, ce::NpcOutfits>) {
+                        if (_npcSyncEnabled) _npcs.OnOutfits(e.outfits);
                     } else if constexpr (std::is_same_v<T, ce::PeerLeft>) {
                         RemoveRemote(e.playerId);
                         log::Info("[game] player {} left ({})", e.playerId, proto::ToString(e.reason));
@@ -402,8 +545,44 @@ namespace cosync::plugin
         if (_readLocalPlayer) {
             SampleLocalPlayer(*worker);
         }
+        if (_keepAlive && _inWorld) npcsync::KeepPlayerAlive(60.0f);
+        if (_watchHealth && _inWorld && std::chrono::steady_clock::now() >= _nextHealthWatch) {
+            _nextHealthWatch = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+            std::string line = std::format("local {:.1f}%", npcsync::ActorHealthPercent(avatars::PlayerRefId()));
+            for (const auto& [id, remote] : _remotes) {
+                if (remote.avatar.refId != 0) line += std::format(", proxy of {} {:.1f}% (sent {}%)", id, npcsync::ActorHealthPercent(remote.avatar.refId), remote.status ? remote.status->healthPercent : 255);
+            }
+            log::Info("[combat] health: {}", line);
+        }
+        if (_avatarsEnabled && _opt.controls) PublishLocalOutfit(*worker);
         UpdateRemotePlayers(*worker);
+        if (_respawn) {
+            respawn::Context context;
+            context.inSession = worker->Status().state == net::ClientState::InSession;
+            context.inWorld = _inWorld && _vmSettled;
+            context.ownsWorld = _npcAuthorityId == _localPlayerId || _npcAuthorityId == kInvalidPlayerId;  // none named yet: do not block
+            for (const auto& [id, remote] : _remotes) {
+                if (remote.avatar.refId != 0) context.standIns.push_back(remote.avatar.refId);
+            }
+            respawn::Tick(context);
+        }
+        _ships.Tick();
+        _dialogue.Tick(*worker, _inWorld && worker->Status().state == net::ClientState::InSession);
         if (_avatarsEnabled) UpdateNpcCombat(*worker);
+        if (_npcSyncEnabled) {
+            std::vector<std::uint32_t> proxies;
+            for (const auto& [id, remote] : _remotes) {
+                if (remote.avatar.refId != 0) proxies.push_back(remote.avatar.refId);
+            }
+            _npcs.Tick(*worker, { _inWorld, _vmSettled, _localLocationId, worker->Status().localPlayer, std::move(proxies) });
+            // Only with the player in the world: a load has stages with no LoadingMenu open.
+            menupause::SetActive(_menuPatch && _inWorld && _vmSettled && worker->Status().state == net::ClientState::InSession);
+            selftest::Tick(_inWorld && _vmSettled && worker->Status().state == net::ClientState::InSession);
+            if (_worldSyncEnabled) {
+                _world.Tick(*worker, { _inWorld && _vmSettled && worker->Status().state == net::ClientState::InSession,
+                                       worker->Status().localPlayer, _localLocationId });
+            }
+        }
         LogSummary(*worker);
     }
 
@@ -483,7 +662,7 @@ namespace cosync::plugin
         }
         UpdateLocalStatus();
         worker.SubmitLocalTransform(sample->locationId, sample->position, rotation, controls, events,
-                                    _opt.controls ? _localWeapon : std::nullopt, _localStatus);
+                                    _opt.controls ? _localWeapon : std::nullopt, _localStatus, ships::ReadLocalShip());
 
         if (now >= _nextLocalLog) {
             _nextLocalLog = now + kLocalLogInterval;
@@ -516,6 +695,7 @@ namespace cosync::plugin
                     r.latestReceivedMs = s.transform.receivedMs;
                     if (s.transform.weapon) r.weapon = s.transform.weapon;
                     if (s.transform.status) r.status = s.transform.status;
+                    _ships.OnRemote(s.player, s.transform.ship);
                     r.latestSeq = s.transform.sequence;
                     r.haveLatest = true;
                 }
@@ -537,8 +717,8 @@ namespace cosync::plugin
 
         // Same clock domain as RemoteSample::receivedMs (stamped on the network thread).
         const auto nowMs = net::SteadyNowMs();
+        if (_avatarsEnabled || _npcSyncEnabled) UpdateVmState();
         if (_avatarsEnabled) {
-            UpdateVmState();
             UpdateTemplate();
             DrainAnimEvents();
             LogNpcEnumeration();
@@ -678,6 +858,10 @@ namespace cosync::plugin
                     avatar.haveBodyYaw = false;
                     avatar.appliedWeapon = 0;
                     avatar.appliedDrawn = -1;
+                    avatar.proxyHealth = -1.0f;
+                    avatar.outfitTries = 0;
+                    avatar.outfitMatched = false;
+                    avatar.nextOutfitFix = {};
                     avatar.lastPathResult = 0;
                     if (_avatarScale != 1.0f) avatars::SetScale(avatar.refId, _avatarScale);
                     log::Info("[avatar] player {} '{}': spawned ref {:08X} (AI {}); right after spawn: {}", id,
@@ -705,9 +889,16 @@ namespace cosync::plugin
                 }
             }
         }
+        // A stall on the other copy (0.3 s on 2026-11-07) leaves its pose stale for a moment. Only a
+        // player who stays away is let go, or the proxy is thrown away and spawned again at once.
         if (!visibleHere) {
-            ReleaseAvatar(id, avatar, "not in your cell");
-            return;
+            if (avatar.awaySince == std::chrono::steady_clock::time_point{}) avatar.awaySince = now;
+            if (avatar.refId == 0 || now - avatar.awaySince >= std::chrono::seconds(2)) {
+                ReleaseAvatar(id, avatar, "not in your cell");
+                return;
+            }
+        } else {
+            avatar.awaySince = {};
         }
 
         if (avatar.refId == 0 && !avatar.pending && _vmSettled && TemplateDecided() && now >= avatar.nextAttempt) {
@@ -800,7 +991,11 @@ namespace cosync::plugin
 
         if ((_opt.mirror || _opt.controls) && avatar.refId != 0) {
             if (_opt.controls) DriveControls(id, remote);
-            if (_opt.controls && avatar.motionApplied) ApplyWeapon(id, remote);
+            if (_opt.controls && avatar.motionApplied) {
+                ApplyWeapon(id, remote);
+                ApplyOutfit(id, remote);
+                if (auto* w = _worker.load(); w && _playerHits && _npcAuthorityId == _localPlayerId) ForwardProxyHits(id, remote, *w);
+            }
             // The proxy is an NPC: when attacked, its own combat AI fought back and fired on its
             // own (2026-11-03). Its actions come only from the remote player's replayed input, so
             // any combat it enters is stopped (combat controller at Actor+0x250, RE A.12).
@@ -813,6 +1008,26 @@ namespace cosync::plugin
                         log::Info("[avatar] player {} '{}': proxy entered combat on its own; stopped (#{})", id,
                                   remote.name, avatar.combatStops);
                     }
+                }
+            }
+            // A remote player at 0 health is dead on their own copy: the proxy dies here too, and comes
+            // back when they do (issue #15). Health arrives about once a second with the status.
+            if (remote.status && avatar.motionApplied && now >= avatar.deathCheckAt) {
+                avatar.deathCheckAt = now + std::chrono::milliseconds(500);
+                const bool dead = remote.status->healthPercent == 0;
+                if (dead && !avatar.shownDead) {
+                    avatar.shownDead = true;
+                    avatars::KillActor(avatar.refId);
+                    avatar.deathVerifyAt = now + std::chrono::seconds(3);
+                    log::Info("[avatar] player {} '{}' is dead on their copy: killing the proxy {:08X}", id, remote.name, avatar.refId);
+                } else if (!dead && avatar.shownDead) {
+                    avatar.shownDead = false;
+                    avatars::ResurrectActor(avatar.refId);
+                    avatar.deathVerifyAt = now + std::chrono::seconds(3);
+                    log::Info("[avatar] player {} '{}' is alive again ({}%): resurrecting the proxy {:08X}", id, remote.name, remote.status->healthPercent, avatar.refId);
+                } else if (avatar.deathVerifyAt != std::chrono::steady_clock::time_point{} && now >= avatar.deathVerifyAt) {
+                    avatar.deathVerifyAt = {};
+                    log::Info("[avatar] player {} '{}': verify proxy {:08X} engine dead {}, wanted {}", id, remote.name, avatar.refId, avatars::IsActorDead(avatar.refId), avatar.shownDead);
                 }
             }
             if (_opt.controls && avatar.motionApplied) {
@@ -1044,6 +1259,89 @@ namespace cosync::plugin
         }
     }
 
+    // On the NPC authority's copy, a stand-in that lost health took a hit its real player should feel.
+    // The stand-in is put back at once: only its owner's copy says when that player is hurt or dead.
+    void GameBridge::ForwardProxyHits(PlayerId id, RemotePlayer& remote, net::NetworkWorker& worker)
+    {
+        constexpr float kSmallestHit = 0.05f;
+        // Friendly fire is undecided (D2 in the gap analysis), so what the local player shot does not count.
+        constexpr auto kOwnShotWindow = std::chrono::milliseconds(1500);
+        auto& a = remote.avatar;
+        const auto now = std::chrono::steady_clock::now();
+        if (now < a.nextHitCheck) return;
+        a.nextHitCheck = now + std::chrono::milliseconds(200);
+        if (a.shownDead) {
+            a.proxyHealth = -1.0f;
+            return;
+        }
+        const bool dead = avatars::IsActorDead(a.refId);
+        const float health = dead ? 0.0f : npcsync::ActorHealthPercent(a.refId);
+        if (health < 0.0f) return;
+        if (a.proxyHealth < 0.0f) {
+            a.proxyHealth = health;
+            return;
+        }
+        const float lost = a.proxyHealth - health;
+        if (lost < kSmallestHit) {
+            a.proxyHealth = health;
+            return;
+        }
+        const bool ownShot = now - _lastLocalAttack < kOwnShotWindow;
+        if (!ownShot) worker.SubmitPlayerHit(id, std::min(lost, 100.0f));
+        if (++a.hitsForwarded <= 40 || a.hitsForwarded % 25 == 0) {
+            log::Info("[combat] proxy of player {} lost {:.1f}%{}; {}", id, lost, dead ? " and died" : "", ownShot ? "the local player was firing, not forwarded" : "forwarded");
+        }
+        if (dead) {
+            avatars::ResurrectActor(a.refId);
+            a.proxyHealth = -1.0f;
+        } else {
+            npcsync::RestoreActorHealth(a.refId);
+            a.proxyHealth = npcsync::ActorHealthPercent(a.refId);
+        }
+    }
+
+    // The local player's armor and apparel, once a second; sent when it changes.
+    void GameBridge::PublishLocalOutfit(net::NetworkWorker& worker)
+    {
+        const auto now = std::chrono::steady_clock::now();
+        if (!_inWorld || !_vmSettled || now < _nextOutfitRead || worker.Status().state != net::ClientState::InSession) return;
+        _nextOutfitRead = now + std::chrono::seconds(1);
+        auto worn = npcsync::ReadWornArmor(avatars::PlayerRefId());
+        if (_sentOutfit && *_sentOutfit == worn) return;
+        log::Info("[outfit] local player wears {} items; sending", worn.size());
+        _sentOutfit = worn;
+        worker.SubmitPlayerOutfit(std::move(worn));
+    }
+
+    // Puts on the proxy what the remote player wears, read back from the engine each time. Equipping
+    // is a script call and the proxy's own rules can undo it, so a failure backs off instead of fighting.
+    void GameBridge::ApplyOutfit(PlayerId id, RemotePlayer& remote)
+    {
+        auto& a = remote.avatar;
+        const auto now = std::chrono::steady_clock::now();
+        if (!remote.outfit || now < a.nextOutfitFix) return;
+        a.nextOutfitFix = now + std::chrono::seconds(2);
+        const auto changes = npc::DiffOutfit(*remote.outfit, npcsync::ReadWornArmor(a.refId));
+        if (changes.Empty()) {
+            a.outfitTries = 0;
+            if (!a.outfitMatched) {
+                a.outfitMatched = true;
+                log::Info("[outfit] player {} '{}': proxy {:08X} wears the same {} items", id, remote.name, a.refId, remote.outfit->size());
+            }
+            return;
+        }
+        if (!avatars::Probe(a.refId).has3D) return;
+        a.outfitMatched = false;
+        a.nextOutfitFix = now + std::chrono::seconds(std::min<std::uint32_t>(2u << std::min(a.outfitTries, 5u), 60u));
+        ++a.outfitTries;
+        for (const auto item : changes.unequip) avatars::UnequipForm(a.refId, item);
+        for (const auto item : changes.equip) avatars::EquipForm(a.refId, item);
+        if (a.outfitTries <= 10) {
+            log::Info("[outfit] player {} '{}': proxy {:08X} corrected (try {}): {} put on, {} taken off", id, remote.name, a.refId, a.outfitTries,
+                      changes.equip.size(), changes.unequip.size());
+        }
+    }
+
     void GameBridge::ReleaseAvatar(PlayerId id, Avatar& avatar, const char* why)
     {
         movecontrols::SetReplay(id, {}, false);
@@ -1107,6 +1405,7 @@ namespace cosync::plugin
         animevents::Drain(_frameEvents, _frameEventsDropped);
         if (!_opt.controls) return;
         for (const auto& e : _frameEvents) {
+            if (e.input && e.accepted && (e.tag.starts_with("Fire") || e.tag.starts_with("MeleeAttack"))) _lastLocalAttack = std::chrono::steady_clock::now();
             if (!e.input || !e.accepted || !Replayed(e.tag)) continue;
             if (_outEvents.size() >= 32) _outEvents.pop_front();
             _outEvents.push_back({ _nextEventSeq++, e.tag, 3 });

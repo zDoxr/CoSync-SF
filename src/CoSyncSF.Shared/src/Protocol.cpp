@@ -150,6 +150,13 @@ namespace cosync::proto
                 w.U8(static_cast<std::uint8_t>(m.status->kind));
                 w.String(m.status->place);
             }
+            if (m.ship) {
+                w.U8(5);
+                w.U32(m.ship->cellId);
+                w.U32(m.ship->baseId);
+                WriteVec3(w, m.ship->position);
+                WriteVec3(w, m.ship->rotation);
+            }
         }
 
         void WriteIds(ByteWriter& w, const std::vector<PlayerId>& ids)
@@ -193,6 +200,124 @@ namespace cosync::proto
             w.U32(m.playerId);
             w.U32(m.npcFormId);
             w.U32(m.targetPlayer);
+        }
+
+        void Encode(ByteWriter& w, const NpcAuthority& m) { w.U32(m.authority); }
+
+        void Encode(ByteWriter& w, const NpcStates& m)
+        {
+            w.U32(m.playerId);
+            w.U32(m.sequence);
+            w.U32(m.locationId);
+            const auto count = std::min(m.npcs.size(), kMaxNpcStates);
+            w.U8(static_cast<std::uint8_t>(count));
+            for (std::size_t i = 0; i < count; ++i) {
+                const auto& n = m.npcs[i];
+                w.U32(n.formId);
+                w.U32(n.baseId);
+                WriteVec3(w, n.position);
+                w.F32(n.yaw);
+                w.U8(n.healthPercent);
+                w.U8(n.flags);
+                if ((n.flags & kNpcCrowdTarget) != 0) WriteVec3(w, n.crowdTarget);
+            }
+        }
+
+        void Encode(ByteWriter& w, const NpcDeath& m)
+        {
+            w.U32(m.playerId);
+            w.U32(m.npcFormId);
+        }
+
+        void Encode(ByteWriter& w, const NpcDamage& m)
+        {
+            w.U32(m.playerId);
+            w.U32(m.npcFormId);
+            w.F32(m.amount);
+        }
+
+        void Encode(ByteWriter& w, const NpcEvents& m)
+        {
+            w.U32(m.playerId);
+            const auto count = std::min(m.events.size(), kMaxNpcEvents);
+            w.U8(static_cast<std::uint8_t>(count));
+            for (std::size_t i = 0; i < count; ++i) {
+                w.U32(m.events[i].formId);
+                w.String(m.events[i].name);
+            }
+        }
+
+        void Encode(ByteWriter& w, const WorldEvents& m)
+        {
+            w.U32(m.playerId);
+            const auto count = std::min(m.events.size(), kMaxWorldEvents);
+            w.U8(static_cast<std::uint8_t>(count));
+            for (std::size_t i = 0; i < count; ++i) {
+                const auto& e = m.events[i];
+                w.U8(static_cast<std::uint8_t>(e.kind));
+                w.U32(e.formId);
+                w.U32(e.itemId);
+                w.U32(static_cast<std::uint32_t>(e.value));
+            }
+        }
+
+        void Encode(ByteWriter& w, const WorldClock& m)
+        {
+            w.U32(m.playerId);
+            w.F32(m.gameDaysPassed);
+            w.F32(m.gameHour);
+            w.U32(m.locationId);
+            w.U32(m.weather);
+        }
+
+        void Encode(ByteWriter& w, const DroppedItem& m)
+        {
+            w.U32(m.playerId);
+            w.U32(m.sharedId);
+            w.U32(m.baseId);
+            w.U32(static_cast<std::uint32_t>(m.count));
+            w.U32(m.locationId);
+            WriteVec3(w, m.position);
+        }
+
+        void Encode(ByteWriter& w, const PlayerHit& m)
+        {
+            w.U32(m.playerId);
+            w.U32(m.target);
+            w.F32(m.percent);
+        }
+
+        void Encode(ByteWriter& w, const PlayerOutfit& m)
+        {
+            w.U32(m.playerId);
+            w.U8(static_cast<std::uint8_t>(m.items.size()));
+            for (const auto item : m.items) w.U32(item);
+        }
+
+        void Encode(ByteWriter& w, const DialogueLine& m)
+        {
+            w.U32(m.playerId);
+            w.String(m.speaker.substr(0, kMaxSpeakerBytes));
+            w.String(m.text.substr(0, kMaxLineBytes));
+            w.Bool(m.isPlayer);
+        }
+
+        void Encode(ByteWriter& w, const NpcOutfits& m)
+        {
+            w.U32(m.playerId);
+            const auto count = std::min(m.outfits.size(), kMaxNpcOutfits);
+            w.U8(static_cast<std::uint8_t>(count));
+            for (std::size_t i = 0; i < count; ++i) {
+                const auto& o = m.outfits[i];
+                w.U32(o.formId);
+                w.U32(o.look);
+                const auto items = std::min(o.items.size(), kMaxNpcOutfitItems);
+                w.U8(static_cast<std::uint8_t>(items));
+                for (std::size_t j = 0; j < items; ++j) w.U32(o.items[j]);
+            }
+            // 1.13: one template per outfit, in the same order, after the list.
+            w.U8(1);
+            for (std::size_t i = 0; i < count; ++i) w.U32(m.outfits[i].templateId);
         }
 
         bool ValidReject(std::uint16_t v) { return v >= 1 && v <= static_cast<std::uint16_t>(RejectReason::RateLimited); }
@@ -354,6 +479,13 @@ namespace cosync::proto
                         if (st.healthPercent > 100 || kind > 2) r.Fail();
                         st.kind = static_cast<PlaceKind>(kind);
                         m.status = std::move(st);
+                    } else if (tag == 5 && !m.ship) {  // 1.12 ship
+                        ShipState ship;
+                        ship.cellId = r.U32();
+                        ship.baseId = r.U32();
+                        ship.position = ReadVec3(r);
+                        ship.rotation = ReadVec3(r);
+                        m.ship = ship;
                     } else if (tag == 3 && !m.weapon) {  // 1.3 weapon
                         WeaponState ws;
                         ws.formId = r.U32();
@@ -395,6 +527,155 @@ namespace cosync::proto
                 }
                 return m;
             }
+            case MessageType::NpcAuthority: {
+                NpcAuthority m;
+                m.authority = r.U32();
+                return m;
+            }
+            case MessageType::NpcStates: {
+                NpcStates m;
+                m.playerId = r.U32();
+                m.sequence = r.U32();
+                m.locationId = r.U32();
+                const std::size_t count = r.U8();
+                if (count > kMaxNpcStates) r.Fail();
+                for (std::size_t i = 0; r.Ok() && i < count; ++i) {
+                    NpcState n;
+                    n.formId = r.U32();
+                    n.baseId = r.U32();
+                    n.position = ReadVec3(r);
+                    n.yaw = r.F32();
+                    n.healthPercent = r.U8();
+                    n.flags = r.U8();
+                    if ((n.flags & kNpcCrowdTarget) != 0) n.crowdTarget = ReadVec3(r);
+                    if (r.Ok() && !IsValidNpcState(n)) r.Fail();
+                    m.npcs.push_back(n);
+                }
+                return m;
+            }
+            case MessageType::NpcDeath: {
+                NpcDeath m;
+                m.playerId = r.U32();
+                m.npcFormId = r.U32();
+                if (r.Ok() && !IsReplicatedNpcId(m.npcFormId)) r.Fail();
+                return m;
+            }
+            case MessageType::NpcDamage: {
+                NpcDamage m;
+                m.playerId = r.U32();
+                m.npcFormId = r.U32();
+                m.amount = r.F32();
+                if (r.Ok() && (!IsReplicatedNpcId(m.npcFormId) || !std::isfinite(m.amount) || m.amount <= 0.0f ||
+                               m.amount > kMaxNpcDamage)) {
+                    r.Fail();
+                }
+                return m;
+            }
+            case MessageType::NpcEvents: {
+                NpcEvents m;
+                m.playerId = r.U32();
+                const std::size_t count = r.U8();
+                if (count > kMaxNpcEvents) r.Fail();
+                for (std::size_t i = 0; r.Ok() && i < count; ++i) {
+                    NpcEvent e;
+                    e.formId = r.U32();
+                    e.name = r.String(kMaxAnimEventNameBytes);
+                    if (r.Ok() && (!IsReplicatedNpcId(e.formId) || e.name.empty())) r.Fail();
+                    m.events.push_back(std::move(e));
+                }
+                return m;
+            }
+            case MessageType::WorldEvents: {
+                WorldEvents m;
+                m.playerId = r.U32();
+                const auto count = r.U8();
+                if (count == 0 || count > kMaxWorldEvents) r.Fail();
+                for (std::uint8_t i = 0; r.Ok() && i < count; ++i) {
+                    WorldEvent e;
+                    e.kind = static_cast<WorldEventKind>(r.U8());
+                    e.formId = r.U32();
+                    e.itemId = r.U32();
+                    e.value = static_cast<std::int32_t>(r.U32());
+                    if (r.Ok() && !IsValidWorldEvent(e)) r.Fail();
+                    m.events.push_back(e);
+                }
+                return m;
+            }
+            case MessageType::DroppedItem: {
+                DroppedItem m;
+                m.playerId = r.U32();
+                m.sharedId = r.U32();
+                m.baseId = r.U32();
+                m.count = static_cast<std::int32_t>(r.U32());
+                m.locationId = r.U32();
+                m.position = ReadVec3(r);
+                if (r.Ok() && !IsValidDroppedItem(m)) r.Fail();
+                return m;
+            }
+            case MessageType::PlayerHit: {
+                PlayerHit m;
+                m.playerId = r.U32();
+                m.target = r.U32();
+                m.percent = r.F32();
+                if (r.Ok() && !IsValidPlayerHit(m)) r.Fail();
+                return m;
+            }
+            case MessageType::PlayerOutfit: {
+                PlayerOutfit m;
+                m.playerId = r.U32();
+                const auto count = r.U8();
+                if (count > kMaxPlayerOutfitItems) r.Fail();
+                for (std::size_t i = 0; r.Ok() && i < count; ++i) m.items.push_back(r.U32());
+                if (r.Ok() && !IsValidPlayerOutfit(m)) r.Fail();
+                return m;
+            }
+            case MessageType::DialogueLine: {
+                DialogueLine m;
+                m.playerId = r.U32();
+                m.speaker = ReadText(r, kMaxSpeakerBytes);
+                m.text = ReadText(r, kMaxLineBytes);
+                m.isPlayer = r.Bool();
+                if (r.Ok() && m.text.empty()) r.Fail();
+                return m;
+            }
+            case MessageType::WorldClock: {
+                WorldClock m;
+                m.playerId = r.U32();
+                m.gameDaysPassed = r.F32();
+                m.gameHour = r.F32();
+                m.locationId = r.U32();
+                m.weather = r.U32();
+                if (r.Ok() && (!std::isfinite(m.gameDaysPassed) || !std::isfinite(m.gameHour) || m.gameDaysPassed < 0.0f ||
+                               m.gameHour < 0.0f || m.gameHour > 24.0f)) {
+                    r.Fail();
+                }
+                return m;
+            }
+            case MessageType::NpcOutfits: {
+                NpcOutfits m;
+                m.playerId = r.U32();
+                const std::size_t count = r.U8();
+                if (count > kMaxNpcOutfits) r.Fail();
+                for (std::size_t i = 0; r.Ok() && i < count; ++i) {
+                    NpcOutfit o;
+                    o.formId = r.U32();
+                    o.look = r.U32();
+                    const std::size_t items = r.U8();
+                    if (!IsReplicatedNpcId(o.formId) || items > kMaxNpcOutfitItems) r.Fail();
+                    for (std::size_t j = 0; r.Ok() && j < items; ++j) {
+                        o.items.push_back(r.U32());
+                        if (o.items.back() == 0) r.Fail();
+                    }
+                    m.outfits.push_back(std::move(o));
+                }
+                // 1.13: templates follow the list, always, so a cut message is never taken as whole.
+                if (r.Ok() && r.U8() != 1) r.Fail();
+                for (auto& o : m.outfits) {
+                    if (!r.Ok()) break;
+                    o.templateId = r.U32();
+                }
+                return m;
+            }
             case MessageType::NpcCombat: {
                 NpcCombat m;
                 m.playerId = r.U32();
@@ -410,7 +691,7 @@ namespace cosync::proto
         bool IsKnownType(std::uint16_t t)
         {
             return t >= static_cast<std::uint16_t>(MessageType::Hello) &&
-                   t <= static_cast<std::uint16_t>(MessageType::GroupState);
+                   t <= static_cast<std::uint16_t>(MessageType::PlayerHit);
         }
 
         bool IsFiniteBounded(const Vec3& v, float bound)
@@ -442,6 +723,18 @@ namespace cosync::proto
                 else if constexpr (std::is_same_v<T, NpcCombat>) return MessageType::NpcCombat;
                 else if constexpr (std::is_same_v<T, GroupRequest>) return MessageType::GroupRequest;
                 else if constexpr (std::is_same_v<T, GroupState>) return MessageType::GroupState;
+                else if constexpr (std::is_same_v<T, NpcAuthority>) return MessageType::NpcAuthority;
+                else if constexpr (std::is_same_v<T, NpcStates>) return MessageType::NpcStates;
+                else if constexpr (std::is_same_v<T, NpcDeath>) return MessageType::NpcDeath;
+                else if constexpr (std::is_same_v<T, NpcDamage>) return MessageType::NpcDamage;
+                else if constexpr (std::is_same_v<T, NpcEvents>) return MessageType::NpcEvents;
+                else if constexpr (std::is_same_v<T, NpcOutfits>) return MessageType::NpcOutfits;
+                else if constexpr (std::is_same_v<T, WorldEvents>) return MessageType::WorldEvents;
+                else if constexpr (std::is_same_v<T, WorldClock>) return MessageType::WorldClock;
+                else if constexpr (std::is_same_v<T, DialogueLine>) return MessageType::DialogueLine;
+                else if constexpr (std::is_same_v<T, DroppedItem>) return MessageType::DroppedItem;
+                else if constexpr (std::is_same_v<T, PlayerOutfit>) return MessageType::PlayerOutfit;
+                else if constexpr (std::is_same_v<T, PlayerHit>) return MessageType::PlayerHit;
                 else static_assert(kAlwaysFalse<T>, "unhandled message type");
             },
             message);
@@ -545,6 +838,50 @@ namespace cosync::proto
         return name.front() != ' ' && name.back() != ' ';
     }
 
+    bool IsValidPlayerHit(const PlayerHit& h) noexcept
+    {
+        return h.target != kInvalidPlayerId && std::isfinite(h.percent) && h.percent > 0.0f && h.percent <= 100.0f;
+    }
+
+    bool IsValidPlayerOutfit(const PlayerOutfit& o) noexcept
+    {
+        if (o.items.size() > kMaxPlayerOutfitItems) return false;
+        for (const auto item : o.items) {
+            if (item == 0 || IsRuntimeFormId(item)) return false;
+        }
+        return true;
+    }
+
+    bool IsValidDroppedItem(const DroppedItem& d) noexcept
+    {
+        return d.baseId != 0 && !IsRuntimeFormId(d.baseId) && d.count > 0 && d.count <= 0xFFFF && (d.sharedId & 0xFFFFFFu) != 0 &&
+               SharedIdOwner(d.sharedId) != kInvalidPlayerId && IsFiniteBounded(d.position, kMaxCoordinate);
+    }
+
+    bool IsValidWorldEvent(const WorldEvent& e) noexcept
+    {
+        if (e.formId == 0) return false;
+        switch (e.kind) {
+        case WorldEventKind::DoorOpen:
+        case WorldEventKind::LockState:
+        case WorldEventKind::Destroyed: return e.value == 0 || e.value == 1;
+        case WorldEventKind::RefRemoved: return e.value >= 0 && e.value <= 0xFFFF;
+        case WorldEventKind::ItemReturned: return e.itemId != 0 && e.value > 0 && e.value <= 0xFFFF;
+        case WorldEventKind::SharedRemoved: return e.itemId != 0 && e.value >= 0 && e.value <= 0xFFFF;
+        case WorldEventKind::QuestStage: return e.value >= 0 && e.value <= 0xFFFF;
+        case WorldEventKind::ContainerItem:
+        case WorldEventKind::NpcContainerItem: return e.itemId != 0 && e.value != 0;
+        case WorldEventKind::ContainerRemaining: return e.itemId != 0 && e.value >= 0;
+        }
+        return false;
+    }
+
+    bool IsValidNpcState(const NpcState& s) noexcept
+    {
+        return IsReplicatedNpcId(s.formId) && IsFiniteBounded(s.position, kMaxCoordinate) && std::isfinite(s.yaw) &&
+               s.healthPercent <= 100 && (s.flags & ~kNpcKnownFlags) == 0 && IsFiniteBounded(s.crowdTarget, kMaxCoordinate);
+    }
+
     bool IsValidControls(const PlayerControls& c) noexcept
     {
         if (c.flag > 1) return false;
@@ -560,6 +897,8 @@ namespace cosync::proto
         return IsFiniteBounded(t.position, kMaxCoordinate) && IsFiniteBounded(t.rotation, kMaxRotation) &&
                (!t.controls || IsValidControls(*t.controls)) && t.events.size() <= kMaxAnimEventsPerTransform &&
                (!t.status || (t.status->healthPercent <= 100 && IsValidText(t.status->place, kMaxPlaceBytes))) &&
+               (!t.ship || (t.ship->baseId != 0 && IsFiniteBounded(t.ship->position, kMaxShipCoordinate) &&
+                            IsFiniteBounded(t.ship->rotation, kMaxRotation))) &&
                std::ranges::all_of(t.events, [](const AnimEvent& e) {
                    return !e.name.empty() && IsValidText(e.name, kMaxAnimEventNameBytes);
                });
@@ -581,6 +920,18 @@ namespace cosync::proto
         case MessageType::NpcCombat: return "NpcCombat";
         case MessageType::GroupRequest: return "GroupRequest";
         case MessageType::GroupState: return "GroupState";
+        case MessageType::NpcAuthority: return "NpcAuthority";
+        case MessageType::NpcStates: return "NpcStates";
+        case MessageType::NpcDeath: return "NpcDeath";
+        case MessageType::NpcDamage: return "NpcDamage";
+        case MessageType::NpcEvents: return "NpcEvents";
+        case MessageType::NpcOutfits: return "NpcOutfits";
+        case MessageType::WorldEvents: return "WorldEvents";
+        case MessageType::WorldClock: return "WorldClock";
+        case MessageType::DialogueLine: return "DialogueLine";
+        case MessageType::DroppedItem: return "DroppedItem";
+        case MessageType::PlayerOutfit: return "PlayerOutfit";
+        case MessageType::PlayerHit: return "PlayerHit";
         }
         return "Unknown";
     }

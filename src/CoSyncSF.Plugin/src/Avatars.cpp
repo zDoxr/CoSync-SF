@@ -84,6 +84,15 @@ namespace cosync::plugin::avatars
             return vm->DispatchMethodCall(self, function, packer, callback, 0);
         }
 
+        // LookupByID<TESObjectREFR> refuses actors (2026-11-07: the player, NPCs), so every reference
+        // is looked up as a form first.
+        RE::TESObjectREFR* LookupRefAny(std::uint32_t refId)
+        {
+            if (refId == 0x14) return RE::PlayerCharacter::GetSingleton();
+            auto* form = RE::TESForm::LookupByID(refId);
+            return avatars::AsRef(form);
+        }
+
         RE::Actor* LookupActor(std::uint32_t refId)
         {
             auto* form = RE::TESForm::LookupByID(refId);
@@ -295,6 +304,368 @@ namespace cosync::plugin::avatars
         });
     }
 
+    bool SetOpen(std::uint32_t refId, bool open)
+    {
+        auto* ref = LookupRefAny(refId);
+        if (!ref) return false;
+        return Dispatch(ScriptObjectFor(ref), "SetOpen", [open](RE::BSScrapArray<Variable>& a) { Push(a, open); });
+    }
+
+    bool DisableNoWait(std::uint32_t refId)
+    {
+        auto* ref = LookupRefAny(refId);
+        if (!ref) return false;
+        return Dispatch(ScriptObjectFor(ref), "DisableNoWait", [](RE::BSScrapArray<Variable>& a) { Push(a, false); });
+    }
+
+    bool AddToPlayer(std::uint32_t itemId, int count, std::shared_ptr<std::atomic<std::uint32_t>> done)
+    {
+        auto* item = RE::TESForm::LookupByID(itemId);
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!item || !player) return false;
+        return Dispatch(
+            ScriptObjectFor(static_cast<RE::TESObjectREFR*>(player)), "AddItem",
+            [item, count](RE::BSScrapArray<Variable>& a) {
+                Push(a, item);
+                Push(a, count);
+                Push(a, true);  // abSilent
+            },
+            [done](const Variable&) { done->store(1); }, [done] { done->store(1); });
+    }
+
+    bool RequestDropFromPlayer(std::uint32_t itemId, int count, std::shared_ptr<std::atomic<std::uint32_t>> dropped)
+    {
+        auto* item = RE::TESForm::LookupByID(itemId);
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!item || !player) return false;
+        return Dispatch(
+            ScriptObjectFor(static_cast<RE::TESObjectREFR*>(player)), "DropObject",
+            [item, count](RE::BSScrapArray<Variable>& a) {
+                Push(a, item);
+                Push(a, count);
+            },
+            [dropped](const Variable& v) {
+                std::uint32_t id = 1;
+                if (v.is<RE::BSScript::Object>() && RE::BSScript::get<RE::BSScript::Object>(v)) {
+                    if (auto* ref = RE::BSScript::UnpackVariable<RE::TESObjectREFR>(v)) id = ref->GetFormID();
+                }
+                dropped->store(id);
+            },
+            [dropped] { dropped->store(1); });
+    }
+
+    bool RequestPlayerItemCount(std::uint32_t itemId, std::shared_ptr<std::atomic<std::int32_t>> result)
+    {
+        auto* item = RE::TESForm::LookupByID(itemId);
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!item || !player) return false;
+        return Dispatch(
+            ScriptObjectFor(static_cast<RE::TESObjectREFR*>(player)), "GetItemCount", [item](RE::BSScrapArray<Variable>& a) { Push(a, item); },
+            [result](const Variable& v) { result->store(v.is<std::int32_t>() ? RE::BSScript::get<std::int32_t>(v) : -1); },
+            [result] { result->store(-1); });
+    }
+
+    bool RequestHomeShip(std::shared_ptr<std::atomic<std::uint32_t>> result)
+    {
+        return DispatchStatic(
+            "Game", "GetPlayerHomeSpaceShip", [](RE::BSScrapArray<Variable>&) {},
+            [result](const Variable& v) {
+                std::uint32_t id = 1;
+                if (v.is<RE::BSScript::Object>() && RE::BSScript::get<RE::BSScript::Object>(v)) {
+                    if (auto* ship = RE::BSScript::UnpackVariable<RE::TESObjectREFR>(v)) id = ship->GetFormID();
+                }
+                result->store(id);
+            },
+            [result] { result->store(1); });
+    }
+
+    bool RequestSetHomeShip(std::uint32_t shipId, std::shared_ptr<std::atomic<std::uint32_t>> result)
+    {
+        auto* ship = LookupRefAny(shipId);
+        if (!ship) return false;
+        const auto object = ScriptObjectFor(ship);
+        log::Info("[ship] script type of {:08X}: {}", shipId, TypeChain(object));
+        return DispatchStatic(
+            "Game", "TrySetPlayerHomeSpaceShip", [object](RE::BSScrapArray<Variable>& a) {
+                a.emplace_back();
+                a.back() = object;
+            },
+            [result](const Variable& v) { result->store(v.is<bool>() && RE::BSScript::get<bool>(v) ? 2 : 1); },
+            [result] { result->store(1); });
+    }
+
+    bool MoveRefTo(std::uint32_t refId, std::uint32_t targetId)
+    {
+        // LookupByID<TESObjectREFR> refuses actors, the player among them.
+        auto* refForm = RE::TESForm::LookupByID(refId);
+        auto* targetForm = RE::TESForm::LookupByID(targetId);
+        RE::TESObjectREFR* ref = avatars::AsRef(refForm);
+        if (refId == 0x14) ref = RE::PlayerCharacter::GetSingleton();  // LookupByID(0x14) finds no player here
+        auto* target = avatars::AsRef(targetForm);
+        if (!ref || !target) {
+            log::Warn("[ship] MoveTo: {:08X} found {}, {:08X} found {}", refId, ref != nullptr, targetId, target != nullptr);
+            return false;
+        }
+        const auto self = ScriptObjectFor(ref);
+        log::Info("[ship] MoveTo: self {} ({}), target {}", self != nullptr, TypeChain(self), TypeChain(ScriptObjectFor(target)));
+        return Dispatch(self, "MoveTo", [target](RE::BSScrapArray<Variable>& a) {
+            Push(a, target);
+            Push(a, 0.0f);
+            Push(a, 0.0f);
+            Push(a, 0.0f);
+            Push(a, true);
+            Push(a, false);
+        });
+    }
+
+    bool RequestPlaceShip(std::uint32_t anchorId, std::uint32_t shipBaseId, std::shared_ptr<std::atomic<std::uint32_t>> result)
+    {
+        auto* anchorForm = RE::TESForm::LookupByID(anchorId);
+        auto* anchor = avatars::AsRef(anchorForm);
+        auto* base = RE::TESForm::LookupByID(shipBaseId);
+        if (!anchor || !base) return false;
+        return Dispatch(
+            ScriptObjectFor(anchor), "PlaceShipAtMe",
+            [base](RE::BSScrapArray<Variable>& a) {
+                Push(a, base);
+                Push(a, static_cast<std::int32_t>(4));
+                Push(a, false);  // keep it out of the save as far as the flags allow
+                Push(a, false);  // initially disabled
+                Push(a, true);   // delete when able
+                Push(a, false);
+                PushNone(a);
+                PushNone(a);
+                PushNone(a);
+                Push(a, false);
+            },
+            [result](const Variable& v) {
+                std::uint32_t id = kSpawnReturnedNone;
+                if (v.is<RE::BSScript::Object>() && RE::BSScript::get<RE::BSScript::Object>(v)) {
+                    auto* ship = RE::BSScript::UnpackVariable<RE::TESObjectREFR>(v);
+                    id = ship ? ship->GetFormID() : kSpawnUnpackFailed;
+                } else if (!v.is<RE::BSScript::Object>()) {
+                    id = kSpawnWrongType;
+                }
+                result->store(id);
+            },
+            [result] { result->store(kSpawnCanceled); });
+    }
+
+    bool PlaceRef(std::uint32_t refId, const Vec3& position, const Vec3& angle)
+    {
+        auto* form = RE::TESForm::LookupByID(refId);
+        auto* ref = avatars::AsRef(form);
+        if (!ref) return false;
+        const auto self = ScriptObjectFor(ref);
+        Dispatch(self, "SetAngle", [angle](RE::BSScrapArray<Variable>& a) {
+            Push(a, Degrees(angle.x));
+            Push(a, Degrees(angle.y));
+            Push(a, Degrees(angle.z));
+        });
+        return Dispatch(self, "SetPosition", [position](RE::BSScrapArray<Variable>& a) {
+            Push(a, position.x);
+            Push(a, position.y);
+            Push(a, position.z);
+        });
+    }
+
+    bool StartCombatWithPlayer(std::uint32_t actorId)
+    {
+        auto* actor = LookupActor(actorId);
+        auto* player = RE::PlayerCharacter::GetSingleton();  // LookupByID(0x14) finds no player
+        if (!actor || !player) return false;
+        return Dispatch(ScriptObjectFor(actor), "StartCombat", [player](RE::BSScrapArray<Variable>& a) {
+            Push(a, static_cast<RE::TESObjectREFR*>(player));
+            Push(a, true);  // abPreferredTarget
+        });
+    }
+
+    bool StartCombatWith(std::uint32_t actorId, std::uint32_t targetId)
+    {
+        auto* actor = LookupActor(actorId);
+        auto* target = LookupActor(targetId);
+        if (!actor || !target) return false;
+        const auto targetObject = ScriptObjectFor(target);
+        if (!targetObject) return false;
+        return Dispatch(ScriptObjectFor(actor), "StartCombat", [targetObject](RE::BSScrapArray<Variable>& a) {
+            a.emplace_back();
+            a.back() = targetObject;
+            Push(a, true);  // abPreferredTarget
+        });
+    }
+
+    RE::TESObjectREFR* AsRef(RE::TESForm* form)
+    {
+        if (!form) return nullptr;
+        if (auto* ref = form->As<RE::TESObjectREFR>()) return ref;
+        return form->Is(RE::FormType::kACHR) ? static_cast<RE::TESObjectREFR*>(form) : nullptr;
+    }
+
+    bool RequestIsTeammate(std::uint32_t actorId, std::shared_ptr<std::atomic<std::int32_t>> result)
+    {
+        auto* actor = LookupActor(actorId);
+        if (!actor) return false;
+        return Dispatch(
+            ScriptObjectFor(actor), "IsPlayerTeammate", [](RE::BSScrapArray<Variable>&) {},
+            [result](const Variable& v) { result->store(v.is<bool>() ? (RE::BSScript::get<bool>(v) ? 1 : 0) : -1); }, [result] { result->store(-1); });
+    }
+
+    bool KillActor(std::uint32_t actorId)
+    {
+        auto* actor = LookupActor(actorId);
+        if (!actor) return false;
+        return Dispatch(ScriptObjectFor(actor), "Kill", [](RE::BSScrapArray<Variable>& a) { PushNone(a); });
+    }
+
+    bool GiveFromPlayer(std::uint32_t refId, std::uint32_t itemId, int count)
+    {
+        auto* target = LookupRefAny(refId);
+        auto* item = RE::TESForm::LookupByID(itemId);
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!target || !item || !player) return false;
+        // The target's own script object: packing a generated NPC from its pointer refused the call.
+        // Packed as what it is: an actor packed as an ObjectReference found no script object.
+        auto* actor = target->As<RE::Actor>();
+        const auto other = actor ? ScriptObjectFor(actor) : ScriptObjectFor(target);
+        if (!other) {
+            log::Info("[world] no script object for {:08X}", refId);
+            return false;
+        }
+        return Dispatch(ScriptObjectFor(static_cast<RE::TESObjectREFR*>(player)), "RemoveItem", [other, item, count](RE::BSScrapArray<Variable>& a) {
+            Push(a, item);
+            Push(a, count);
+            Push(a, true);  // abSilent
+            a.emplace_back();
+            a.back() = other;
+        });
+    }
+
+    bool TakeIntoPlayer(std::uint32_t refId, std::uint32_t itemId, int count)
+    {
+        auto* source = LookupRefAny(refId);
+        auto* item = RE::TESForm::LookupByID(itemId);
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        auto* actor = source ? source->As<RE::Actor>() : nullptr;
+        const auto self = actor ? ScriptObjectFor(actor) : source ? ScriptObjectFor(source) : nullptr;
+        log::Info("[world] take from {:08X}: reference {}, actor {}, item {}, script object {} [{}]", refId, source != nullptr, actor != nullptr, item != nullptr,
+                  self != nullptr, TypeChain(self));
+        if (!source || !item || !player || !self) return false;
+        return Dispatch(self, "RemoveItem", [item, count, player](RE::BSScrapArray<Variable>& a) {
+            Push(a, item);
+            Push(a, count);
+            Push(a, true);  // abSilent
+            Push(a, static_cast<RE::TESObjectREFR*>(player));
+        });
+    }
+
+    bool ResurrectActor(std::uint32_t actorId)
+    {
+        auto* actor = LookupActor(actorId);
+        if (!actor) return false;
+        return Dispatch(ScriptObjectFor(actor), "Resurrect", [](RE::BSScrapArray<Variable>&) {});
+    }
+
+    bool IsActorDead(std::uint32_t actorId)
+    {
+        auto* actor = LookupActor(actorId);
+        if (!actor) return false;
+        const auto vtbl = *reinterpret_cast<void* const* const*>(actor);
+        return reinterpret_cast<bool (*)(RE::Actor*, bool)>(vtbl[269])(actor, true);
+    }
+
+    bool Notify(const std::string& text)
+    {
+        return DispatchStatic(
+            "Debug", "Notification",
+            [text](RE::BSScrapArray<Variable>& a) {
+                a.emplace_back();
+                a.back() = RE::BSFixedString(text.c_str());
+            },
+            [](const Variable&) {}, [] {});
+    }
+
+    bool SetLocked(std::uint32_t refId, bool locked)
+    {
+        auto* ref = LookupRefAny(refId);
+        if (!ref) return false;
+        return Dispatch(ScriptObjectFor(ref), "Lock", [locked](RE::BSScrapArray<Variable>& a) {
+            Push(a, locked);
+            Push(a, false);  // abAsOwner
+            Push(a, true);   // third flag of 0x2076B40: refresh the object afterwards
+        });
+    }
+
+    bool DamageObject(std::uint32_t refId, float amount)
+    {
+        auto* ref = LookupRefAny(refId);
+        if (!ref) return false;
+        return Dispatch(ScriptObjectFor(ref), "DamageObject", [amount](RE::BSScrapArray<Variable>& a) { Push(a, amount); });
+    }
+
+    bool SetDestroyed(std::uint32_t refId, bool destroyed)
+    {
+        auto* ref = LookupRefAny(refId);
+        if (!ref) return false;
+        return Dispatch(ScriptObjectFor(ref), "SetDestroyed", [destroyed](RE::BSScrapArray<Variable>& a) { Push(a, destroyed); });
+    }
+
+    bool SetQuestStage(std::uint32_t questId, int stage)
+    {
+        auto* quest = RE::TESForm::LookupByID<RE::TESQuest>(questId);
+        if (!quest) return false;
+        return Dispatch(ScriptObjectFor(quest), "SetCurrentStageID", [stage](RE::BSScrapArray<Variable>& a) { Push(a, stage); });
+    }
+
+    bool ContainerAdd(std::uint32_t refId, std::uint32_t itemId, int count)
+    {
+        auto* ref = LookupRefAny(refId);
+        auto* item = RE::TESForm::LookupByID(itemId);
+        if (!ref || !item) return false;
+        return Dispatch(ScriptObjectFor(ref), "AddItem", [item, count](RE::BSScrapArray<Variable>& a) {
+            Push(a, item);
+            Push(a, count);
+            Push(a, true);  // abSilent
+        });
+    }
+
+    bool ContainerRemove(std::uint32_t refId, std::uint32_t itemId, int count)
+    {
+        auto* ref = LookupRefAny(refId);
+        auto* item = RE::TESForm::LookupByID(itemId);
+        if (!ref || !item) return false;
+        return Dispatch(ScriptObjectFor(ref), "RemoveItem", [item, count](RE::BSScrapArray<Variable>& a) {
+            Push(a, item);
+            Push(a, count);
+            Push(a, true);  // abSilent
+            PushNone(a);    // akOtherContainer
+        });
+    }
+
+    bool ContainerTakeAll(std::uint32_t refId)
+    {
+        auto* ref = LookupRefAny(refId);
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!ref || !player) return false;
+        return Dispatch(ScriptObjectFor(ref), "RemoveAllItems", [player](RE::BSScrapArray<Variable>& a) {
+            Push(a, static_cast<RE::TESObjectREFR*>(player));
+            Push(a, false);  // abKeepOwnership
+            Push(a, false);  // abRemoveQuestItems
+        });
+    }
+
+    bool ActivateAsPlayer(std::uint32_t refId)
+    {
+        // LookupByID<TESObjectREFR> refuses actors, so talking to an NPC was never sent.
+        auto* form = RE::TESForm::LookupByID(refId);
+        auto* ref = avatars::AsRef(form);
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!ref || !player) return false;
+        return Dispatch(ScriptObjectFor(ref), "Activate", [player](RE::BSScrapArray<Variable>& a) {
+            Push(a, static_cast<RE::TESObjectREFR*>(player));
+            Push(a, false);  // abDefaultProcessingOnly
+        });
+    }
+
     bool StopCombat(std::uint32_t actorId)
     {
         auto* actor = LookupActor(actorId);
@@ -322,6 +693,65 @@ namespace cosync::plugin::avatars
             if (name.empty() && idFallback) name = std::format("{:08X}", form->GetFormID());
             return name;
         }
+    }
+
+    namespace
+    {
+        RE::TESForm* Wearable(std::uint32_t formId)
+        {
+            auto* item = RE::TESForm::LookupByID(formId);
+            return item && (item->Is(RE::FormType::kARMO) || item->Is(RE::FormType::kWEAP)) ? item : nullptr;
+        }
+    }
+
+    bool EquipForm(std::uint32_t actorId, std::uint32_t itemFormId)
+    {
+        auto* actor = LookupActor(actorId);
+        auto* item = Wearable(itemFormId);
+        if (!actor || !item) return false;
+        // EquipItem gives the actor the item first if it has none (ID::Actor::EquipItem).
+        return Dispatch(ScriptObjectFor(actor), "EquipItem", [item](RE::BSScrapArray<Variable>& a) {
+            Push(a, item);
+            Push(a, false);  // abPreventRemoval
+            Push(a, true);   // abSilent
+        });
+    }
+
+    bool UnequipForm(std::uint32_t actorId, std::uint32_t itemFormId)
+    {
+        auto* actor = LookupActor(actorId);
+        auto* item = Wearable(itemFormId);
+        if (!actor || !item) return false;
+        return Dispatch(ScriptObjectFor(actor), "UnequipItem", [item](RE::BSScrapArray<Variable>& a) {
+            Push(a, item);
+            Push(a, false);  // abPreventEquip
+            Push(a, true);   // abSilent
+        });
+    }
+
+    bool KillSilent(std::uint32_t actorId)
+    {
+        auto* actor = LookupActor(actorId);
+        if (!actor) return false;
+        return Dispatch(ScriptObjectFor(actor), "KillSilent", [](RE::BSScrapArray<Variable>& a) { a.emplace_back(); });
+    }
+
+    bool DamageHealth(std::uint32_t actorId, float amount)
+    {
+        auto* actor = LookupActor(actorId);
+        if (!actor) return false;
+        const auto self = ScriptObjectFor(actor);
+        return DispatchStatic(
+            "Game", "GetHealthAV", [](RE::BSScrapArray<Variable>&) {},
+            [self, amount](const Variable& av) {
+                const Variable copy = av;
+                Dispatch(self, "DamageValue", [copy, amount](RE::BSScrapArray<Variable>& a) {
+                    a.emplace_back();
+                    a.back() = copy;
+                    Push(a, amount);
+                });
+            },
+            [] {});
     }
 
     bool RequestStatus(std::uint32_t actorId, std::shared_ptr<StatusQuery> q)

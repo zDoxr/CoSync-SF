@@ -22,12 +22,14 @@ namespace cosync::proto
 {
     inline constexpr std::uint32_t kMagic = 0x46535343;  // "CSSF" as little-endian bytes
     inline constexpr std::uint16_t kProtocolMajor = 1;   // incompatible changes
-    inline constexpr std::uint16_t kProtocolMinor = 5;   // backward-compatible additions
+    inline constexpr std::uint16_t kProtocolMinor = 18;   // backward-compatible additions
                                                          // 1.1: optional PlayerTransform::controls
                                                          // 1.2: tagged trailing sections, PlayerTransform::events
                                                          // 1.3: PlayerTransform::weapon
                                                          // 1.4: NpcCombat
                                                          // 1.5: PlayerTransform::status, groups
+                                                         // 1.6: NPC authority, states, death, damage
+                                                         // 1.7: NPC graph events, equipment
 
     inline constexpr std::size_t kMaxMessageBytes = 16 * 1024;
     inline constexpr std::size_t kMaxPlayerNameBytes = 32;
@@ -56,6 +58,18 @@ namespace cosync::proto
         NpcCombat = 11,       // C->S then S->C relay, reliable (1.4)
         GroupRequest = 12,    // C->S reliable (1.5)
         GroupState = 13,      // S->C reliable, authoritative group list (1.5)
+        NpcAuthority = 14,    // S->C reliable, who owns NPC simulation (1.6)
+        NpcStates = 15,       // authority->S->others, unreliable (1.6)
+        NpcDeath = 16,        // authority->S->others, reliable; replayed to late joiners (1.6)
+        NpcDamage = 17,       // C->S->authority, reliable (1.6)
+        NpcEvents = 18,       // authority->S->others, reliable (1.7)
+        NpcOutfits = 19,        // authority->S->others, reliable (1.7)
+        WorldEvents = 20,       // C->S->others, reliable; replayed to late joiners (1.10)
+        WorldClock = 21,        // authority->S->others, reliable (1.10)
+        DialogueLine = 22,      // C->S->players nearby, reliable (1.14)
+        DroppedItem = 23,       // C->S->others, reliable (1.16)
+        PlayerOutfit = 24,      // C->S->others, reliable; newest replayed to late joiners (1.18)
+        PlayerHit = 25,         // authority->S->one player, reliable (1.18)
     };
 
     enum class RejectReason : std::uint16_t
@@ -208,6 +222,17 @@ namespace cosync::proto
         std::string place;                 // planet name (or empty)
     };
 
+    // The sender's ship while they are in space (1.12): enough for others to show a stand-in of the
+    // same design where it is. Space cells use larger coordinates than the ground.
+    inline constexpr float kMaxShipCoordinate = 1.0e9f;
+    struct ShipState
+    {
+        std::uint32_t cellId = 0;  // stable location key of the ship's cell, as locationId
+        std::uint32_t baseId = 0;  // the ship's base form: its design
+        Vec3 position;
+        Vec3 rotation;  // radians
+    };
+
     struct PlayerTransform
     {
         PlayerId playerId = kInvalidPlayerId;
@@ -220,10 +245,12 @@ namespace cosync::proto
         //   tag 2 (1.2+): events   = u8 count (1..8), count x { u16 sequence, string name }
         //   tag 3 (1.3+): weapon   = u32 formId, u8 drawn (0/1)
         //   tag 4 (1.5+): status   = u8 health%, u16 level, u8 kind, string place
+        //   tag 5 (1.12+): ship    = u32 cellId, u32 baseId, 3 x f32 position, 3 x f32 rotation
         std::optional<PlayerControls> controls;
         std::vector<AnimEvent> events;
         std::optional<WeaponState> weapon;
         std::optional<PlayerStatus> status;
+        std::optional<ShipState> ship;
     };
 
     // An NPC (data-file reference, identical FormID on every machine with the same load order)
@@ -234,6 +261,155 @@ namespace cosync::proto
         PlayerId playerId = kInvalidPlayerId;
         std::uint32_t npcFormId = 0;
         PlayerId targetPlayer = kInvalidPlayerId;
+    };
+
+    // NPC replication (1.6, docs/NPC_SYNC_ARCHITECTURE.md). One game client at a time is the NPC
+    // authority, chosen by the server. Data-file references carry the same FormID on every machine
+    // with the same load order. Runtime FF references only match between copies of one save, so
+    // receivers must also compare baseId before treating one as the same NPC.
+    inline constexpr std::size_t kMaxNpcStates = 100;  // per message; a snapshot spans several
+    inline constexpr float kMaxNpcDamage = 1.0e6f;    // abuse bound, in health points
+    [[nodiscard]] constexpr bool IsRuntimeFormId(std::uint32_t formId) noexcept { return (formId >> 24) == 0xFF; }
+    [[nodiscard]] constexpr bool IsReplicatedNpcId(std::uint32_t formId) noexcept { return formId != 0; }
+
+    struct NpcAuthority
+    {
+        PlayerId authority = kInvalidPlayerId;  // none = no game client connected
+    };
+
+    enum NpcFlags : std::uint8_t
+    {
+        kNpcDead = 1 << 0,
+        kNpcWeaponDrawn = 1 << 1,
+        kNpcInCombat = 1 << 2,
+        kNpcSneaking = 1 << 3,
+        kNpcInScene = 1 << 4,
+        kNpcUnconscious = 1 << 5,
+        kNpcSitting = 1 << 6,  // in furniture
+        kNpcCrowdTarget = 1 << 7,  // ambient crowd actor heading for crowdTarget
+    };
+    inline constexpr std::uint8_t kNpcKnownFlags = 0xFF;
+
+    struct NpcState
+    {
+        std::uint32_t formId = 0;
+        std::uint32_t baseId = 0;
+        Vec3 position;
+        float yaw = 0.0f;  // radians
+        std::uint8_t healthPercent = 100;  // 0..100
+        std::uint8_t flags = 0;
+        // Where CrowdManager is sending it (1.9). On the wire only with kNpcCrowdTarget. A position,
+        // because the reference itself may be a runtime one, numbered per copy (RE 12.10).
+        Vec3 crowdTarget;
+    };
+
+    // Part of the latest state of the NPCs the authority has loaded, nearest first. Clients send
+    // playerId = 0; the server stamps the sender and refuses anyone but the authority.
+    struct NpcStates
+    {
+        PlayerId playerId = kInvalidPlayerId;
+        std::uint32_t sequence = 0;
+        std::uint32_t locationId = 0;
+        std::vector<NpcState> npcs;
+    };
+
+    struct NpcDeath
+    {
+        PlayerId playerId = kInvalidPlayerId;
+        std::uint32_t npcFormId = 0;
+    };
+
+    // Health a client's player took from its local copy of an NPC. The authority's engine applies
+    // it, so damage, bleedout and death are decided once. Clients send playerId = 0.
+    struct NpcDamage
+    {
+        PlayerId playerId = kInvalidPlayerId;
+        std::uint32_t npcFormId = 0;
+        float amount = 0.0f;  // health points, > 0
+    };
+
+    // Animation-graph input events the authority's engine sent to its NPCs, in order.
+    inline constexpr std::size_t kMaxNpcEvents = 64;
+    struct NpcEvent
+    {
+        std::uint32_t formId = 0;
+        std::string name;
+    };
+    struct NpcEvents
+    {
+        PlayerId playerId = kInvalidPlayerId;
+        std::vector<NpcEvent> events;
+    };
+
+    // What NPCs wear and hold on the authority: every equipped armor and weapon, sorted. Sent as
+    // full state on a timer, so a receiver corrects any difference, however it came about.
+    inline constexpr std::size_t kMaxNpcOutfits = 64;      // per message
+    inline constexpr std::size_t kMaxNpcOutfitItems = 24;  // per NPC
+    struct NpcOutfit
+    {
+        std::uint32_t formId = 0;
+        std::vector<std::uint32_t> items;
+        // Hash of what makes the NPC look the way it does. Runtime base IDs differ between copies,
+        // so this is how they tell whether two NPCs are the same person.
+        std::uint32_t look = 0;
+        // The data-file NPC a generated one was made from (1.13), 0 if none. A copy that has no such
+        // NPC of its own places one from this template instead (issue #2).
+        std::uint32_t templateId = 0;
+    };
+    struct NpcOutfits
+    {
+        PlayerId playerId = kInvalidPlayerId;
+        std::vector<NpcOutfit> outfits;
+    };
+
+    // Shared world state (1.10, docs/WORLD_SYNC.md). A change one player caused. Any player may report
+    // one, the server remembers it for late joiners and passes it on.
+    inline constexpr std::size_t kMaxWorldEvents = 64;  // per message
+    enum class WorldEventKind : std::uint8_t
+    {
+        DoorOpen = 1,       // formId door, itemId its base, value 1 open / 0 closed
+        RefRemoved = 2,     // formId reference taken from the world, itemId its base, value how many the player got (1.15, 0 if unknown)
+        QuestStage = 3,     // formId quest, value the stage set
+        ContainerItem = 4,  // formId container, itemId the item, value the change in count
+        LockState = 5,      // formId reference, itemId its base, value 1 locked / 0 unlocked
+        Destroyed = 6,      // formId reference, itemId its base, value 1 destroyed / 0 repaired
+        // S->one player only (1.15): another player took that reference first, so give back what was
+        // picked up. formId the reference, itemId the item, value the count. Never remembered or relayed.
+        ItemReturned = 7,
+        // A dropped item (1.16) was picked up: formId its shared ID (see DroppedItem), itemId its
+        // base, value how many the player got.
+        SharedRemoved = 8,
+        // A runtime NPC's inventory changed (1.16): formId the NPC under the NPC authority's number,
+        // which every copy maps to its own (issue #6). itemId the item, value the change in count.
+        NpcContainerItem = 9,
+        // C->S only (1.17), right after a ContainerItem: how many of that item the container holds now
+        // on the sender's copy. The server compares it with what it last heard, so two players taking
+        // the same stack cannot both keep it (issue #17). Never relayed or remembered.
+        ContainerRemaining = 10,
+    };
+    struct WorldEvent
+    {
+        WorldEventKind kind = WorldEventKind::DoorOpen;
+        std::uint32_t formId = 0;
+        std::uint32_t itemId = 0;
+        std::int32_t value = 0;
+        bool operator==(const WorldEvent&) const = default;
+    };
+    struct WorldEvents
+    {
+        PlayerId playerId = kInvalidPlayerId;
+        std::vector<WorldEvent> events;
+    };
+    [[nodiscard]] bool IsValidWorldEvent(const WorldEvent& e) noexcept;
+
+    // The authority's sky, on a timer. Weather only applies to a copy in the same location.
+    struct WorldClock
+    {
+        PlayerId playerId = kInvalidPlayerId;
+        float gameDaysPassed = 0.0f;
+        float gameHour = 0.0f;
+        std::uint32_t locationId = 0;
+        std::uint32_t weather = 0;  // 0 = unknown
     };
 
     // Groups (1.5): who shares party frames and overhead markers. The server owns the state.
@@ -260,9 +436,63 @@ namespace cosync::proto
         std::vector<GroupInfo> groups;
     };
 
+    // A line said in a conversation one player is in, as the game subtitled it (1.14). Others nearby
+    // see it, so a conversation is not silent for the players watching (issue #16). Clients send
+    // playerId = 0; the server stamps the sender and passes it only to players who may share the place.
+    inline constexpr std::size_t kMaxSpeakerBytes = 64;
+    inline constexpr std::size_t kMaxLineBytes = 512;
+    struct DialogueLine
+    {
+        PlayerId playerId = kInvalidPlayerId;
+        std::string speaker;
+        std::string text;
+        bool isPlayer = false;  // the sending player's own line, not the NPC's
+    };
+
+    // An item a player dropped (1.16, issue #6). The dropped reference is numbered per copy, so the
+    // dropping player names it with a shared ID: their player ID in the top byte, a counter below.
+    // Every other copy places the same item there, and SharedRemoved takes it away again.
+    struct DroppedItem
+    {
+        PlayerId playerId = kInvalidPlayerId;
+        std::uint32_t sharedId = 0;
+        std::uint32_t baseId = 0;
+        std::int32_t count = 0;
+        std::uint32_t locationId = 0;  // as in PlayerTransform: the drop is placed only there
+        Vec3 position{};
+    };
+    [[nodiscard]] constexpr std::uint32_t MakeSharedId(PlayerId player, std::uint32_t sequence) noexcept
+    {
+        return (static_cast<std::uint32_t>(player) << 24) | (sequence & 0xFFFFFFu);
+    }
+    [[nodiscard]] constexpr PlayerId SharedIdOwner(std::uint32_t sharedId) noexcept { return static_cast<PlayerId>(sharedId >> 24); }
+    [[nodiscard]] bool IsValidDroppedItem(const DroppedItem& d) noexcept;
+
+    // What a player wears (1.18): every armor and piece of apparel, sorted. The whole list each time it
+    // changes, so a receiver corrects any difference. The server keeps the newest for late joiners.
+    inline constexpr std::size_t kMaxPlayerOutfitItems = 32;
+    struct PlayerOutfit
+    {
+        PlayerId playerId = kInvalidPlayerId;
+        std::vector<std::uint32_t> items;
+    };
+    [[nodiscard]] bool IsValidPlayerOutfit(const PlayerOutfit& o) noexcept;
+
+    // A hit the NPC authority's engine landed on a player's stand-in (1.18). The stand-in takes it there
+    // and that player's own engine applies it, so a shot counts once wherever it was simulated. As a share
+    // of maximum health, because players can differ in maximum health. Clients send playerId = 0.
+    struct PlayerHit
+    {
+        PlayerId playerId = kInvalidPlayerId;  // the reporter, stamped by the server
+        PlayerId target = kInvalidPlayerId;
+        float percent = 0.0f;  // of maximum health, 0..100
+    };
+    [[nodiscard]] bool IsValidPlayerHit(const PlayerHit& h) noexcept;
+
     using Message = std::variant<Hello, Welcome, Reject, SessionSnapshot, PlayerJoined, PlayerLeft,
                                  Heartbeat, HeartbeatAck, Disconnect, PlayerTransform, NpcCombat, GroupRequest,
-                                 GroupState>;
+                                 GroupState, NpcAuthority, NpcStates, NpcDeath, NpcDamage, NpcEvents, NpcOutfits,
+                                 WorldEvents, WorldClock, DialogueLine, DroppedItem, PlayerOutfit, PlayerHit>;
 
     enum class DecodeError
     {
@@ -298,6 +528,7 @@ namespace cosync::proto
     [[nodiscard]] bool IsValidPlayerName(std::string_view name) noexcept;
     [[nodiscard]] bool IsValidTransform(const PlayerTransform& t) noexcept;
     [[nodiscard]] bool IsValidControls(const PlayerControls& c) noexcept;
+    [[nodiscard]] bool IsValidNpcState(const NpcState& s) noexcept;
 
     // Serial-number comparison (RFC 1982 style) for wrapping u32 sequences.
     [[nodiscard]] constexpr bool SequenceNewer(std::uint32_t candidate, std::uint32_t last) noexcept

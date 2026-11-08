@@ -7,6 +7,7 @@ add_executable(cosync_tests
     GnsIntegrationTests.cpp
     GroupTests.cpp
     InterpolationTests.cpp
+    NpcReplicationTests.cpp
     ProtocolTests.cpp
     SessionTests.cpp
     UiModelTests.cpp

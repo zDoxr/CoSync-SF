@@ -1,5 +1,11 @@
 #pragma once
 
+namespace RE
+{
+    class TESForm;
+    class TESObjectREFR;
+}
+
 #include "cosync/shared/Types.h"
 
 #include <atomic>
@@ -117,6 +123,22 @@ namespace cosync::plugin::avatars
     bool RequestCombatTarget(std::uint32_t actorId, std::shared_ptr<std::atomic<std::uint32_t>> result);
     bool StartCombat(std::uint32_t actorId, std::uint32_t targetRefId);
     bool StopCombat(std::uint32_t actorId);  // Papyrus Actor.StopCombat()
+    bool KillSilent(std::uint32_t actorId);  // Papyrus Actor.KillSilent(None)
+
+    // ---- World (RE 12.11) ----
+    bool SetOpen(std::uint32_t refId, bool open);      // ObjectReference.SetOpen(bool)
+    bool DisableNoWait(std::uint32_t refId);           // ObjectReference.DisableNoWait(bool fade)
+    bool SetQuestStage(std::uint32_t questId, int stage);  // Quest.SetCurrentStageID(int)
+    bool ActivateAsPlayer(std::uint32_t refId);        // ObjectReference.Activate(player, false)
+    bool ContainerAdd(std::uint32_t refId, std::uint32_t itemId, int count);     // AddItem(item, count, silent)
+    bool ContainerRemove(std::uint32_t refId, std::uint32_t itemId, int count);  // RemoveItem(item, count, silent, None)
+    bool ContainerTakeAll(std::uint32_t refId);        // RemoveAllItems(player, false, false)
+    // Armor, clothing or a weapon: added if missing, then equipped. Unequip leaves it in the inventory.
+    bool EquipForm(std::uint32_t actorId, std::uint32_t itemFormId);
+    bool UnequipForm(std::uint32_t actorId, std::uint32_t itemFormId);
+    // Papyrus ObjectReference.DamageValue(Game.GetHealthAV(), amount): the engine's whole damage
+    // path, with its bleedout and death handling (RE 12.1).
+    bool DamageHealth(std::uint32_t actorId, float amount);
 
     // ---- Local player status (game.pex: actorvalue GetHealthAV(); objectreference.pex:
     // Float GetValuePercentage(actorvalue), planet GetCurrentPlanet(), Bool IsInSpace();
@@ -192,5 +214,44 @@ namespace cosync::plugin::avatars
         float distanceToPlayer = -1.0f;
     };
     [[nodiscard]] ProxyState Probe(std::uint32_t refId);
+    // Game.GetPlayerHomeSpaceShip. *result receives the ship's FormID, or 1 when there is none.
+    bool RequestHomeShip(std::shared_ptr<std::atomic<std::uint32_t>> result);
+    // Game.TrySetPlayerHomeSpaceShip. *result receives 2 on success, 1 on refusal.
+    bool RequestSetHomeShip(std::uint32_t shipId, std::shared_ptr<std::atomic<std::uint32_t>> result);
+    // ObjectReference.MoveTo(target, 0, 0, 0, true, false): 0x2077B90 takes a target, three offsets, two flags.
+    bool MoveRefTo(std::uint32_t refId, std::uint32_t targetId);
+    // ObjectReference.PlaceShipAtMe (0x207A8B0) on `anchorId`: the ship base, then a level mod, four
+    // flags and three optional forms (None here) and a last flag. *result receives the new ship's
+    // FormID, or a kSpawn* error.
+    bool RequestPlaceShip(std::uint32_t anchorId, std::uint32_t shipBaseId, std::shared_ptr<std::atomic<std::uint32_t>> result);
+    // ObjectReference.SetPosition / SetAngle (degrees) on any reference.
+    bool PlaceRef(std::uint32_t refId, const Vec3& position, const Vec3& angleRadians);
+    // Actor.StartCombat against the local player, and Actor.Kill with no killer.
+    bool StartCombatWithPlayer(std::uint32_t actorId);
+    // A form as a reference, actors included. TESForm::As<TESObjectREFR> returns null for an actor
+    // (form type ACHR) on this CommonLibSF, which silently skipped every NPC (found 2026-11-07).
+    [[nodiscard]] RE::TESObjectREFR* AsRef(RE::TESForm* form);
+    bool KillActor(std::uint32_t actorId);
+    // Papyrus Actor.IsPlayerTeammate(): 1 or 0 into `result`, -1 when the call failed. Main thread.
+    bool RequestIsTeammate(std::uint32_t actorId, std::shared_ptr<std::atomic<std::int32_t>> result);
+    bool StartCombatWith(std::uint32_t actorId, std::uint32_t targetId);  // Papyrus Actor.StartCombat(target)
+    bool ResurrectActor(std::uint32_t actorId);  // Papyrus Actor.Resurrect()
+    // The player gives `count` of the item to that reference (RemoveItem with akOtherContainer).
+    bool GiveFromPlayer(std::uint32_t refId, std::uint32_t itemId, int count);
+    // That reference gives `count` of the item to the player (its RemoveItem, akOtherContainer the player).
+    bool TakeIntoPlayer(std::uint32_t refId, std::uint32_t itemId, int count);
+    // The engine's own IsDead (vtable slot 269, 0x1FC7FB0). Main thread. False if not an actor.
+    [[nodiscard]] bool IsActorDead(std::uint32_t actorId);
+    // Debug.Notification: a line at the top left of the HUD.
+    bool Notify(const std::string& text);
+    // ObjectReference.GetItemCount on the player, -1 into `result` when the call fails. Main thread.
+    bool RequestPlayerItemCount(std::uint32_t itemId, std::shared_ptr<std::atomic<std::int32_t>> result);
+    // ObjectReference.AddItem / DropObject on the player. `done` becomes 1 when AddItem returned;
+    // `dropped` becomes the dropped reference's form ID, or 1 when the call failed. Main thread.
+    bool AddToPlayer(std::uint32_t itemId, int count, std::shared_ptr<std::atomic<std::uint32_t>> done);
+    bool RequestDropFromPlayer(std::uint32_t itemId, int count, std::shared_ptr<std::atomic<std::uint32_t>> dropped);
+    bool SetLocked(std::uint32_t refId, bool locked);
+    bool DamageObject(std::uint32_t refId, float amount);
+    bool SetDestroyed(std::uint32_t refId, bool destroyed);
     [[nodiscard]] std::string Describe(const ProxyState& s);
 }

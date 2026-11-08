@@ -29,6 +29,7 @@ namespace cosync
         std::vector<proto::AnimEvent> events;           // sender's recent graph input events
         std::optional<proto::WeaponState> weapon;       // sender's weapon, if sent
         std::optional<proto::PlayerStatus> status;      // sender's vitals and whereabouts, if sent
+        std::optional<proto::ShipState> ship;           // sender's ship while in space, if sent
     };
 
     struct InterpolatedPose

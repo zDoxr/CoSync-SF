@@ -8,6 +8,8 @@ Legend:
 - ⬜ **pending**
 
 
+Current priorities and the full feature inventory are in [MULTIPLAYER_ROADMAP.md](MULTIPLAYER_ROADMAP.md). This file is the history of the early milestones.
+
 ## Milestone 1 — Networking foundation (current)
 
 - [x] ✅ Reproducible build: CMake presets + vcpkg manifest (pinned baseline) + `scripts/build.ps1`
@@ -90,7 +92,7 @@ Goal: two real Starfield clients show each other's position in the plugin log, t
 - [ ] ⬜ Health/damage events with server-side rate/range validation
 - [ ] ⬜ Weapons and firing, hit validation
 - [ ] ⬜ Inventory/equipment events, loot/containers ownership
-- [ ] ⬜ NPC/creature authority (cell owner), death/revival
+- [ ] 🟡 NPC authority, snapshots, damage and death: written, not run in game. Authority is per session, not per cell. See [NPC_SYNC_STATUS.md](NPC_SYNC_STATUS.md)
 
 ## Phase D — Shared world
 - [ ] ⬜ Cell/interior transitions; players in different locations; loading-state awareness

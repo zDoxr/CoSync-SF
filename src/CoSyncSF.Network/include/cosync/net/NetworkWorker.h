@@ -6,6 +6,7 @@
 #include "cosync/shared/Interpolation.h"
 
 #include <atomic>
+#include <deque>
 #include <future>
 #include <map>
 #include <mutex>
@@ -85,9 +86,27 @@ namespace cosync::net
                                   const std::optional<proto::PlayerControls>& controls = std::nullopt,
                                   const std::vector<proto::AnimEvent>& events = {},
                                   const std::optional<proto::WeaponState>& weapon = std::nullopt,
-                                  const std::optional<proto::PlayerStatus>& status = std::nullopt);
+                                  const std::optional<proto::PlayerStatus>& status = std::nullopt,
+                                  const std::optional<proto::ShipState>& ship = std::nullopt);
         // Queues an NpcCombat report (sent reliably on the next network tick; bounded).
         void SubmitNpcCombat(std::uint32_t npcFormId, PlayerId targetPlayer);
+        // NPC replication. An unsent snapshot is replaced by the next one. Received parts queue up
+        // (bounded, oldest dropped). Deaths and damage are queued and reliable (bounded).
+        void SubmitNpcStates(std::uint32_t locationId, std::vector<proto::NpcState> npcs);
+        void SubmitNpcDeath(std::uint32_t npcFormId);
+        void SubmitNpcDamage(std::uint32_t npcFormId, float amount);
+        void SubmitNpcEvents(std::vector<proto::NpcEvent> events);  // bounded, oldest dropped
+        void SubmitNpcOutfits(std::vector<proto::NpcOutfit> outfits);
+        // World state. Events are queued, reliable and bounded; a newer clock replaces an unsent one.
+        void SubmitWorldEvents(const std::vector<proto::WorldEvent>& events);
+        void SubmitWorldClock(const proto::WorldClock& clock);
+        void SubmitDialogueLine(const proto::DialogueLine& line);  // bounded, oldest dropped
+        void SubmitDroppedItem(const proto::DroppedItem& drop);    // bounded, oldest dropped
+        void SubmitPlayerOutfit(std::vector<std::uint32_t> items);  // a newer one replaces an unsent one
+        void SubmitPlayerHit(PlayerId target, float percent);       // queued, reliable, bounded
+        // Dev test: the client drops its connection and stays offline that long before resuming.
+        void SimulateConnectionLoss(std::uint32_t offlineMs) noexcept { _simulatedLossMs.store(offlineMs); }
+        [[nodiscard]] std::vector<proto::NpcStates> TakeNpcStates();
         // Host only: removes a player from the session (no resume). Ignored in client mode.
         void SubmitKick(PlayerId player);
         void SubmitGroupRequest(const proto::GroupRequest& request);
@@ -110,10 +129,23 @@ namespace cosync::net
             std::vector<proto::AnimEvent> events;
             std::optional<proto::WeaponState> weapon;
             std::optional<proto::PlayerStatus> status;
+            std::optional<proto::ShipState> ship;
         };
 
         std::vector<std::pair<std::uint32_t, PlayerId>> _npcCombatOut;  // guarded by _localMutex
         std::vector<PlayerId> _kickOut;                                 // guarded by _localMutex
+        std::optional<proto::NpcStates> _npcStatesOut;                  // guarded by _localMutex
+        std::deque<proto::NpcStates> _npcStatesIn;                      // guarded by _localMutex
+        std::vector<std::uint32_t> _npcDeathOut;                        // guarded by _localMutex
+        std::vector<std::pair<std::uint32_t, float>> _npcDamageOut;     // guarded by _localMutex
+        std::deque<proto::NpcEvent> _npcEventsOut;                      // guarded by _localMutex
+        std::vector<proto::NpcOutfit> _npcOutfitsOut;                      // guarded by _localMutex
+        std::vector<proto::WorldEvent> _worldEventsOut;                    // guarded by _localMutex
+        std::optional<proto::WorldClock> _worldClockOut;                   // guarded by _localMutex
+        std::deque<proto::DialogueLine> _dialogueOut;                      // guarded by _localMutex
+        std::deque<proto::DroppedItem> _dropsOut;                          // guarded by _localMutex
+        std::optional<proto::PlayerOutfit> _outfitOut;                     // guarded by _localMutex
+        std::vector<proto::PlayerHit> _playerHitsOut;                      // guarded by _localMutex
         std::vector<proto::GroupRequest> _groupOut;                     // guarded by _localMutex
         void Run(std::promise<std::string>& ready);
 
@@ -122,6 +154,7 @@ namespace cosync::net
         std::atomic<bool> _stopRequested{ false };
         std::atomic<bool> _running{ false };
         std::atomic<bool> _overflow{ false };
+        std::atomic<std::uint32_t> _simulatedLossMs{ 0 };
 
         BoundedQueue<ClientEvent> _events;
         BoundedQueue<RemoteSample> _remoteTransforms;

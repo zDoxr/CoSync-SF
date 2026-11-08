@@ -50,6 +50,9 @@ namespace cosync::plugin::movecontrols
     // One static IMovementPlayerControls object per remote player slot (never freed, so the
     // engine can never hold a dangling pointer). Slot = PlayerId % kReplaySlots.
     constexpr std::size_t kReplaySlots = 64;
+    // A separate pool for NPCs: slot ids kNpcSlotBase + 0..kNpcReplaySlots-1.
+    constexpr std::size_t kNpcReplaySlots = 256;
+    constexpr std::uint32_t kNpcSlotBase = 0x10000000;
     // Registers player `slotId`'s replay object on the actor's controller (replacing any
     // IMovementPlayerControls). MAIN THREAD.
     bool AttachReplay(std::uint32_t refId, std::uint32_t slotId, std::string& detail);
@@ -81,8 +84,23 @@ namespace cosync::plugin::movecontrols
     // Starfield.exe+0x12C70D8 reading null+0x2E). Call before despawning a proxy. Returns the count
     // removed. MAIN THREAD.
     int PurgeFromPlayerControls(std::uint32_t refId);
+    // Hooks MovementControllerNPC's state-changing vfuncs (slots 7, 8, 10..14; RE 12.3). A held
+    // controller refuses them, so an NPC's own AI cannot pull it out of the player-controls state.
+    // Every other controller passes straight through. Install at plugin load.
+    void InstallControllerHold(std::string& detail);
+    // Holds or frees the actor's controller. MAIN THREAD.
+    bool SetControllerHeld(std::uint32_t refId, bool held);
+    // State changes refused so far, by requested slot (index 0..15).
+    std::uint64_t HoldRefusals(std::size_t slot);
+
     // MovementControllerNPC state (+0xC0) of the actor, or -1. MAIN THREAD.
     int ControllerState(std::uint32_t refId);
+    // MovementControllerAI mode (+0x5C) of the actor: 2 motion-driven, 1 animation-driven, -1 none.
+    int ControllerMode(std::uint32_t refId);
+    // Undoes AttachReplay + EnterPlayerControlsState: the controller's own vfunc 7 (0x1AB7D80,
+    // ID 103566) reselects the default state, the replay object goes, and a motion-driven controller
+    // gets the engine's IMovementPlayerControls back, as its vfunc 16 registered it. MAIN THREAD.
+    bool LeavePlayerControlsState(std::uint32_t refId, std::string& detail);
 
     // Which movement interfaces the actor's controller registry holds (diagnostics). MAIN THREAD.
     std::string DescribeRegistry(std::uint32_t refId);

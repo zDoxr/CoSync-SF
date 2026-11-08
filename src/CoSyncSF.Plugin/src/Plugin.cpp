@@ -8,6 +8,9 @@
 #include "GameBridge.h"
 #include "GameState.h"
 #include "AnimEvents.h"
+#include "MenuPause.h"
+#include "SelfTest.h"
+#include "DevHarness.h"
 #include "MoveControls.h"
 #include "MultiInstance.h"
 #include "PluginConfig.h"
@@ -197,7 +200,7 @@ SFSE_PLUGIN_VERSION = []() noexcept {
 SFSE_PLUGIN_LOAD(const SFSE::LoadInterface* a_sfse)
 {
     // CoSync keeps its own log; no CommonLibSF hooks or trampoline are used.
-    SFSE::Init(a_sfse, { .log = false, .hook = false });
+    SFSE::Init(a_sfse, { .log = false, .trampoline = true, .trampolineSize = 64, .hook = false });
 
     OpenLog();
     g_runtimeVersion = a_sfse->RuntimeVersion().pack();
@@ -245,6 +248,33 @@ SFSE_PLUGIN_LOAD(const SFSE::LoadInterface* a_sfse)
     }
     plugin::GameBridge::Get().EnableLocalPlayerReads(haveAddressLibrary);
     plugin::GameBridge::Get().EnableAvatars(haveAddressLibrary && g_config.remoteAvatars);
+    plugin::GameBridge::Get().EnableNpcSync(haveAddressLibrary && g_config.npcSync);
+    plugin::GameBridge::Get().EnableWorldSync(haveAddressLibrary && g_config.worldSync);
+    plugin::GameBridge::Get().EnablePlayerHits(haveAddressLibrary && g_config.playerHits);
+    plugin::GameBridge::Get().EnablePlayerRespawn(haveAddressLibrary && g_config.playerRespawn);
+    if (haveAddressLibrary) plugin::selftest::Configure(g_config.selfTest);
+    if (haveAddressLibrary) {
+        plugin::dev::Options dev;
+        dev.autoLoad = g_config.autoLoad;
+        dev.eventCensus = g_config.eventCensus;
+        dev.commandDelay = g_config.testCommandDelay;
+        for (std::size_t at = 0; at < g_config.testCommands.size();) {
+            const auto end = std::min(g_config.testCommands.find(';', at), g_config.testCommands.size());
+            if (end > at) dev.commands.push_back(g_config.testCommands.substr(at, end - at));
+            at = end + 1;
+        }
+        plugin::dev::Configure(std::move(dev));
+    }
+    plugin::GameBridge::Get().EnableMenuPatch(g_config.menuPatch);
+    if (haveAddressLibrary && g_config.npcSync) {
+        std::string detail;
+        plugin::movecontrols::InstallControllerHold(detail);
+        log::Info("{}", detail);
+        plugin::npcsync::Replication::Install(detail);
+        log::Info("{}", detail);
+        plugin::menupause::Install(detail);
+        log::Info("{}", detail);
+    }
     plugin::GameBridge::Get().SetAvatarScale(g_config.avatarScale);
     if (haveAddressLibrary && g_config.remoteAvatars && g_config.avatarAnimDiag > 0) {
         std::string capture;

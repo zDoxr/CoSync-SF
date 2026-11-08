@@ -3,6 +3,8 @@
 #include <RE/Starfield.h>
 #include <REL/Relocation.h>
 
+#include <array>
+#include <atomic>
 #include <cstring>
 #include <format>
 #include <mutex>
@@ -32,6 +34,9 @@ namespace cosync::plugin::movecontrols
         constexpr std::uint64_t kControllerNpcVtableId = 452731;  // MovementControllerNPC primary vtable
         constexpr std::uint64_t kEnterState1Id = 103568;          // vfunc 9, 0x1AB7EB0
         constexpr std::size_t kEnterState1Slot = 9;
+        constexpr std::uint64_t kDefaultStateId = 103566;         // vfunc 7, 0x1AB7D80
+        constexpr std::size_t kDefaultStateSlot = 7;
+        constexpr std::size_t kControllerModeOffset = 0x5C;
         constexpr std::size_t kControllerStateOffset = 0xC0;
 
         using Fill_t = std::int64_t (*)(void* self, std::uint32_t formId, void* out);
@@ -90,11 +95,17 @@ namespace cosync::plugin::movecontrols
             float moveMagnitude = 0.0f;  // +0x30: 0 = stand, 2 = run (observed)
             bool turnPending = false;
         };
-        ReplayData g_replayData[kReplaySlots];
+        constexpr std::size_t kAllSlots = kReplaySlots + kNpcReplaySlots;
+        std::size_t SlotIndex(std::uint32_t slotId)
+        {
+            return slotId >= kNpcSlotBase ? kReplaySlots + (slotId - kNpcSlotBase) % kNpcReplaySlots
+                                          : slotId % kReplaySlots;
+        }
+        ReplayData g_replayData[kAllSlots];
         std::int64_t ReplayFill(void* self, std::uint32_t, void* out)
         {
             if (!out) return 0;
-            auto& d = g_replayData[static_cast<ReplayObject*>(self)->slot % kReplaySlots];
+            auto& d = g_replayData[static_cast<ReplayObject*>(self)->slot];
             std::lock_guard lock(d.lock);
             if (d.active) {
                 std::memcpy(out, d.controls.data, kControlsSize);
@@ -132,12 +143,12 @@ namespace cosync::plugin::movecontrols
 
         void* g_replayVtbl[] = { reinterpret_cast<void*>(&MirrorDtor), reinterpret_cast<void*>(&ReplayFill),
                                  reinterpret_cast<void*>(&MirrorNoop), reinterpret_cast<void*>(&MirrorNoop) };
-        ReplayObject g_replay[kReplaySlots]{};  // vtables set by InitReplay() (main thread, before first attach)
+        ReplayObject g_replay[kAllSlots]{};  // vtables set by InitReplay() (main thread, before first attach)
         bool g_replayInit = false;
         void InitReplay()
         {
             if (g_replayInit) return;
-            for (std::uint32_t i = 0; i < kReplaySlots; ++i) g_replay[i] = ReplayObject{ g_replayVtbl, i };
+            for (std::uint32_t i = 0; i < kAllSlots; ++i) g_replay[i] = ReplayObject{ g_replayVtbl, i };
             g_replayInit = true;
         }
 
@@ -172,12 +183,87 @@ namespace cosync::plugin::movecontrols
         {
             if (!p) return "-";
             if (p == &g_mirror) return "CoSync-mirror";
-            if (p >= static_cast<void*>(&g_replay[0]) && p < static_cast<void*>(&g_replay[kReplaySlots]))
+            if (p >= static_cast<void*>(&g_replay[0]) && p < static_cast<void*>(&g_replay[kAllSlots]))
                 return std::format("CoSync-replay#{}", static_cast<ReplayObject*>(p)->slot);
             if (p == ManagerPlayerControls()) return "PlayerControls::Manager";
             return std::format("{:#x}", reinterpret_cast<std::uintptr_t>(p));
         }
     }
+
+    namespace
+    {
+        // Held controllers. The hooks run only on state changes, which are rare, and from any
+        // thread, so a short linear scan of atomics is enough.
+        std::array<std::atomic<void*>, kNpcReplaySlots> g_held{};
+        std::array<std::atomic<std::uint64_t>, 16> g_refused{};
+        using StateFn = std::uint64_t (*)(void*, void*, void*);
+        std::array<StateFn, 16> g_stateOriginal{};
+
+        bool IsHeld(void* controller)
+        {
+            for (const auto& h : g_held) {
+                if (h.load(std::memory_order_relaxed) == controller) return true;
+            }
+            return false;
+        }
+
+        template <std::size_t Slot>
+        std::uint64_t StateHook(void* controller, void* a, void* b)
+        {
+            if (IsHeld(controller)) {
+                g_refused[Slot].fetch_add(1, std::memory_order_relaxed);
+                return 0;  // the same result as a failed configuration change (0x2735FB0)
+            }
+            return g_stateOriginal[Slot](controller, a, b);
+        }
+
+        template <std::size_t Slot>
+        void HookStateSlot()
+        {
+            REL::Relocation<std::uintptr_t> vtbl{ REL::ID(kControllerNpcVtableId) };
+            // Original first, then patch: a hook must never run with a null original.
+            g_stateOriginal[Slot] = reinterpret_cast<StateFn>(reinterpret_cast<void* const*>(vtbl.address())[Slot]);
+            vtbl.write_vfunc(Slot, &StateHook<Slot>);
+        }
+    }
+
+    void InstallControllerHold(std::string& detail)
+    {
+        if (g_stateOriginal[kDefaultStateSlot]) {
+            detail = "controller hold already installed";
+            return;
+        }
+        HookStateSlot<7>();
+        HookStateSlot<8>();
+        HookStateSlot<10>();
+        HookStateSlot<11>();
+        HookStateSlot<12>();
+        HookStateSlot<13>();
+        HookStateSlot<14>();
+        detail = "controller hold installed (MovementControllerNPC slots 7, 8, 10-14)";
+    }
+
+    bool SetControllerHeld(std::uint32_t refId, bool held)
+    {
+        auto* form = RE::TESForm::LookupByID(refId);
+        if (!form || !form->Is(RE::FormType::kACHR)) return false;
+        auto* controller = *reinterpret_cast<void**>(reinterpret_cast<std::byte*>(form) + kControllerOffset);
+        if (!controller) return false;
+        for (auto& h : g_held) {
+            if (h.load() == controller) {
+                if (!held) h.store(nullptr);
+                return true;
+            }
+        }
+        if (!held) return true;
+        for (auto& h : g_held) {
+            void* expected = nullptr;
+            if (h.compare_exchange_strong(expected, controller)) return true;
+        }
+        return false;
+    }
+
+    std::uint64_t HoldRefusals(std::size_t slot) { return slot < g_refused.size() ? g_refused[slot].load() : 0; }
 
     bool InstallCapture(std::string& detail)
     {
@@ -240,12 +326,12 @@ namespace cosync::plugin::movecontrols
     bool AttachReplay(std::uint32_t refId, std::uint32_t slotId, std::string& detail)
     {
         InitReplay();
-        return Replace(refId, &g_replay[slotId % kReplaySlots], detail);
+        return Replace(refId, &g_replay[SlotIndex(slotId)], detail);
     }
 
     void SetReplay(std::uint32_t slotId, const Controls& c, bool active)
     {
-        auto& d = g_replayData[slotId % kReplaySlots];
+        auto& d = g_replayData[SlotIndex(slotId)];
         std::lock_guard lock(d.lock);
         d.controls = c;
         d.active = active;
@@ -253,7 +339,7 @@ namespace cosync::plugin::movecontrols
 
     void SetReplayTurn(std::uint32_t slotId, float yawDelta, float heading)
     {
-        auto& d = g_replayData[slotId % kReplaySlots];
+        auto& d = g_replayData[SlotIndex(slotId)];
         std::lock_guard lock(d.lock);
         d.turn = yawDelta;
         d.heading = heading;
@@ -320,7 +406,7 @@ namespace cosync::plugin::movecontrols
 
     void SetReplayMove(std::uint32_t slotId, float angle, float magnitude)
     {
-        auto& d = g_replayData[slotId % kReplaySlots];
+        auto& d = g_replayData[SlotIndex(slotId)];
         std::lock_guard lock(d.lock);
         d.moveSet = true;
         d.moveAngle = angle;
@@ -372,6 +458,48 @@ namespace cosync::plugin::movecontrols
         if (!form || !form->Is(RE::FormType::kACHR)) return -1;
         auto* controller = *reinterpret_cast<std::byte**>(reinterpret_cast<std::byte*>(form) + kControllerOffset);
         return controller ? *reinterpret_cast<std::int32_t*>(controller + kControllerStateOffset) : -1;
+    }
+
+    int ControllerMode(std::uint32_t refId)
+    {
+        auto* form = RE::TESForm::LookupByID(refId);
+        if (!form || !form->Is(RE::FormType::kACHR)) return -1;
+        auto* controller = *reinterpret_cast<std::byte**>(reinterpret_cast<std::byte*>(form) + kControllerOffset);
+        return controller ? *reinterpret_cast<std::uint8_t*>(controller + kControllerModeOffset) : -1;
+    }
+
+    bool LeavePlayerControlsState(std::uint32_t refId, std::string& detail)
+    {
+        std::string why;
+        auto* registry = Registry(refId, why);
+        if (!registry) {
+            detail = why;
+            return false;
+        }
+        auto* form = RE::TESForm::LookupByID(refId);
+        auto* controller = *reinterpret_cast<std::byte**>(reinterpret_cast<std::byte*>(form) + kControllerOffset);
+        const auto vtbl = *reinterpret_cast<std::uintptr_t* const*>(controller);
+        if (reinterpret_cast<std::uintptr_t>(vtbl) != Addr(kControllerNpcVtableId)) {
+            detail = "controller vtable is not MovementControllerNPC's; refused";
+            return false;
+        }
+        const int before = *reinterpret_cast<std::int32_t*>(controller + kControllerStateOffset);
+        SetControllerHeld(refId, false);
+        // The engine's function itself: the vtable slot may be our hook.
+        static REL::Relocation<std::uint64_t (*)(void*)> defaultState{ REL::ID(kDefaultStateId) };
+        defaultState(controller);
+
+        static REL::Relocation<Lookup_t> lookup{ REL::ID(kRegistryLookupId) };
+        static REL::Relocation<Add_t> add{ REL::ID(kRegistryAddId) };
+        static REL::Relocation<Remove_t> remove{ REL::ID(kRegistryRemoveId) };
+        const void* key = Key(kKeyPlayerControls);
+        for (int i = 0; i < 4 && lookup(registry, key); ++i) remove(registry, key);
+        const int mode = *reinterpret_cast<std::uint8_t*>(controller + kControllerModeOffset);
+        void* engine = ManagerPlayerControls();
+        if (mode == 2 && engine) add(registry, key, engine);
+        const int after = *reinterpret_cast<std::int32_t*>(controller + kControllerStateOffset);
+        detail = std::format("state {} -> {}, IMovementPlayerControls -> {}", before, after, Tag(lookup(registry, key)));
+        return after != 1;
     }
 
     bool AttachMirror(std::uint32_t refId, std::string& detail) { return Replace(refId, &g_mirror, detail); }
