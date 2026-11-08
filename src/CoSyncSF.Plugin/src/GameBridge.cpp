@@ -378,6 +378,27 @@ namespace cosync::plugin
                     }
                     return _world.RunStep(std::format("@hostileproxy {:08X}{}", proxy, step.size() > 13 ? step.substr(13) : std::string()));
                 }
+                if (step == "@groupcreate" || step == "@groupinvite" || step == "@groupaccept") {
+                    // Dev: form a group with the other player, as the invite UI would.
+                    auto* worker = _worker.load();
+                    if (!worker) return true;
+                    proto::GroupRequest request;
+                    if (step == "@groupcreate") {
+                        request.action = proto::GroupAction::Create;
+                    } else if (step == "@groupinvite") {
+                        request.action = proto::GroupAction::Invite;
+                        for (const auto& [id, remote] : _remotes) request.target = id;
+                    } else {
+                        request.action = proto::GroupAction::Accept;
+                        const auto self = worker->Status().localPlayer;
+                        for (const auto& group : _groupState.groups) {
+                            if (std::ranges::find(group.invited, self) != group.invited.end()) request.groupId = group.id;
+                        }
+                    }
+                    worker->SubmitGroupRequest(request);
+                    log::Info("[group] {}: target {} group {}", step, request.target, request.groupId);
+                    return true;
+                }
                 if (step == "@keepalive") {
                     _keepAlive = true;
                     log::Info("[status] @keepalive: health restored under 60%");

@@ -1536,6 +1536,16 @@ namespace cosync::plugin::worldsync
             }
             return true;
         }
+        if (step.starts_with("@nudge ")) {
+            // "@nudge <dx> [<dy>]": moves the local player that far, as walking would.
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto at = player->GetPosition();
+            const auto space = step.find(' ', 7);
+            at.x += std::stof(step.substr(7, space - 7));
+            if (space != std::string::npos) at.y += std::stof(step.substr(space + 1));
+            log::Info("[world] {}: {}", step, avatars::PlaceRef(0x14, { at.x, at.y, at.z }, {}) ? "sent" : "refused");
+            return true;
+        }
         if (step.starts_with("@takefrom ")) {
             // "@takefrom <ref>": the player empties that container.
             const auto id = static_cast<std::uint32_t>(std::stoul(step.substr(10), nullptr, 16));
