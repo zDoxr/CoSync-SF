@@ -1549,6 +1549,17 @@ namespace cosync::plugin::worldsync
             }
             return true;
         }
+        if (step.starts_with("@where ")) {
+            // "@where <ref>": where it is, and how far from the local player.
+            const auto id = static_cast<std::uint32_t>(std::stoul(step.substr(7), nullptr, 16));
+            auto* ref = avatars::AsRef(RE::TESForm::LookupByID(id));
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (ref && player) {
+                const auto p = ref->GetPosition(), q = player->GetPosition();
+                log::Info("[world] {}: at {:.1f} {:.1f} {:.1f}, {:.1f} from the player", step, p.x, p.y, p.z, std::hypot(p.x - q.x, p.y - q.y, p.z - q.z));
+            }
+            return true;
+        }
         if (step == "@followers") {
             // Which NPCs near the player are its teammates (companion, crew following it).
             const auto e = npcsync::EnumerateHighActors();
