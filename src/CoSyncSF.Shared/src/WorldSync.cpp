@@ -17,6 +17,7 @@ namespace cosync::world
 
     bool Ledger::Apply(const proto::WorldEvent& event)
     {
+        if (event.kind == WorldEventKind::ItemReturned) return true;
         const auto kind = static_cast<std::uint8_t>(event.kind);
         // A quest keeps every stage it reached; anything else has one current value per item.
         const auto detail = event.kind == WorldEventKind::QuestStage ? static_cast<std::uint32_t>(event.value)
@@ -49,6 +50,14 @@ namespace cosync::world
         out.reserve(entries.size());
         for (const auto* entry : entries) out.push_back(entry->event);
         return out;
+    }
+
+    bool Pickups::Claim(std::uint32_t refId, PlayerId player)
+    {
+        const auto it = _takenBy.find(refId);
+        if (it != _takenBy.end()) return it->second == player;
+        if (_takenBy.size() < kMaxEntries) _takenBy.emplace(refId, player);
+        return true;
     }
 
     void EchoFilter::Expect(const proto::WorldEvent& event, std::uint64_t nowMs)

@@ -241,8 +241,9 @@ namespace cosync::net
                 if (const auto now = std::chrono::steady_clock::now(); now >= nextStats) {
                     nextStats = now + std::chrono::seconds(30);
                     const auto& st = server->Stats();
-                    log::Info("[server] {} players, {} transforms relayed, {} NPC messages refused, {} NPC messages not sent to players elsewhere",
-                              server->ConnectedPlayerCount(), st.transformsRelayed, st.npcMessagesRefused, st.npcMessagesNotRelevant);
+                    log::Info("[server] {} players, {} transforms relayed, {} NPC messages refused, {} NPC messages not sent to players elsewhere, {} dialogue lines, {} pickups given back",
+                              server->ConnectedPlayerCount(), st.transformsRelayed, st.npcMessagesRefused, st.npcMessagesNotRelevant, st.dialogueLinesRelayed,
+                              st.itemsReturned);
                 }
             }
 

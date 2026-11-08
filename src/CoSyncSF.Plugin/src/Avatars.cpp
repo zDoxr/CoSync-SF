@@ -318,6 +318,17 @@ namespace cosync::plugin::avatars
         return Dispatch(ScriptObjectFor(ref), "DisableNoWait", [](RE::BSScrapArray<Variable>& a) { Push(a, false); });
     }
 
+    bool RequestPlayerItemCount(std::uint32_t itemId, std::shared_ptr<std::atomic<std::int32_t>> result)
+    {
+        auto* item = RE::TESForm::LookupByID(itemId);
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!item || !player) return false;
+        return Dispatch(
+            ScriptObjectFor(static_cast<RE::TESObjectREFR*>(player)), "GetItemCount", [item](RE::BSScrapArray<Variable>& a) { Push(a, item); },
+            [result](const Variable& v) { result->store(v.is<std::int32_t>() ? RE::BSScript::get<std::int32_t>(v) : -1); },
+            [result] { result->store(-1); });
+    }
+
     bool RequestHomeShip(std::shared_ptr<std::atomic<std::uint32_t>> result)
     {
         return DispatchStatic(

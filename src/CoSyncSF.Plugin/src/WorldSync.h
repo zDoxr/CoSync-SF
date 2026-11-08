@@ -45,6 +45,7 @@ namespace cosync::plugin::worldsync
             std::uint32_t base = 0;
             std::uint8_t doorStateBefore = 0;  // 0 = not a door
             Clock::time_point until{};
+            Clock::time_point goneAt{};        // seen gone, waiting a moment for the inventory event
         };
         // Read back from the engine after applying, so a log shows what really happened.
         struct Verify
@@ -86,6 +87,20 @@ namespace cosync::plugin::worldsync
         std::uint64_t _clockSteps = 0;
         std::uint64_t _ambientStages = 0;
         std::uint64_t _localContainers = 0;
+        // What the local player picked up from the world, by item, for a short while: a pickup the
+        // server gives to someone else is taken back out again (issue #17).
+        struct Gain
+        {
+            std::int32_t count = 0;
+            Clock::time_point at{};
+        };
+        std::map<std::uint32_t, Gain> _worldGains;
+        std::uint64_t _returned = 0;
+        // '@holdworld <s>': incoming events wait that long, as on a slow link, so two players can
+        // pick up the same thing before either hears of the other (dev test of issue #17).
+        Clock::time_point _holdUntil{};
+        std::uint32_t _lastItemBase = 0;  // what '@item' went for, so '@count' alone counts it
+        std::vector<std::pair<std::uint32_t, std::shared_ptr<std::atomic<std::int32_t>>>> _counts;
         std::set<std::uint32_t> _awaitedContainers;  // applied here: log what the engine reports
         std::map<std::uint32_t, std::int32_t> _knownLocks;  // the event also fires when nothing changed
         // Every change this copy made or applied. Loading a save puts the world back to how the save

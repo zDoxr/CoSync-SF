@@ -628,7 +628,7 @@ TEST(WorldLocks, ProtocolAcceptsOnlyLockedOrUnlocked)
     EXPECT_TRUE(proto::IsValidWorldEvent({ WorldEventKind::LockState, 0x001661A7, 0x55, 1 }));
     EXPECT_FALSE(proto::IsValidWorldEvent({ WorldEventKind::LockState, 0x001661A7, 0x55, 2 }));
     EXPECT_FALSE(proto::IsValidWorldEvent({ WorldEventKind::Destroyed, 0x001661A7, 0x55, -1 }));
-    EXPECT_FALSE(proto::IsValidWorldEvent({ static_cast<WorldEventKind>(7), 0x001661A7, 0x55, 1 }));
+    EXPECT_FALSE(proto::IsValidWorldEvent({ static_cast<WorldEventKind>(8), 0x001661A7, 0x55, 1 }));
 }
 
 TEST(Presence, KnownApartOnlyWhenTheyReallyAre)
@@ -680,4 +680,54 @@ TEST_F(Session, DialogueReachesOnlyPlayersNearby)
     EXPECT_EQ(heard[0].line.text, "Move along.");
     EXPECT_TRUE(away.Got<client_event::DialogueLine>().empty());
     EXPECT_TRUE(talker.Got<client_event::DialogueLine>().empty());
+}
+TEST(WorldPickups, FirstTakerKeepsIt)
+{
+    world::Pickups pickups;
+    EXPECT_TRUE(pickups.Claim(0x1234, 1));
+    EXPECT_TRUE(pickups.Claim(0x1234, 1));   // the same player again
+    EXPECT_FALSE(pickups.Claim(0x1234, 2));  // someone else, later
+    EXPECT_TRUE(pickups.Claim(0x5678, 2));
+}
+
+TEST(WorldProtocol, ItemReturnedNeedsAnItemAndACount)
+{
+    EXPECT_TRUE(proto::IsValidWorldEvent({ WorldEventKind::ItemReturned, 0x1234, 0x55, 3 }));
+    EXPECT_FALSE(proto::IsValidWorldEvent({ WorldEventKind::ItemReturned, 0x1234, 0, 3 }));
+    EXPECT_FALSE(proto::IsValidWorldEvent({ WorldEventKind::ItemReturned, 0x1234, 0x55, 0 }));
+    EXPECT_TRUE(proto::IsValidWorldEvent({ WorldEventKind::RefRemoved, 0x1234, 0x55, 12 }));
+    EXPECT_FALSE(proto::IsValidWorldEvent({ WorldEventKind::RefRemoved, 0x1234, 0x55, -1 }));
+    world::Ledger ledger;
+    EXPECT_TRUE(ledger.Apply({ WorldEventKind::ItemReturned, 0x1234, 0x55, 3 }));
+    EXPECT_EQ(ledger.Size(), 0u);  // an answer, not world state
+}
+
+TEST_F(Session, SecondPlayerToPickUpAnItemGivesItBack)
+{
+    auto& first = Add("First");
+    auto& second = Add("Second");
+    auto& watcher = Add("Watcher");
+    Pump();
+    ASSERT_TRUE(first.session->SendWorldEvents({ { WorldEventKind::RefRemoved, 0x0001A2B3, 0x55, 2 } }));
+    Pump();
+    ASSERT_TRUE(second.session->SendWorldEvents({ { WorldEventKind::RefRemoved, 0x0001A2B3, 0x55, 2 } }));
+    Pump();
+    const auto back = second.Got<client_event::WorldEvents>();
+    std::vector<proto::WorldEvent> returned;
+    for (const auto& m : back) {
+        for (const auto& e : m.world.events) {
+            if (e.kind == WorldEventKind::ItemReturned) returned.push_back(e);
+        }
+    }
+    ASSERT_EQ(returned.size(), 1u);
+    EXPECT_EQ(returned[0].formId, 0x0001A2B3u);
+    EXPECT_EQ(returned[0].itemId, 0x55u);
+    EXPECT_EQ(returned[0].value, 2);
+    std::size_t removals = 0;
+    for (const auto& m : watcher.Got<client_event::WorldEvents>()) {
+        for (const auto& e : m.world.events) removals += e.kind == WorldEventKind::RefRemoved ? 1 : 0;
+        for (const auto& e : m.world.events) EXPECT_NE(e.kind, WorldEventKind::ItemReturned);
+    }
+    EXPECT_EQ(removals, 1u);  // only the first taker's
+    EXPECT_EQ(server->Stats().itemsReturned, 1u);
 }

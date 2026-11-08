@@ -43,6 +43,7 @@ namespace cosync::net
         std::uint64_t worldEventsNotRemembered = 0;  // the ledger was full, late joiners miss these
         std::uint64_t npcMessagesNotRelevant = 0;    // NPC updates not sent to a player who is elsewhere
         std::uint64_t dialogueLinesRelayed = 0;
+        std::uint64_t itemsReturned = 0;             // picked up after someone else had it (issue #17)
     };
 
     struct PlayerInfo
@@ -150,6 +151,7 @@ namespace cosync::net
         PlayerId _npcAuthority = kInvalidPlayerId;
         std::set<std::uint32_t> _deadNpcs;  // replayed to late joiners
         world::Ledger _world;               // likewise
+        world::Pickups _pickups;            // likewise
         std::optional<proto::WorldClock> _worldClock;
         std::vector<TransportEvent> _events;
     };

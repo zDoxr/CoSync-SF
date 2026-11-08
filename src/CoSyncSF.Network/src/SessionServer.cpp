@@ -414,6 +414,20 @@ namespace cosync::net
         };
         if (auto* events = std::get_if<proto::WorldEvents>(&msg)) {
             if (!stamped(*events)) return;
+            std::vector<proto::WorldEvent> returns;
+            std::erase_if(events->events, [&](const proto::WorldEvent& e) {
+                if (e.kind == proto::WorldEventKind::ItemReturned) {
+                    ++_stats.protocolViolations;  // only the server answers with these
+                    return true;
+                }
+                if (e.kind != proto::WorldEventKind::RefRemoved || _pickups.Claim(e.formId, player.id)) return false;
+                // Already gone for everyone else: nothing to tell them, but this player gives it back.
+                if (e.value > 0) returns.push_back({ proto::WorldEventKind::ItemReturned, e.formId, e.itemId, e.value });
+                ++_stats.itemsReturned;
+                return true;
+            });
+            if (!returns.empty()) Send(conn.id, proto::WorldEvents{ kInvalidPlayerId, std::move(returns) });
+            if (events->events.empty()) return;
             for (const auto& e : events->events) {
                 if (!_world.Apply(e)) ++_stats.worldEventsNotRemembered;
             }

@@ -459,6 +459,15 @@ namespace cosync::plugin::worldsync
             // Only what the local player moved. What an apply does on this copy never involves the
             // player, so it cannot come back round.
             const auto other = c.a == kPlayerRef ? c.b : c.b == kPlayerRef ? c.a : 0;
+            if ((c.a == 0 && c.b == kPlayerRef) || (c.a == kPlayerRef && c.b == 0)) {
+                static int logged = 0;
+                if (++logged <= 30) log::Info("[world] engine: player {} item {:08X} x{}", c.a == 0 ? "gained" : "lost", c.c, c.d);
+            }
+            if (c.a == 0 && c.b == kPlayerRef && c.c != 0) {
+                auto& gain = _worldGains[c.c];
+                gain.count = (now - gain.at < 2s ? gain.count : 0) + static_cast<std::int32_t>(c.d);
+                gain.at = now;
+            }
             if (c.a == 0 || c.b == 0) {
                 if (_awaitedContainers.contains(c.a != 0 ? c.a : c.b)) {
                     log::Info("[world] engine: container {:08X} {} item {:08X} x{}", c.a != 0 ? c.a : c.b, c.a != 0 ? "lost" : "gained", c.c, c.d);
@@ -502,7 +511,17 @@ namespace cosync::plugin::worldsync
             auto* ref = form ? form->As<RE::TESObjectREFR>() : nullptr;
             if (!ref || w.doorStateBefore == 0) {
                 if (!ref || IsGone(ref)) {
-                    _outgoing.push_back({ WorldEventKind::RefRemoved, w.ref, w.base, 0 });
+                    // The inventory event can come a frame after the item goes: wait briefly for it.
+                    const auto gain = _worldGains.find(w.base);
+                    const bool gained = gain != _worldGains.end() && now - gain->second.at < 5s;
+                    if (!gained) {
+                        auto& self = const_cast<Watch&>(w);
+                        if (self.goneAt == Clock::time_point{}) self.goneAt = now;
+                        if (now - self.goneAt < 500ms) return false;
+                    }
+                    const auto count = gained ? std::clamp(gain->second.count, 0, 0xFFFF) : 0;
+                    if (gained) _worldGains.erase(gain);
+                    _outgoing.push_back({ WorldEventKind::RefRemoved, w.ref, w.base, count });
                     return true;
                 }
             } else if (const auto state = DoorState(ref); state != w.doorStateBefore && state != 0) {
@@ -577,6 +596,17 @@ namespace cosync::plugin::worldsync
             avatars::SetQuestStage(e.formId, e.value);
             break;
         }
+        case WorldEventKind::ItemReturned: {
+            // Someone else picked this up first: what this player got goes back.
+            avatars::ContainerRemove(kPlayerRef, e.itemId, e.value);
+            auto* item = RE::TESForm::LookupByID(e.itemId);
+            auto* full = item ? starfield_cast<RE::TESFullName*>(item) : nullptr;
+            const char* name = full ? full->GetFullName() : nullptr;
+            avatars::Notify(std::format("Another player took {} first", name && *name ? name : "that"));
+            log::Info("[world] {:08X} was taken by another player first: giving back item {:08X} x{}", e.formId, e.itemId, e.value);
+            ++_returned;
+            return true;
+        }
         case WorldEventKind::ContainerItem: {
             const auto* ref = world::CanShareContainer(e.formId) ? LookupRef(e.formId, 0) : nullptr;
             if (!ref || !IsContainer(ref)) {
@@ -601,7 +631,7 @@ namespace cosync::plugin::worldsync
 
     void Replication::ApplyPending(Clock::time_point now)
     {
-        if (now < _nextRetry) return;
+        if (now < _nextRetry || now < _holdUntil) return;
         std::size_t budget = kMaxPerFrame;
         std::deque<Incoming> later;
         while (!_pending.empty() && budget > 0) {
@@ -648,6 +678,7 @@ namespace cosync::plugin::worldsync
                 break;
             }
             case WorldEventKind::ContainerItem:
+            case WorldEventKind::ItemReturned:
                 break;
             }
             return true;
@@ -714,6 +745,24 @@ namespace cosync::plugin::worldsync
         RunVerifies(now);
         PublishClock(worker, context, now);
         ApplyClock(context, now);
+        std::erase_if(_counts, [](const auto& c) {
+            const auto n = c.second->load();
+            if (n == -2) return false;
+            const auto* form = RE::TESForm::LookupByID(c.first);
+            // The engine's own inventory, read directly, beside what the script call said.
+            std::uint64_t direct = 0, entries = 0;
+            if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+                player->ForEachInventoryItem([&](const RE::BGSInventoryItem& item) {
+                    if (++entries <= 5 && item.object) log::Info("[world]   inventory entry {:08X} stacks {}", item.object->GetFormID(), item.stacks.size());
+                    if (item.object && item.object->GetFormID() == c.first) {
+                        for (const auto& s : item.stacks) direct += s.count;
+                    }
+                    return RE::BSContainer::ForEachResult::kContinue;
+                });
+            }
+            log::Info("[world] the player has {} of item {:08X} ({}); inventory list says {} ({} entries)", n, c.first, form ? RttiName(form) : "?", direct, entries);
+            return true;
+        });
         if (!_outgoing.empty()) {
             for (const auto& e : _outgoing) {
                 log::Info("[world] report kind {} form {:08X} value {}", static_cast<int>(e.kind), e.formId, e.value);
@@ -1134,17 +1183,48 @@ namespace cosync::plugin::worldsync
             const auto* anchor = LookupRef(static_cast<std::uint32_t>(std::stoul(step.substr(6, space - 6), nullptr, 16)), 0);
             if (!anchor || !anchor->parentCell) return true;
             const bool take = step.ends_with("take");
-            auto* found = take ? Nearest([](RE::TESObjectREFR* r) { return IsContainer(r); }, anchor->parentCell) : Nearest(IsLooseItem, anchor->parentCell);
+            // "keep": not food or aid, which taking by script can use up at once (seen 2026-11-07).
+            const bool keep = step.ends_with("keep");
+            auto* found = take ? Nearest([](RE::TESObjectREFR* r) { return IsContainer(r); }, anchor->parentCell)
+                               : Nearest(
+                                     [keep](RE::TESObjectREFR* r) {
+                                         if (!IsLooseItem(r)) return false;
+                                         const auto base = r->GetBaseObject();
+                                         return !keep || (base && !base->Is(RE::FormType::kALCH));
+                                     },
+                                     anchor->parentCell);
             if (!found) {
                 log::Warn("[world] {}: nothing live in that cell", step);
                 return true;
             }
             log::Info("[world] {}: {:08X} base {:08X}", step, found->GetFormID(), BaseId(found));
+            if (!take) _lastItemBase = BaseId(found);
             if (take) {
                 avatars::ContainerTakeAll(found->GetFormID());
             } else {
                 avatars::ActivateAsPlayer(found->GetFormID());
             }
+            return true;
+        }
+        if (step.starts_with("@holdworld ")) {
+            _holdUntil = Clock::now() + std::chrono::milliseconds(static_cast<long long>(std::stof(step.substr(11)) * 1000));
+            log::Info("[world] {}: holding incoming world events", step);
+            return true;
+        }
+        if (step.starts_with("@give ")) {
+            // "@give <item> <count>": the player gets that many, through AddItem.
+            const auto space = step.find(' ', 6);
+            const auto item = static_cast<std::uint32_t>(std::stoul(step.substr(6, space - 6), nullptr, 16));
+            const int count = space == std::string::npos ? 1 : std::stoi(step.substr(space + 1));
+            _lastItemBase = item;
+            log::Info("[world] {}: {}", step, avatars::ContainerAdd(kPlayerRef, item, count) ? "sent" : "refused");
+            return true;
+        }
+        if (step == "@count" || step.starts_with("@count ")) {
+            // "@count [<item>]": logs how many of that item the player has, by default what '@item' took.
+            const auto item = step.size() > 7 ? static_cast<std::uint32_t>(std::stoul(step.substr(7), nullptr, 16)) : _lastItemBase;
+            auto result = std::make_shared<std::atomic<std::int32_t>>(-2);
+            if (avatars::RequestPlayerItemCount(item, result)) _counts.push_back({ item, result });
             return true;
         }
         if (step.starts_with("@time ")) {
@@ -1155,6 +1235,12 @@ namespace cosync::plugin::worldsync
             calendar->gameHour->value = hour;
             log::Info("[world] {}: day {:.4f} hour {:.3f}", step, calendar->gameDaysPassed->value, calendar->gameHour->value);
             return true;
+        }
+        if (step == "@item") {
+            if (auto* item = Nearest(IsLooseItem)) {
+                _lastItemBase = BaseId(item);
+                log::Info("[world] @item: {:08X} base {:08X}", item->GetFormID(), _lastItemBase);
+            }
         }
         if (step == "@door") {
             ref = Nearest([](RE::TESObjectREFR* r) {

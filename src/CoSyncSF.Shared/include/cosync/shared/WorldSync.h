@@ -15,6 +15,7 @@ namespace cosync::world
     //   DoorOpen, RefRemoved: the newest report wins.
     //   QuestStage:           one entry per stage, stages are only ever added.
     //   ContainerItem:        counts add up, and an entry that reaches zero goes away.
+    //   ItemReturned:         an answer to one player, not world state: never kept.
     class Ledger
     {
     public:
@@ -61,6 +62,22 @@ namespace cosync::world
     // A container event names only the container and the item, and runtime FF references are numbered
     // per copy, so the same number can be a different object elsewhere. Those stay local until the
     // event can prove what it refers to.
+    // Things taken from the world, by who took them first (issue #17). Two players picking up the same
+    // item at once would each get it. The first report wins, and a later one from someone else is
+    // answered with what to give back.
+    class Pickups
+    {
+    public:
+        static constexpr std::size_t kMaxEntries = 16384;
+
+        // True when this player may keep what they took: they were first, or it was not a pickup.
+        [[nodiscard]] bool Claim(std::uint32_t refId, PlayerId player);
+        [[nodiscard]] std::size_t Size() const noexcept { return _takenBy.size(); }
+
+    private:
+        std::map<std::uint32_t, PlayerId> _takenBy;
+    };
+
     [[nodiscard]] constexpr bool CanShareContainer(std::uint32_t formId) noexcept
     {
         return formId != 0 && !proto::IsRuntimeFormId(formId);

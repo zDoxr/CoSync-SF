@@ -225,6 +225,8 @@ namespace cosync::plugin::avatars
     bool KillActor(std::uint32_t actorId);
     // Debug.Notification: a line at the top left of the HUD.
     bool Notify(const std::string& text);
+    // ObjectReference.GetItemCount on the player, -1 into `result` when the call fails. Main thread.
+    bool RequestPlayerItemCount(std::uint32_t itemId, std::shared_ptr<std::atomic<std::int32_t>> result);
     bool SetLocked(std::uint32_t refId, bool locked);
     bool DamageObject(std::uint32_t refId, float amount);
     bool SetDestroyed(std::uint32_t refId, bool destroyed);
