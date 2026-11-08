@@ -424,7 +424,7 @@ All on 1.16.244, decompiled with IDA 9.3, and exercised in two running copies on
 | `Game.SetInChargen(disableSaving, disableWaiting, showMessage)` | Native `0x20149C0` (ID 117497) | Sets bits 0, 1, 2 of the byte at `PlayerCharacter+0xF64` | VERIFIED (disassembly, pex signature) |
 | Save gate | ID 98657, `0x1846EF0`, `bool (manager, flag)` | Refuses if bit 0 of `+0xF64` is set, or the player is in a death state, among other tests. CommonLibSF calls this `IsLoadingAllowed`, which is misleading. More than 20 callers, including the function that uses the `Autosave` string (`0x183C590`) | VERIFIED-RT (answered "refused" with the bit set) |
 | Save manager | ID 883588, global `0x5E6D6E8` | First argument to the gate | VERIFIED-RT |
-| Moving the player | `Actor::SetPosition`, vtable slot 0x137, `PlayerCharacter` `0x193B410` | Moves the player with no loading screen, 500 m and across cell borders on generated terrain. Papyrus `SetPosition` and `MoveTo` always open `LoadingMenu` for the player | VERIFIED-RT |
+| Moving the player | `Actor::SetPosition`, vtable slot 0x137, `PlayerCharacter` `0x193B410` | Moves the player with no loading screen, across cell borders on generated terrain. Exact at 190 m. A 500 m move into cells not yet loaded ended about 283 m along. Papyrus `SetPosition` and `MoveTo` always open `LoadingMenu` for the player | VERIFIED-RT |
 
 ### 12.9 Not yet investigated
 
