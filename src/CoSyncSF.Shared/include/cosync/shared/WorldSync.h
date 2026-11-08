@@ -26,6 +26,8 @@ namespace cosync::world
         [[nodiscard]] std::vector<proto::WorldEvent> Snapshot() const;
         [[nodiscard]] std::size_t Size() const noexcept { return _entries.size(); }
         void Clear() noexcept { _entries.clear(); }
+        // The total change counted so far for that item in that container, 0 if none.
+        [[nodiscard]] std::int32_t ContainerTotal(std::uint32_t container, std::uint32_t item) const;
 
     private:
         using Key = std::tuple<std::uint8_t, std::uint32_t, std::uint32_t>;
@@ -37,6 +39,10 @@ namespace cosync::world
         std::map<Key, Entry> _entries;
         std::uint64_t _nextOrder = 0;
     };
+
+    // A history entry for a container is the session's total. After resuming a dropped connection
+    // this copy has applied part of it already, and applying the whole would hand out items twice.
+    [[nodiscard]] std::int32_t MissingContainerChange(const Ledger& known, const proto::WorldEvent& history);
 
     // An event applied from the network makes the engine report the same change. Those reports must
     // not be sent back, or two copies would keep telling each other the same thing.

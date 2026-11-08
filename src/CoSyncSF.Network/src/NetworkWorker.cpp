@@ -301,12 +301,16 @@ namespace cosync::net
                 std::deque<proto::DroppedItem> drops;
                 {
                     std::scoped_lock lock(_localMutex);
-                    const auto n = static_cast<std::ptrdiff_t>(std::min(_worldEventsOut.size(), proto::kMaxWorldEvents));
-                    worldEvents.assign(_worldEventsOut.begin(), _worldEventsOut.begin() + n);
-                    _worldEventsOut.erase(_worldEventsOut.begin(), _worldEventsOut.begin() + n);
+                    // World changes and drops wait while the connection is being resumed (issue #14):
+                    // sent then, they would be lost, and the others would never hear of them.
+                    if (client.State() == ClientState::InSession) {
+                        const auto n = static_cast<std::ptrdiff_t>(std::min(_worldEventsOut.size(), proto::kMaxWorldEvents));
+                        worldEvents.assign(_worldEventsOut.begin(), _worldEventsOut.begin() + n);
+                        _worldEventsOut.erase(_worldEventsOut.begin(), _worldEventsOut.begin() + n);
+                        drops.swap(_dropsOut);
+                    }
                     worldClock.swap(_worldClockOut);
                     dialogue.swap(_dialogueOut);
-                    drops.swap(_dropsOut);
                 }
                 for (const auto& drop : drops) client.SendDroppedItem(drop);
                 for (const auto& line : dialogue) client.SendDialogueLine(line);
@@ -335,6 +339,7 @@ namespace cosync::net
                 }
             }
 
+            if (const auto loss = _simulatedLossMs.exchange(0); loss != 0) client.SimulateConnectionLoss(loss);
             events.clear();
             client.Update(events);
             for (auto& ev : events) {

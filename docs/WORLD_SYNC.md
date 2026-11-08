@@ -25,6 +25,7 @@ Status words, used strictly:
 | Locks | **Two copies** | `001661A7` unlocked then locked on copy 1, copy 2 read back engine state 0 then 1 |
 | Destroyed objects | Implemented | Apply and read-back written. The engine event is not yet identified, and no breakable object was found in the test save |
 | Runtime (FF) containers | Unit tested | Deliberately not shared, see below |
+| Dropped connection and resume (#14) | **Two copies** | Copy 2 dropped its connection for 20 s (`@netdrop 20`) and resumed as the same player. Copy 1 unlocked `001661A7` meanwhile, and copy 2 read it back as unlocked 3 s after resuming. The 111 container changes copy 2 already had came back with the history and were all skipped as applied: 111 applies, not 222 |
 | Dropped items (#6) | **Two copies** | Copy 1 dropped `00066800` x2 as `FF018507`, named shared `01000001`. Copy 2 placed its own `FF017E0A` at the same position (-783.6, 1637.2, -160.4) 0.08 s later. Copy 2 picked it up, and copy 1 removed its drop, read back as gone |
 | Two players taking the same item (#17) | **Two copies** | Copy 2 held incoming events (`@holdworld`) so both took `00066808` before hearing of the other. Copy 1 was first, and the server answered copy 2 with "give back `00066800` x1". Copy 2's engine then reported "player lost `00066800` x1", and its count went from 1 to 0 |
 
@@ -63,6 +64,7 @@ Crowd sync, measured in the same runs and over 16 minutes: seated on both copies
 - **A quest a guest starts stays on the guest's copy.** Each copy also picks some quests at random (`00193266`, `00193269`, `0019326B`, stage 5, in one test). If all of those spread, a long session would pile them up, so only the authority starts quests elsewhere. This also holds back a quest a guest really did pick up. The history a late joiner receives has no sender and counts as the authority's.
 - **Quest rewards can pay out on every copy.** A stage's script fragments run on each copy that applies it. Not tested.
 - **Tested with two copies on one PC only.** Not across machines, not with real latency, and only in the `CoSyncTest` New Atlantis save.
+- **Resuming a dropped connection.** The server sends the whole history again, as to a late joiner. Container entries are session totals, so a resumed copy applies only what its own record does not have yet (`world::MissingContainerChange`). Changes this copy makes while the connection is down wait in the queue and go out once it is back, instead of being lost. A copy that is disconnected for good starts again from nothing, and joining the same session again then would apply container totals a second time.
 - **After a load, container counts stay as the save has them.** Other changes are applied again, but a count added to a save made after the change would hand out items twice.
 - **Not covered by a test:** reconnection, three or more players, simultaneous actions.
 

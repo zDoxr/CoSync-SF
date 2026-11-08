@@ -105,6 +105,9 @@ namespace cosync::net
                            const std::optional<proto::ShipState>& ship = std::nullopt);
 
         [[nodiscard]] ClientState State() const noexcept { return _state; }
+        // Test hook: the next Update drops the connection as a network failure would, and the
+        // first resume attempt waits `offlineMs`.
+        void SimulateConnectionLoss(std::uint32_t offlineMs) noexcept { _simulatedLossMs = offlineMs; }
         [[nodiscard]] PlayerId LocalPlayerId() const noexcept { return _playerId; }
         [[nodiscard]] SessionId CurrentSessionId() const noexcept { return _sessionId; }
         [[nodiscard]] const std::map<PlayerId, std::string>& Roster() const noexcept { return _roster; }
@@ -132,6 +135,7 @@ namespace cosync::net
         std::uint64_t _nextHeartbeat = 0;
         std::uint64_t _nextReconnect = 0;
         std::uint32_t _reconnectAttempts = 0;
+        std::optional<std::uint32_t> _simulatedLossMs;
         bool _reportConnecting = false;
 
         PlayerId _playerId = kInvalidPlayerId;

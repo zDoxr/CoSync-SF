@@ -40,6 +40,19 @@ namespace cosync::world
         return true;
     }
 
+    std::int32_t Ledger::ContainerTotal(std::uint32_t container, std::uint32_t item) const
+    {
+        const auto it = _entries.find({ static_cast<std::uint8_t>(WorldEventKind::ContainerItem), container, item });
+        return it == _entries.end() ? 0 : it->second.event.value;
+    }
+
+    // What of a history total this copy still has to apply: all of it on a fresh join, only what it
+    // missed after resuming a dropped connection.
+    std::int32_t MissingContainerChange(const Ledger& known, const proto::WorldEvent& history)
+    {
+        return history.value - known.ContainerTotal(history.formId, history.itemId);
+    }
+
     std::vector<proto::WorldEvent> Ledger::Snapshot() const
     {
         std::vector<const Entry*> entries;

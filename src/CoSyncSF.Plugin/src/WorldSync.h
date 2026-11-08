@@ -35,6 +35,7 @@ namespace cosync::plugin::worldsync
 
         // '@door' and '@item': the local player activates the nearest one (DevHarness).
         bool RunStep(const std::string& step);
+        void SetWorker(net::NetworkWorker* worker) noexcept { _worker = worker; }
 
     private:
         using Clock = std::chrono::steady_clock;
@@ -75,6 +76,7 @@ namespace cosync::plugin::worldsync
         [[nodiscard]] bool Apply(const proto::WorldEvent& event, bool mayStart, Clock::time_point now);
 
         PlayerId _authority = kInvalidPlayerId;
+        net::NetworkWorker* _worker = nullptr;  // for '@netdrop'
         bool _sinkInstalled = false;
         world::EchoFilter _echo;
         std::vector<Watch> _watches;

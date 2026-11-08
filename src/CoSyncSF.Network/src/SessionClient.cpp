@@ -102,6 +102,14 @@ namespace cosync::net
             }
         }
 
+        if (_simulatedLossMs && _state == ClientState::InSession) {
+            const auto offline = *_simulatedLossMs;
+            _simulatedLossMs.reset();
+            CloseConnection(CloseCode::TimedOut, "test: connection dropped", false);
+            ConnectionLost("test: connection dropped", events);
+            if (_state == ClientState::Reconnecting) _nextReconnect = _clock() + offline;
+        }
+
         const auto now = _clock();
         switch (_state) {
         case ClientState::Connecting:

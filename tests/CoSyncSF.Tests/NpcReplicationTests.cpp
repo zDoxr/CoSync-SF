@@ -790,3 +790,14 @@ TEST_F(Session, DropUnderSomeoneElsesIdIsRefused)
     EXPECT_TRUE(other.Got<client_event::DroppedItem>().empty());
     EXPECT_EQ(server->Stats().protocolViolations, 1u);
 }
+
+TEST(WorldLedger, ResumedCopyAppliesOnlyTheContainerChangesItMissed)
+{
+    world::Ledger seen;  // what this copy applied before the connection dropped
+    ASSERT_TRUE(seen.Apply({ WorldEventKind::ContainerItem, 0x0022ED8A, 0x55, -3 }));
+    const proto::WorldEvent history{ WorldEventKind::ContainerItem, 0x0022ED8A, 0x55, -5 };  // the session's total
+    EXPECT_EQ(world::MissingContainerChange(seen, history), -2);
+    EXPECT_EQ(world::MissingContainerChange(world::Ledger{}, history), -5);  // a fresh join takes all of it
+    ASSERT_TRUE(seen.Apply({ WorldEventKind::ContainerItem, 0x0022ED8A, 0x55, -2 }));
+    EXPECT_EQ(world::MissingContainerChange(seen, history), 0);
+}

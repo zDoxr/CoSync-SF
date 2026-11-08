@@ -102,6 +102,8 @@ namespace cosync::net
         void SubmitWorldClock(const proto::WorldClock& clock);
         void SubmitDialogueLine(const proto::DialogueLine& line);  // bounded, oldest dropped
         void SubmitDroppedItem(const proto::DroppedItem& drop);    // bounded, oldest dropped
+        // Dev test: the client drops its connection and stays offline that long before resuming.
+        void SimulateConnectionLoss(std::uint32_t offlineMs) noexcept { _simulatedLossMs.store(offlineMs); }
         [[nodiscard]] std::vector<proto::NpcStates> TakeNpcStates();
         // Host only: removes a player from the session (no resume). Ignored in client mode.
         void SubmitKick(PlayerId player);
@@ -148,6 +150,7 @@ namespace cosync::net
         std::atomic<bool> _stopRequested{ false };
         std::atomic<bool> _running{ false };
         std::atomic<bool> _overflow{ false };
+        std::atomic<std::uint32_t> _simulatedLossMs{ 0 };
 
         BoundedQueue<ClientEvent> _events;
         BoundedQueue<RemoteSample> _remoteTransforms;

@@ -443,7 +443,20 @@ namespace cosync::plugin::worldsync
                 continue;
             }
             // History from the server has no sender and is treated as the authority's.
-            const bool mayStart = events.playerId == _authority || events.playerId == kInvalidPlayerId;
+            const bool history = events.playerId == kInvalidPlayerId;
+            const bool mayStart = events.playerId == _authority || history;
+            if (history && e.kind == WorldEventKind::ContainerItem) {
+                const auto missing = world::MissingContainerChange(_seen, e);
+                if (missing != e.value) {
+                    log::Info("[world] history: container {:08X} item {:08X} total {:+}, {:+} already applied here, applying {:+}", e.formId, e.itemId, e.value,
+                              e.value - missing, missing);
+                }
+                if (missing == 0) continue;
+                auto part = e;
+                part.value = missing;
+                _pending.push_back({ part, mayStart });
+                continue;
+            }
             _pending.push_back({ e, mayStart });
         }
     }
@@ -872,6 +885,7 @@ namespace cosync::plugin::worldsync
 
     void Replication::Tick(net::NetworkWorker& worker, const Context& context)
     {
+        _worker = &worker;
         if (!_sinkInstalled) {
             _sinkInstalled = true;
             RE::Activation::Event::GetEventSource()->RegisterSink(&g_sink);
@@ -1377,6 +1391,13 @@ namespace cosync::plugin::worldsync
             } else {
                 avatars::ActivateAsPlayer(found->GetFormID());
             }
+            return true;
+        }
+        if (step.starts_with("@netdrop ")) {
+            // "@netdrop <s>": the connection drops as on a network failure, and resumes after that long.
+            const auto ms = static_cast<std::uint32_t>(std::stof(step.substr(9)) * 1000);
+            if (_worker) _worker->SimulateConnectionLoss(ms);
+            log::Info("[world] {}: {}", step, _worker ? "dropping the connection" : "no network");
             return true;
         }
         if (step.starts_with("@holdworld ")) {
