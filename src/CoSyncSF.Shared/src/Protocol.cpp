@@ -270,6 +270,16 @@ namespace cosync::proto
             w.U32(m.weather);
         }
 
+        void Encode(ByteWriter& w, const DroppedItem& m)
+        {
+            w.U32(m.playerId);
+            w.U32(m.sharedId);
+            w.U32(m.baseId);
+            w.U32(static_cast<std::uint32_t>(m.count));
+            w.U32(m.locationId);
+            WriteVec3(w, m.position);
+        }
+
         void Encode(ByteWriter& w, const DialogueLine& m)
         {
             w.U32(m.playerId);
@@ -577,6 +587,17 @@ namespace cosync::proto
                 }
                 return m;
             }
+            case MessageType::DroppedItem: {
+                DroppedItem m;
+                m.playerId = r.U32();
+                m.sharedId = r.U32();
+                m.baseId = r.U32();
+                m.count = static_cast<std::int32_t>(r.U32());
+                m.locationId = r.U32();
+                m.position = ReadVec3(r);
+                if (r.Ok() && !IsValidDroppedItem(m)) r.Fail();
+                return m;
+            }
             case MessageType::DialogueLine: {
                 DialogueLine m;
                 m.playerId = r.U32();
@@ -639,7 +660,7 @@ namespace cosync::proto
         bool IsKnownType(std::uint16_t t)
         {
             return t >= static_cast<std::uint16_t>(MessageType::Hello) &&
-                   t <= static_cast<std::uint16_t>(MessageType::DialogueLine);
+                   t <= static_cast<std::uint16_t>(MessageType::DroppedItem);
         }
 
         bool IsFiniteBounded(const Vec3& v, float bound)
@@ -680,6 +701,7 @@ namespace cosync::proto
                 else if constexpr (std::is_same_v<T, WorldEvents>) return MessageType::WorldEvents;
                 else if constexpr (std::is_same_v<T, WorldClock>) return MessageType::WorldClock;
                 else if constexpr (std::is_same_v<T, DialogueLine>) return MessageType::DialogueLine;
+                else if constexpr (std::is_same_v<T, DroppedItem>) return MessageType::DroppedItem;
                 else static_assert(kAlwaysFalse<T>, "unhandled message type");
             },
             message);
@@ -783,6 +805,12 @@ namespace cosync::proto
         return name.front() != ' ' && name.back() != ' ';
     }
 
+    bool IsValidDroppedItem(const DroppedItem& d) noexcept
+    {
+        return d.baseId != 0 && !IsRuntimeFormId(d.baseId) && d.count > 0 && d.count <= 0xFFFF && (d.sharedId & 0xFFFFFFu) != 0 &&
+               SharedIdOwner(d.sharedId) != kInvalidPlayerId && IsFiniteBounded(d.position, kMaxCoordinate);
+    }
+
     bool IsValidWorldEvent(const WorldEvent& e) noexcept
     {
         if (e.formId == 0) return false;
@@ -792,6 +820,7 @@ namespace cosync::proto
         case WorldEventKind::Destroyed: return e.value == 0 || e.value == 1;
         case WorldEventKind::RefRemoved: return e.value >= 0 && e.value <= 0xFFFF;
         case WorldEventKind::ItemReturned: return e.itemId != 0 && e.value > 0 && e.value <= 0xFFFF;
+        case WorldEventKind::SharedRemoved: return e.itemId != 0 && e.value >= 0 && e.value <= 0xFFFF;
         case WorldEventKind::QuestStage: return e.value >= 0 && e.value <= 0xFFFF;
         case WorldEventKind::ContainerItem: return e.itemId != 0 && e.value != 0;
         }
@@ -851,6 +880,7 @@ namespace cosync::proto
         case MessageType::WorldEvents: return "WorldEvents";
         case MessageType::WorldClock: return "WorldClock";
         case MessageType::DialogueLine: return "DialogueLine";
+        case MessageType::DroppedItem: return "DroppedItem";
         }
         return "Unknown";
     }

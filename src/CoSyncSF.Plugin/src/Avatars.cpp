@@ -318,6 +318,42 @@ namespace cosync::plugin::avatars
         return Dispatch(ScriptObjectFor(ref), "DisableNoWait", [](RE::BSScrapArray<Variable>& a) { Push(a, false); });
     }
 
+    bool AddToPlayer(std::uint32_t itemId, int count, std::shared_ptr<std::atomic<std::uint32_t>> done)
+    {
+        auto* item = RE::TESForm::LookupByID(itemId);
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!item || !player) return false;
+        return Dispatch(
+            ScriptObjectFor(static_cast<RE::TESObjectREFR*>(player)), "AddItem",
+            [item, count](RE::BSScrapArray<Variable>& a) {
+                Push(a, item);
+                Push(a, count);
+                Push(a, true);  // abSilent
+            },
+            [done](const Variable&) { done->store(1); }, [done] { done->store(1); });
+    }
+
+    bool RequestDropFromPlayer(std::uint32_t itemId, int count, std::shared_ptr<std::atomic<std::uint32_t>> dropped)
+    {
+        auto* item = RE::TESForm::LookupByID(itemId);
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!item || !player) return false;
+        return Dispatch(
+            ScriptObjectFor(static_cast<RE::TESObjectREFR*>(player)), "DropObject",
+            [item, count](RE::BSScrapArray<Variable>& a) {
+                Push(a, item);
+                Push(a, count);
+            },
+            [dropped](const Variable& v) {
+                std::uint32_t id = 1;
+                if (v.is<RE::BSScript::Object>() && RE::BSScript::get<RE::BSScript::Object>(v)) {
+                    if (auto* ref = RE::BSScript::UnpackVariable<RE::TESObjectREFR>(v)) id = ref->GetFormID();
+                }
+                dropped->store(id);
+            },
+            [dropped] { dropped->store(1); });
+    }
+
     bool RequestPlayerItemCount(std::uint32_t itemId, std::shared_ptr<std::atomic<std::int32_t>> result)
     {
         auto* item = RE::TESForm::LookupByID(itemId);

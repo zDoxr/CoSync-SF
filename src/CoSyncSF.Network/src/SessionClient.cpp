@@ -252,6 +252,8 @@ namespace cosync::net
                     if (m.playerId == _npcAuthority) events.emplace_back(client_event::WorldClock{ m });
                 } else if constexpr (std::is_same_v<T, proto::DialogueLine>) {
                     events.emplace_back(client_event::DialogueLine{ m });
+                } else if constexpr (std::is_same_v<T, proto::DroppedItem>) {
+                    events.emplace_back(client_event::DroppedItem{ m });
                 } else if constexpr (std::is_same_v<T, proto::NpcOutfits>) {
                     if (m.playerId == _npcAuthority) events.emplace_back(client_event::NpcOutfits{ m });
                 } else if constexpr (std::is_same_v<T, proto::Disconnect>) {
@@ -337,6 +339,13 @@ namespace cosync::net
     {
         if (_state != ClientState::InSession || events.empty()) return false;
         Send(proto::WorldEvents{ kInvalidPlayerId, std::move(events) }, Delivery::Reliable);
+        return true;
+    }
+
+    bool SessionClient::SendDroppedItem(const proto::DroppedItem& drop)
+    {
+        if (_state != ClientState::InSession) return false;
+        Send(drop, Delivery::Reliable);
         return true;
     }
 

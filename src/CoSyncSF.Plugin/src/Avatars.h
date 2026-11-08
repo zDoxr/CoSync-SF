@@ -227,6 +227,10 @@ namespace cosync::plugin::avatars
     bool Notify(const std::string& text);
     // ObjectReference.GetItemCount on the player, -1 into `result` when the call fails. Main thread.
     bool RequestPlayerItemCount(std::uint32_t itemId, std::shared_ptr<std::atomic<std::int32_t>> result);
+    // ObjectReference.AddItem / DropObject on the player. `done` becomes 1 when AddItem returned;
+    // `dropped` becomes the dropped reference's form ID, or 1 when the call failed. Main thread.
+    bool AddToPlayer(std::uint32_t itemId, int count, std::shared_ptr<std::atomic<std::uint32_t>> done);
+    bool RequestDropFromPlayer(std::uint32_t itemId, int count, std::shared_ptr<std::atomic<std::uint32_t>> dropped);
     bool SetLocked(std::uint32_t refId, bool locked);
     bool DamageObject(std::uint32_t refId, float amount);
     bool SetDestroyed(std::uint32_t refId, bool destroyed);

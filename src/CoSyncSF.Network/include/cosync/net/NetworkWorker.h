@@ -101,6 +101,7 @@ namespace cosync::net
         void SubmitWorldEvents(const std::vector<proto::WorldEvent>& events);
         void SubmitWorldClock(const proto::WorldClock& clock);
         void SubmitDialogueLine(const proto::DialogueLine& line);  // bounded, oldest dropped
+        void SubmitDroppedItem(const proto::DroppedItem& drop);    // bounded, oldest dropped
         [[nodiscard]] std::vector<proto::NpcStates> TakeNpcStates();
         // Host only: removes a player from the session (no resume). Ignored in client mode.
         void SubmitKick(PlayerId player);
@@ -138,6 +139,7 @@ namespace cosync::net
         std::vector<proto::WorldEvent> _worldEventsOut;                    // guarded by _localMutex
         std::optional<proto::WorldClock> _worldClockOut;                   // guarded by _localMutex
         std::deque<proto::DialogueLine> _dialogueOut;                      // guarded by _localMutex
+        std::deque<proto::DroppedItem> _dropsOut;                          // guarded by _localMutex
         std::vector<proto::GroupRequest> _groupOut;                     // guarded by _localMutex
         void Run(std::promise<std::string>& ready);
 

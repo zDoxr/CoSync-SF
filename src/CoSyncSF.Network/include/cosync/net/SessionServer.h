@@ -44,6 +44,7 @@ namespace cosync::net
         std::uint64_t npcMessagesNotRelevant = 0;    // NPC updates not sent to a player who is elsewhere
         std::uint64_t dialogueLinesRelayed = 0;
         std::uint64_t itemsReturned = 0;             // picked up after someone else had it (issue #17)
+        std::uint64_t dropsRelayed = 0;
     };
 
     struct PlayerInfo
@@ -134,6 +135,7 @@ namespace cosync::net
         void OnNpcMessage(Connection& conn, Player& player, proto::Message& msg);
         void OnWorldMessage(Connection& conn, Player& player, proto::Message& msg);
         void OnDialogue(Connection& conn, Player& player, proto::DialogueLine line);
+        void OnDroppedItem(Connection& conn, Player& player, proto::DroppedItem drop);
         [[nodiscard]] Player* FindByToken(const ResumeToken& token);
         [[nodiscard]] bool NameTaken(std::string_view name) const;
         [[nodiscard]] ResumeToken NewToken();
@@ -152,6 +154,7 @@ namespace cosync::net
         std::set<std::uint32_t> _deadNpcs;  // replayed to late joiners
         world::Ledger _world;               // likewise
         world::Pickups _pickups;            // likewise
+        std::map<std::uint32_t, proto::DroppedItem> _drops;  // by shared ID, until picked up
         std::optional<proto::WorldClock> _worldClock;
         std::vector<TransportEvent> _events;
     };

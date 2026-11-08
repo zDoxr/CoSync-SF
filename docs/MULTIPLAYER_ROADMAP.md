@@ -21,6 +21,8 @@ Every copy runs the full game from the same save, and CoSync keeps those copies 
 | Doors, world pickups, data-file containers, clock, weather | Two copies | New, 2026-11-07 |
 | Quest stages and quest start | Two copies | New. Quests a guest starts stay local |
 | Locks | Two copies | New |
+| Dropped items appear for others, and go when picked up | Two copies | New, protocol 1.16 |
+| Two players picking up one item: the first keeps it | Two copies | New, protocol 1.15 |
 | Shared changes survive loading a save | Two copies | New. Container counts excluded |
 | Ship position in space reaches other players | Two copies | New. Showing it as a stand-in is blocked, see [SHIP_SYNC.md](SHIP_SYNC.md) |
 | Presence: NPC updates only to players who can see them | Two copies | New. `cosync/shared/Presence.h` |

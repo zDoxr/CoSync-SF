@@ -71,11 +71,12 @@ namespace cosync::world
         static constexpr std::size_t kMaxEntries = 16384;
 
         // True when this player may keep what they took: they were first, or it was not a pickup.
-        [[nodiscard]] bool Claim(std::uint32_t refId, PlayerId player);
+        // `key` tells the kind of reference apart: a data-file reference or a shared drop ID.
+        [[nodiscard]] bool Claim(std::uint64_t key, PlayerId player);
         [[nodiscard]] std::size_t Size() const noexcept { return _takenBy.size(); }
 
     private:
-        std::map<std::uint32_t, PlayerId> _takenBy;
+        std::map<std::uint64_t, PlayerId> _takenBy;
     };
 
     [[nodiscard]] constexpr bool CanShareContainer(std::uint32_t formId) noexcept

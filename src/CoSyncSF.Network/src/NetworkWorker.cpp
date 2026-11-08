@@ -117,6 +117,13 @@ namespace cosync::net
         }
     }
 
+    void NetworkWorker::SubmitDroppedItem(const proto::DroppedItem& drop)
+    {
+        std::scoped_lock lock(_localMutex);
+        if (_dropsOut.size() >= 64) _dropsOut.pop_front();
+        _dropsOut.push_back(drop);
+    }
+
     void NetworkWorker::SubmitDialogueLine(const proto::DialogueLine& line)
     {
         std::scoped_lock lock(_localMutex);
@@ -241,9 +248,9 @@ namespace cosync::net
                 if (const auto now = std::chrono::steady_clock::now(); now >= nextStats) {
                     nextStats = now + std::chrono::seconds(30);
                     const auto& st = server->Stats();
-                    log::Info("[server] {} players, {} transforms relayed, {} NPC messages refused, {} NPC messages not sent to players elsewhere, {} dialogue lines, {} pickups given back",
+                    log::Info("[server] {} players, {} transforms relayed, {} NPC messages refused, {} NPC messages not sent to players elsewhere, {} dialogue lines, {} pickups given back, {} drops",
                               server->ConnectedPlayerCount(), st.transformsRelayed, st.npcMessagesRefused, st.npcMessagesNotRelevant, st.dialogueLinesRelayed,
-                              st.itemsReturned);
+                              st.itemsReturned, st.dropsRelayed);
                 }
             }
 
@@ -291,6 +298,7 @@ namespace cosync::net
                 std::vector<proto::WorldEvent> worldEvents;
                 std::optional<proto::WorldClock> worldClock;
                 std::deque<proto::DialogueLine> dialogue;
+                std::deque<proto::DroppedItem> drops;
                 {
                     std::scoped_lock lock(_localMutex);
                     const auto n = static_cast<std::ptrdiff_t>(std::min(_worldEventsOut.size(), proto::kMaxWorldEvents));
@@ -298,7 +306,9 @@ namespace cosync::net
                     _worldEventsOut.erase(_worldEventsOut.begin(), _worldEventsOut.begin() + n);
                     worldClock.swap(_worldClockOut);
                     dialogue.swap(_dialogueOut);
+                    drops.swap(_dropsOut);
                 }
+                for (const auto& drop : drops) client.SendDroppedItem(drop);
                 for (const auto& line : dialogue) client.SendDialogueLine(line);
                 client.SendWorldEvents(std::move(worldEvents));
                 if (worldClock) client.SendWorldClock(*worldClock);

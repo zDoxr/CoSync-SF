@@ -55,10 +55,16 @@ namespace cosync::plugin::worldsync
         {
             std::uint32_t a, b, c, d;
         };
+        // TESContainerChangedEvent (ID 64118): from, to, item, count, then the reference that was moved
+        // when there is one, such as the one a drop made.
+        struct ContainerEvent
+        {
+            std::uint32_t a, b, c, d, ref;
+        };
 
         std::mutex g_activationLock;
         std::vector<std::uint32_t> g_activations;
-        std::vector<RawEvent> g_containerChanges;
+        std::vector<ContainerEvent> g_containerChanges;
         std::vector<RawEvent> g_questStages;
         std::vector<std::uint32_t> g_lockChanges;
 
@@ -78,10 +84,10 @@ namespace cosync::plugin::worldsync
         };
         ActivationSink g_sink;
 
-        class ContainerSink final : public RE::BSTEventSink<RawEvent>
+        class ContainerSink final : public RE::BSTEventSink<ContainerEvent>
         {
         public:
-            RE::BSEventNotifyControl ProcessEvent(const RawEvent& event, RE::BSTEventSource<RawEvent>*) override
+            RE::BSEventNotifyControl ProcessEvent(const ContainerEvent& event, RE::BSTEventSource<ContainerEvent>*) override
             {
                 std::scoped_lock lock(g_activationLock);
                 if (g_containerChanges.size() < 1024) g_containerChanges.push_back(event);
@@ -396,6 +402,10 @@ namespace cosync::plugin::worldsync
         _clock.reset();
         _seen.Clear();
         _knownLocks.clear();
+        _drops.clear();
+        _dropOfRef.clear();
+        _dropsSeen.clear();
+        _placing.clear();
         _everReady = false;
         _wasReady = false;
     }
@@ -406,6 +416,16 @@ namespace cosync::plugin::worldsync
         // already holds it, so applying them again could hand out items twice. Those stay as loaded.
         std::size_t queued = 0;
         _knownLocks.clear();
+        // Drops: a reference the load took away is placed again.
+        for (auto& [sharedId, d] : _drops) {
+            auto* form = d.local != 0 ? RE::TESForm::LookupByID(d.local) : nullptr;
+            auto* ref = form ? form->As<RE::TESObjectREFR>() : nullptr;
+            if (d.local != 0 && (!ref || IsGone(ref) || BaseId(ref) != d.item.baseId)) {
+                _dropOfRef.erase(d.local);
+                d.local = 0;
+                d.started = {};
+            }
+        }
         for (const auto& e : _seen.Snapshot()) {
             if (e.kind == WorldEventKind::ContainerItem) continue;
             _pending.push_back({ e, true });  // it was applied here before, so it may start a quest again
@@ -430,10 +450,112 @@ namespace cosync::plugin::worldsync
 
     void Replication::OnClock(const proto::WorldClock& clock) { _clock = clock; }
 
+    void Replication::OnDrop(const proto::DroppedItem& drop)
+    {
+        if (_drops.size() >= 4096 && !_drops.contains(drop.sharedId)) return;
+        auto& d = _drops[drop.sharedId];
+        d.item = drop;
+    }
+
+    void Replication::ForgetDrop(std::uint32_t sharedId)
+    {
+        const auto it = _drops.find(sharedId);
+        if (it == _drops.end()) return;
+        if (it->second.local != 0) _dropOfRef.erase(it->second.local);
+        _drops.erase(it);
+    }
+
+    // The player lost an item and a reference of it appeared next to them: a drop. Anything else
+    // (eaten, sold, given) leaves no reference, and is forgotten after 2 s.
+    void Replication::DetectDrops(net::NetworkWorker& worker, const Context& context, Clock::time_point now)
+    {
+        if (_dropsSeen.empty()) return;
+        if (context.localPlayer == kInvalidPlayerId) {
+            _dropsSeen.clear();
+            return;
+        }
+        // The inventory event names the reference a drop made (+16, seen 2026-11-07 with DropObject's
+        // FF0285E2). Its 3D can come a frame later, so a reference not yet there is tried again briefly.
+        std::erase_if(_dropsSeen, [&](const DropSeen& seen) {
+            auto* form = RE::TESForm::LookupByID(seen.ref);
+            auto* ref = form ? form->As<RE::TESObjectREFR>() : nullptr;
+            if (!ref || BaseId(ref) != seen.base || IsGone(ref)) {
+                if (now - seen.at < 2s) return false;
+                log::Info("[world] drop of {:08X} as {:08X}: no such reference in the world", seen.base, seen.ref);
+                return true;
+            }
+            if (_dropOfRef.contains(seen.ref)) return true;
+            const auto p = ref->GetPosition();
+            const proto::DroppedItem drop{ kInvalidPlayerId, proto::MakeSharedId(context.localPlayer, ++_dropSequence), seen.base,
+                                           std::clamp(seen.count, 1, 0xFFFF), context.locationId, { p.x, p.y, p.z } };
+            _drops[drop.sharedId] = { drop, seen.ref, {}, {}, now };
+            _dropOfRef[seen.ref] = drop.sharedId;
+            worker.SubmitDroppedItem(drop);
+            ++_dropsSent;
+            log::Info("[world] dropped {:08X} x{} as {:08X}, shared {:08X} at {:.1f} {:.1f} {:.1f}", seen.base, seen.count, seen.ref, drop.sharedId, p.x, p.y, p.z);
+            return true;
+        });
+    }
+
+    // Another player's drop, placed where they left it: the item is added to the player and dropped,
+    // which makes the reference, then moved there. Only in the same location.
+    void Replication::PlaceDrops(const Context& context, Clock::time_point now)
+    {
+        std::erase_if(_placing, [now](const Placing& p) { return now >= p.until; });
+        std::size_t inFlight = 0;
+        for (auto& [sharedId, d] : _drops) {
+            if (d.local != 0) continue;
+            if (d.dropped) {
+                const auto id = d.dropped->load();
+                if (id == 0) {
+                    if (now - d.started < 10s) {
+                        ++inFlight;
+                        continue;
+                    }
+                    log::Info("[world] drop {:08X}: no reference after 10 s", sharedId);
+                } else if (id != 1) {
+                    d.local = id;
+                    _dropOfRef[id] = sharedId;
+                    _lastPlacedDrop = id;
+                    avatars::PlaceRef(id, d.item.position, {});
+                    if (++_dropsPlaced <= 50) {
+                        log::Info("[world] placed drop {:08X} ({:08X} x{} from player {}) as {:08X} at {:.1f} {:.1f} {:.1f}", sharedId, d.item.baseId, d.item.count,
+                                  d.item.playerId, id, d.item.position.x, d.item.position.y, d.item.position.z);
+                    }
+                } else {
+                    log::Info("[world] drop {:08X}: DropObject failed", sharedId);
+                }
+                d.added.reset();
+                d.dropped.reset();
+                continue;
+            }
+            if (d.added) {
+                if (d.added->load() == 0 && now - d.started < 10s) {
+                    ++inFlight;
+                    continue;
+                }
+                d.dropped = std::make_shared<std::atomic<std::uint32_t>>(0);
+                if (!avatars::RequestDropFromPlayer(d.item.baseId, d.item.count, d.dropped)) d.dropped->store(1);
+                ++inFlight;
+                continue;
+            }
+            if (inFlight >= 2 || d.item.locationId != context.locationId || now - d.started < 5s) continue;
+            d.started = now;
+            d.added = std::make_shared<std::atomic<std::uint32_t>>(0);
+            _placing.push_back({ d.item.baseId, d.item.count, d.item.count, now + 15s });
+            if (!avatars::AddToPlayer(d.item.baseId, d.item.count, d.added)) {
+                d.added.reset();
+                continue;
+            }
+            ++inFlight;
+        }
+    }
+
     void Replication::DrainActivations(Clock::time_point now)
     {
         std::vector<std::uint32_t> ids, locks;
-        std::vector<RawEvent> changes, stages;
+        std::vector<ContainerEvent> changes;
+        std::vector<RawEvent> stages;
         {
             std::scoped_lock lock(g_activationLock);
             ids.swap(g_activations);
@@ -462,6 +584,15 @@ namespace cosync::plugin::worldsync
             if ((c.a == 0 && c.b == kPlayerRef) || (c.a == kPlayerRef && c.b == 0)) {
                 static int logged = 0;
                 if (++logged <= 30) log::Info("[world] engine: player {} item {:08X} x{}", c.a == 0 ? "gained" : "lost", c.c, c.d);
+                const bool gained = c.a == 0;
+                const auto placing = std::ranges::find_if(_placing, [&](const Placing& p) {
+                    return p.base == c.c && now < p.until && (gained ? p.gains : p.losses) > 0;
+                });
+                if (placing != _placing.end()) {
+                    (gained ? placing->gains : placing->losses) -= static_cast<std::int32_t>(c.d);
+                    continue;
+                }
+                if (!gained && c.c != 0 && proto::IsRuntimeFormId(c.ref)) _dropsSeen.push_back({ c.c, static_cast<std::int32_t>(c.d), c.ref, now });
             }
             if (c.a == 0 && c.b == kPlayerRef && c.c != 0) {
                 auto& gain = _worldGains[c.c];
@@ -521,6 +652,13 @@ namespace cosync::plugin::worldsync
                     }
                     const auto count = gained ? std::clamp(gain->second.count, 0, 0xFFFF) : 0;
                     if (gained) _worldGains.erase(gain);
+                    if (const auto shared = _dropOfRef.find(w.ref); shared != _dropOfRef.end()) {
+                        const auto sharedId = shared->second;
+                        _outgoing.push_back({ WorldEventKind::SharedRemoved, sharedId, w.base, count });
+                        log::Info("[world] picked up drop {:08X} (here {:08X})", sharedId, w.ref);
+                        ForgetDrop(sharedId);
+                        return true;
+                    }
                     _outgoing.push_back({ WorldEventKind::RefRemoved, w.ref, w.base, count });
                     return true;
                 }
@@ -595,6 +733,18 @@ namespace cosync::plugin::worldsync
             _echo.Expect(e, NowMs());
             avatars::SetQuestStage(e.formId, e.value);
             break;
+        }
+        case WorldEventKind::SharedRemoved: {
+            const auto it = _drops.find(e.formId);
+            if (it == _drops.end()) return true;
+            if (it->second.local != 0) {
+                avatars::DisableNoWait(it->second.local);
+                _verifies.push_back({ { WorldEventKind::RefRemoved, it->second.local, it->second.item.baseId, 0 }, now + kVerifyAfter });
+            }
+            log::Info("[world] drop {:08X} was picked up by another player: removed {:08X} here", e.formId, it->second.local);
+            ForgetDrop(e.formId);
+            ++_applied;
+            return true;
         }
         case WorldEventKind::ItemReturned: {
             // Someone else picked this up first: what this player got goes back.
@@ -679,6 +829,7 @@ namespace cosync::plugin::worldsync
             }
             case WorldEventKind::ContainerItem:
             case WorldEventKind::ItemReturned:
+            case WorldEventKind::SharedRemoved:
                 break;
             }
             return true;
@@ -724,7 +875,7 @@ namespace cosync::plugin::worldsync
         if (!_sinkInstalled) {
             _sinkInstalled = true;
             RE::Activation::Event::GetEventSource()->RegisterSink(&g_sink);
-            RawSource(kContainerChangedId)->RegisterSink(&g_containerSink);
+            reinterpret_cast<RE::BSTEventSource<ContainerEvent>*>(RawSource(kContainerChangedId))->RegisterSink(&g_containerSink);
             RawSource(kQuestStageId)->RegisterSink(&g_questSink);
             reinterpret_cast<RE::BSTEventSource<RefEvent>*>(RawSource(kLockChangedId))->RegisterSink(&g_lockSink);
             log::Info("[world] watching what the local player activates");
@@ -740,11 +891,33 @@ namespace cosync::plugin::worldsync
         }
         const auto now = Clock::now();
         DrainActivations(now);
+        DetectDrops(worker, context, now);
+        PlaceDrops(context, now);
         UpdateWatches(worker, now);
         ApplyPending(now);
         RunVerifies(now);
         PublishClock(worker, context, now);
         ApplyClock(context, now);
+        if (_dropProbe && _dropProbe->load() != 0) {
+            const auto id = _dropProbe->load();
+            _dropProbe.reset();
+            auto* form = id > 1 ? RE::TESForm::LookupByID(id) : nullptr;
+            auto* ref = form ? form->As<RE::TESObjectREFR>() : nullptr;
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (ref) {
+                const auto p = ref->GetPosition();
+                const auto q = player->GetPosition();
+                bool inCell = false;
+                if (ref->parentCell) {
+                    for (auto* r : CellRefs(ref->parentCell)) inCell |= r == ref;
+                }
+                log::Info("[world] DropObject gave {:08X} base {:08X} cell {:08X} (player's {:08X}), listed in its cell {}, {:.0f} units from the player", id, BaseId(ref),
+                          ref->parentCell ? ref->parentCell->GetFormID() : 0, player->parentCell ? player->parentCell->GetFormID() : 0, inCell,
+                          std::sqrt((p.x - q.x) * (p.x - q.x) + (p.y - q.y) * (p.y - q.y) + (p.z - q.z) * (p.z - q.z)));
+            } else {
+                log::Info("[world] DropObject gave {:08X}, not a reference", id);
+            }
+        }
         std::erase_if(_counts, [](const auto& c) {
             const auto n = c.second->load();
             if (n == -2) return false;
@@ -1209,6 +1382,22 @@ namespace cosync::plugin::worldsync
         if (step.starts_with("@holdworld ")) {
             _holdUntil = Clock::now() + std::chrono::milliseconds(static_cast<long long>(std::stof(step.substr(11)) * 1000));
             log::Info("[world] {}: holding incoming world events", step);
+            return true;
+        }
+        if (step.starts_with("@drop ")) {
+            // "@drop <item> <count>": the player drops that many, through DropObject.
+            const auto space = step.find(' ', 6);
+            const auto item = static_cast<std::uint32_t>(std::stoul(step.substr(6, space - 6), nullptr, 16));
+            const int count = space == std::string::npos ? 1 : std::stoi(step.substr(space + 1));
+            auto result = std::make_shared<std::atomic<std::uint32_t>>(0);
+            log::Info("[world] {}: {}", step, avatars::RequestDropFromPlayer(item, count, result) ? "sent" : "refused");
+            _dropProbe = result;
+            return true;
+        }
+        if (step == "@takedrop") {
+            // The last drop placed here from another player, taken by the local player.
+            log::Info("[world] @takedrop: {:08X}", _lastPlacedDrop);
+            if (_lastPlacedDrop != 0) avatars::ActivateAsPlayer(_lastPlacedDrop);
             return true;
         }
         if (step.starts_with("@give ")) {

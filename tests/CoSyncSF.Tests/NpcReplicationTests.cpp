@@ -628,7 +628,7 @@ TEST(WorldLocks, ProtocolAcceptsOnlyLockedOrUnlocked)
     EXPECT_TRUE(proto::IsValidWorldEvent({ WorldEventKind::LockState, 0x001661A7, 0x55, 1 }));
     EXPECT_FALSE(proto::IsValidWorldEvent({ WorldEventKind::LockState, 0x001661A7, 0x55, 2 }));
     EXPECT_FALSE(proto::IsValidWorldEvent({ WorldEventKind::Destroyed, 0x001661A7, 0x55, -1 }));
-    EXPECT_FALSE(proto::IsValidWorldEvent({ static_cast<WorldEventKind>(8), 0x001661A7, 0x55, 1 }));
+    EXPECT_FALSE(proto::IsValidWorldEvent({ static_cast<WorldEventKind>(200), 0x001661A7, 0x55, 1 }));
 }
 
 TEST(Presence, KnownApartOnlyWhenTheyReallyAre)
@@ -730,4 +730,63 @@ TEST_F(Session, SecondPlayerToPickUpAnItemGivesItBack)
     }
     EXPECT_EQ(removals, 1u);  // only the first taker's
     EXPECT_EQ(server->Stats().itemsReturned, 1u);
+}
+
+TEST(WorldProtocol, DroppedItemRoundTripAndValidation)
+{
+    const proto::DroppedItem drop{ 2, proto::MakeSharedId(2, 7), 0x00066800, 3, 0x00005678, { 1.5f, -2.0f, 30.0f } };
+    EXPECT_EQ(proto::SharedIdOwner(drop.sharedId), 2u);
+    const auto decoded = proto::Decode(proto::Encode(drop));
+    ASSERT_TRUE(decoded.Ok());
+    const auto& d = std::get<proto::DroppedItem>(*decoded.message);
+    EXPECT_EQ(d.sharedId, drop.sharedId);
+    EXPECT_EQ(d.baseId, 0x00066800u);
+    EXPECT_EQ(d.count, 3);
+    EXPECT_EQ(d.locationId, 0x00005678u);
+    EXPECT_FLOAT_EQ(d.position.y, -2.0f);
+    auto bad = drop;
+    bad.baseId = 0xFF001234;  // runtime forms mean nothing on another copy
+    EXPECT_FALSE(proto::IsValidDroppedItem(bad));
+    bad = drop;
+    bad.count = 0;
+    EXPECT_FALSE(proto::IsValidDroppedItem(bad));
+    bad = drop;
+    bad.sharedId = proto::MakeSharedId(2, 0);
+    EXPECT_FALSE(proto::IsValidDroppedItem(bad));
+    EXPECT_TRUE(proto::IsValidWorldEvent({ WorldEventKind::SharedRemoved, drop.sharedId, 0x00066800, 3 }));
+}
+
+TEST_F(Session, DropReachesOthersAndLateJoinersUntilPickedUp)
+{
+    auto& dropper = Add("Dropper");
+    auto& other = Add("Other");
+    Pump();
+    const auto id = proto::MakeSharedId(dropper.session->LocalPlayerId(), 1);
+    ASSERT_TRUE(dropper.session->SendDroppedItem({ 0, id, 0x00066800, 2, 0x00005678, { 1, 2, 3 } }));
+    Pump();
+    const auto got = other.Got<client_event::DroppedItem>();
+    ASSERT_EQ(got.size(), 1u);
+    EXPECT_EQ(got[0].drop.playerId, dropper.session->LocalPlayerId());
+    auto& late = Add("Late");
+    Pump();
+    EXPECT_EQ(late.Got<client_event::DroppedItem>().size(), 1u);
+    // Picked up, then nobody joining later sees it.
+    ASSERT_TRUE(other.session->SendWorldEvents({ { WorldEventKind::SharedRemoved, id, 0x00066800, 2 } }));
+    Pump();
+    auto& later = Add("Later");
+    Pump();
+    EXPECT_TRUE(later.Got<client_event::DroppedItem>().empty());
+    EXPECT_EQ(server->Stats().dropsRelayed, 1u);
+}
+
+TEST_F(Session, DropUnderSomeoneElsesIdIsRefused)
+{
+    auto& dropper = Add("Dropper");
+    auto& other = Add("Other");
+    Pump();
+    const auto foreign = proto::MakeSharedId(other.session->LocalPlayerId(), 1);
+    ASSERT_TRUE(dropper.session->SendDroppedItem({ 0, foreign, 0x00066800, 1, 0x00005678, { 1, 2, 3 } }));
+    Pump();
+    EXPECT_TRUE(other.Got<client_event::DroppedItem>().empty());
+    EXPECT_EQ(server->Stats().protocolViolations, 1u);
 }

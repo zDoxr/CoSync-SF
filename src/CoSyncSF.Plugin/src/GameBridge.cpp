@@ -414,6 +414,8 @@ namespace cosync::plugin
                         if (_worldSyncEnabled) _world.OnClock(e.clock);
                     } else if constexpr (std::is_same_v<T, ce::DialogueLine>) {
                         _dialogue.OnLine(e.line);
+                    } else if constexpr (std::is_same_v<T, ce::DroppedItem>) {
+                        if (_worldSyncEnabled) _world.OnDrop(e.drop);
                     } else if constexpr (std::is_same_v<T, ce::NpcDeath>) {
                         if (_npcSyncEnabled) _npcs.OnDeath(e.death.npcFormId);
                     } else if constexpr (std::is_same_v<T, ce::NpcDamage>) {

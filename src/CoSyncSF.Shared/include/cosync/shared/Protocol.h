@@ -22,7 +22,7 @@ namespace cosync::proto
 {
     inline constexpr std::uint32_t kMagic = 0x46535343;  // "CSSF" as little-endian bytes
     inline constexpr std::uint16_t kProtocolMajor = 1;   // incompatible changes
-    inline constexpr std::uint16_t kProtocolMinor = 15;   // backward-compatible additions
+    inline constexpr std::uint16_t kProtocolMinor = 16;   // backward-compatible additions
                                                          // 1.1: optional PlayerTransform::controls
                                                          // 1.2: tagged trailing sections, PlayerTransform::events
                                                          // 1.3: PlayerTransform::weapon
@@ -67,6 +67,7 @@ namespace cosync::proto
         WorldEvents = 20,       // C->S->others, reliable; replayed to late joiners (1.10)
         WorldClock = 21,        // authority->S->others, reliable (1.10)
         DialogueLine = 22,      // C->S->players nearby, reliable (1.14)
+        DroppedItem = 23,       // C->S->others, reliable (1.16)
     };
 
     enum class RejectReason : std::uint16_t
@@ -373,6 +374,9 @@ namespace cosync::proto
         // S->one player only (1.15): another player took that reference first, so give back what was
         // picked up. formId the reference, itemId the item, value the count. Never remembered or relayed.
         ItemReturned = 7,
+        // A dropped item (1.16) was picked up: formId its shared ID (see DroppedItem), itemId its
+        // base, value how many the player got.
+        SharedRemoved = 8,
     };
     struct WorldEvent
     {
@@ -436,10 +440,29 @@ namespace cosync::proto
         bool isPlayer = false;  // the sending player's own line, not the NPC's
     };
 
+    // An item a player dropped (1.16, issue #6). The dropped reference is numbered per copy, so the
+    // dropping player names it with a shared ID: their player ID in the top byte, a counter below.
+    // Every other copy places the same item there, and SharedRemoved takes it away again.
+    struct DroppedItem
+    {
+        PlayerId playerId = kInvalidPlayerId;
+        std::uint32_t sharedId = 0;
+        std::uint32_t baseId = 0;
+        std::int32_t count = 0;
+        std::uint32_t locationId = 0;  // as in PlayerTransform: the drop is placed only there
+        Vec3 position{};
+    };
+    [[nodiscard]] constexpr std::uint32_t MakeSharedId(PlayerId player, std::uint32_t sequence) noexcept
+    {
+        return (static_cast<std::uint32_t>(player) << 24) | (sequence & 0xFFFFFFu);
+    }
+    [[nodiscard]] constexpr PlayerId SharedIdOwner(std::uint32_t sharedId) noexcept { return static_cast<PlayerId>(sharedId >> 24); }
+    [[nodiscard]] bool IsValidDroppedItem(const DroppedItem& d) noexcept;
+
     using Message = std::variant<Hello, Welcome, Reject, SessionSnapshot, PlayerJoined, PlayerLeft,
                                  Heartbeat, HeartbeatAck, Disconnect, PlayerTransform, NpcCombat, GroupRequest,
                                  GroupState, NpcAuthority, NpcStates, NpcDeath, NpcDamage, NpcEvents, NpcOutfits,
-                                 WorldEvents, WorldClock, DialogueLine>;
+                                 WorldEvents, WorldClock, DialogueLine, DroppedItem>;
 
     enum class DecodeError
     {

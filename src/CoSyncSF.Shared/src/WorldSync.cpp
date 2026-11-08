@@ -52,11 +52,11 @@ namespace cosync::world
         return out;
     }
 
-    bool Pickups::Claim(std::uint32_t refId, PlayerId player)
+    bool Pickups::Claim(std::uint64_t key, PlayerId player)
     {
-        const auto it = _takenBy.find(refId);
+        const auto it = _takenBy.find(key);
         if (it != _takenBy.end()) return it->second == player;
-        if (_takenBy.size() < kMaxEntries) _takenBy.emplace(refId, player);
+        if (_takenBy.size() < kMaxEntries) _takenBy.emplace(key, player);
         return true;
     }
 

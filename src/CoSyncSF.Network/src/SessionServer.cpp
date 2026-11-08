@@ -281,6 +281,9 @@ namespace cosync::net
         case proto::MessageType::DialogueLine:
             OnDialogue(conn, player, std::get<proto::DialogueLine>(std::move(msg)));
             break;
+        case proto::MessageType::DroppedItem:
+            OnDroppedItem(conn, player, std::get<proto::DroppedItem>(std::move(msg)));
+            break;
         case proto::MessageType::Disconnect:
             log::Info("player {} '{}' left", player.id, player.name);
             DropConnection(id, CloseCode::Normal, "client quit", proto::LeaveReason::Quit);
@@ -397,6 +400,7 @@ namespace cosync::net
             const auto end = std::min(at + proto::kMaxWorldEvents, history.size());
             Send(conn.id, proto::WorldEvents{ kInvalidPlayerId, { history.begin() + static_cast<std::ptrdiff_t>(at), history.begin() + static_cast<std::ptrdiff_t>(end) } });
         }
+        for (const auto& [id, drop] : _drops) Send(conn.id, drop);
         if (_worldClock) Send(conn.id, *_worldClock);
     }
 
@@ -420,7 +424,12 @@ namespace cosync::net
                     ++_stats.protocolViolations;  // only the server answers with these
                     return true;
                 }
-                if (e.kind != proto::WorldEventKind::RefRemoved || _pickups.Claim(e.formId, player.id)) return false;
+                const bool shared = e.kind == proto::WorldEventKind::SharedRemoved;
+                if (shared) _drops.erase(e.formId);
+                if ((e.kind != proto::WorldEventKind::RefRemoved && !shared) ||
+                    _pickups.Claim((static_cast<std::uint64_t>(e.kind) << 32) | e.formId, player.id)) {
+                    return false;
+                }
                 // Already gone for everyone else: nothing to tell them, but this player gives it back.
                 if (e.value > 0) returns.push_back({ proto::WorldEventKind::ItemReturned, e.formId, e.itemId, e.value });
                 ++_stats.itemsReturned;
@@ -442,6 +451,20 @@ namespace cosync::net
             _worldClock = *clock;
             Broadcast(*clock, player.id);
         }
+    }
+
+    void SessionServer::OnDroppedItem(Connection& conn, Player& player, proto::DroppedItem drop)
+    {
+        if ((drop.playerId != kInvalidPlayerId && drop.playerId != player.id) || proto::SharedIdOwner(drop.sharedId) != player.id) {
+            ++_stats.protocolViolations;
+            DropConnection(conn.id, CloseCode::ProtocolViolation, "drop for another player", proto::LeaveReason::ProtocolViolation);
+            return;
+        }
+        drop.playerId = player.id;
+        // Kept for players who join later, like the rest of the world, until someone picks it up.
+        if (_drops.size() < 4096 || _drops.contains(drop.sharedId)) _drops[drop.sharedId] = drop;
+        Broadcast(drop, player.id);
+        ++_stats.dropsRelayed;
     }
 
     void SessionServer::OnDialogue(Connection& conn, Player& player, proto::DialogueLine line)
