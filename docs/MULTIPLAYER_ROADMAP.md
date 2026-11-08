@@ -24,6 +24,7 @@ Every copy runs the full game from the same save, and CoSync keeps those copies 
 | Dropped items appear for others, and go when picked up | Two copies | New, protocol 1.16 |
 | A dead player's stand-in dies, and comes back with them | Two copies | New. Copy 2 sent 0% health: copy 1's proxy read back dead 3 s later, alive 3 s after health returned. Tested with `@fakehealth`, not a real death |
 | Dropped connection resumes without duplicating items | Two copies | New |
+| Name over a group member's head, group panel with health | Two copies | Seen on screen 2026-11-08: "Player2 4 m" over the stand-in. It never showed before the actor lookup fix |
 | Two players picking up one item: the first keeps it | Two copies | New, protocol 1.15 |
 | Two players emptying one container: what was already gone goes back | Two copies | New, protocol 1.17 |
 | Looting a runtime NPC reaches its pair on the other copies | Two copies | New, protocol 1.16 |
