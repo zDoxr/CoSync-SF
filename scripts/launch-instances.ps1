@@ -50,6 +50,7 @@ param(
     [switch]$AvatarNoMove,           # experiment: do not SetPosition/SetAngle stand-ins
     [switch]$NpcSync,                # experimental: replicate NPCs from the first copy to the others
     [switch]$WorldSync,              # experimental: doors, things taken from the world, clock, weather
+    [switch]$PlayerHits,             # experimental: hits on a stand-in on the authority's copy reach that player
     [int]$SelfTest = 0,              # dev: seconds in the world before the unattended menu test (0 = off)
     [string]$AutoLoad = '',          # dev: save every copy loads from the main menu, unattended
     [switch]$EventCensus,            # dev: log which global event sources fire, and their payloads
@@ -230,6 +231,7 @@ function Write-InstanceConfig([int]$n) {
         "AvatarMoveMode=$AvatarMoveMode"
         "NpcSync=$(if ($NpcSync) { 1 } else { 0 })"
         "WorldSync=$(if ($WorldSync) { 1 } else { 0 })"
+        "PlayerHits=$(if ($PlayerHits) { 1 } else { 0 })"
         "AvatarAnimDiag=$(if ($AvatarAnimDiagLevel -gt 0) { $AvatarAnimDiagLevel } elseif ($AvatarAnimDiag) { 1 } else { 0 })"
         "AvatarAnimate=$(if ($AvatarAnimate) { 1 } else { 0 })"
         "AvatarMove=$(if ($AvatarNoMove) { 0 } else { 1 })"

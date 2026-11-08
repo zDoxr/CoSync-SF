@@ -124,6 +124,18 @@ namespace cosync::net
         _dropsOut.push_back(drop);
     }
 
+    void NetworkWorker::SubmitPlayerHit(PlayerId target, float percent)
+    {
+        std::scoped_lock lock(_localMutex);
+        if (_playerHitsOut.size() < 64) _playerHitsOut.push_back({ kInvalidPlayerId, target, percent });
+    }
+
+    void NetworkWorker::SubmitPlayerOutfit(std::vector<std::uint32_t> items)
+    {
+        std::scoped_lock lock(_localMutex);
+        _outfitOut = proto::PlayerOutfit{ kInvalidPlayerId, std::move(items) };
+    }
+
     void NetworkWorker::SubmitDialogueLine(const proto::DialogueLine& line)
     {
         std::scoped_lock lock(_localMutex);
@@ -299,6 +311,8 @@ namespace cosync::net
                 std::optional<proto::WorldClock> worldClock;
                 std::deque<proto::DialogueLine> dialogue;
                 std::deque<proto::DroppedItem> drops;
+                std::optional<proto::PlayerOutfit> outfit;
+                std::vector<proto::PlayerHit> playerHits;
                 {
                     std::scoped_lock lock(_localMutex);
                     // World changes and drops wait while the connection is being resumed (issue #14):
@@ -313,11 +327,15 @@ namespace cosync::net
                         worldEvents.assign(_worldEventsOut.begin(), _worldEventsOut.begin() + n);
                         _worldEventsOut.erase(_worldEventsOut.begin(), _worldEventsOut.begin() + n);
                         drops.swap(_dropsOut);
+                        outfit.swap(_outfitOut);
+                        playerHits.swap(_playerHitsOut);
                     }
                     worldClock.swap(_worldClockOut);
                     dialogue.swap(_dialogueOut);
                 }
                 for (const auto& drop : drops) client.SendDroppedItem(drop);
+                if (outfit) client.SendPlayerOutfit(*outfit);
+                for (const auto& hit : playerHits) client.SendPlayerHit(hit);
                 for (const auto& line : dialogue) client.SendDialogueLine(line);
                 client.SendWorldEvents(std::move(worldEvents));
                 if (worldClock) client.SendWorldClock(*worldClock);

@@ -22,7 +22,7 @@ namespace cosync::proto
 {
     inline constexpr std::uint32_t kMagic = 0x46535343;  // "CSSF" as little-endian bytes
     inline constexpr std::uint16_t kProtocolMajor = 1;   // incompatible changes
-    inline constexpr std::uint16_t kProtocolMinor = 17;   // backward-compatible additions
+    inline constexpr std::uint16_t kProtocolMinor = 18;   // backward-compatible additions
                                                          // 1.1: optional PlayerTransform::controls
                                                          // 1.2: tagged trailing sections, PlayerTransform::events
                                                          // 1.3: PlayerTransform::weapon
@@ -68,6 +68,8 @@ namespace cosync::proto
         WorldClock = 21,        // authority->S->others, reliable (1.10)
         DialogueLine = 22,      // C->S->players nearby, reliable (1.14)
         DroppedItem = 23,       // C->S->others, reliable (1.16)
+        PlayerOutfit = 24,      // C->S->others, reliable; newest replayed to late joiners (1.18)
+        PlayerHit = 25,         // authority->S->one player, reliable (1.18)
     };
 
     enum class RejectReason : std::uint16_t
@@ -466,10 +468,31 @@ namespace cosync::proto
     [[nodiscard]] constexpr PlayerId SharedIdOwner(std::uint32_t sharedId) noexcept { return static_cast<PlayerId>(sharedId >> 24); }
     [[nodiscard]] bool IsValidDroppedItem(const DroppedItem& d) noexcept;
 
+    // What a player wears (1.18): every armor and piece of apparel, sorted. The whole list each time it
+    // changes, so a receiver corrects any difference. The server keeps the newest for late joiners.
+    inline constexpr std::size_t kMaxPlayerOutfitItems = 32;
+    struct PlayerOutfit
+    {
+        PlayerId playerId = kInvalidPlayerId;
+        std::vector<std::uint32_t> items;
+    };
+    [[nodiscard]] bool IsValidPlayerOutfit(const PlayerOutfit& o) noexcept;
+
+    // A hit the NPC authority's engine landed on a player's stand-in (1.18). The stand-in takes it there
+    // and that player's own engine applies it, so a shot counts once wherever it was simulated. As a share
+    // of maximum health, because players can differ in maximum health. Clients send playerId = 0.
+    struct PlayerHit
+    {
+        PlayerId playerId = kInvalidPlayerId;  // the reporter, stamped by the server
+        PlayerId target = kInvalidPlayerId;
+        float percent = 0.0f;  // of maximum health, 0..100
+    };
+    [[nodiscard]] bool IsValidPlayerHit(const PlayerHit& h) noexcept;
+
     using Message = std::variant<Hello, Welcome, Reject, SessionSnapshot, PlayerJoined, PlayerLeft,
                                  Heartbeat, HeartbeatAck, Disconnect, PlayerTransform, NpcCombat, GroupRequest,
                                  GroupState, NpcAuthority, NpcStates, NpcDeath, NpcDamage, NpcEvents, NpcOutfits,
-                                 WorldEvents, WorldClock, DialogueLine, DroppedItem>;
+                                 WorldEvents, WorldClock, DialogueLine, DroppedItem, PlayerOutfit, PlayerHit>;
 
     enum class DecodeError
     {

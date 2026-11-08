@@ -250,6 +250,8 @@ SFSE_PLUGIN_LOAD(const SFSE::LoadInterface* a_sfse)
     plugin::GameBridge::Get().EnableAvatars(haveAddressLibrary && g_config.remoteAvatars);
     plugin::GameBridge::Get().EnableNpcSync(haveAddressLibrary && g_config.npcSync);
     plugin::GameBridge::Get().EnableWorldSync(haveAddressLibrary && g_config.worldSync);
+    plugin::GameBridge::Get().EnablePlayerHits(haveAddressLibrary && g_config.playerHits);
+    plugin::GameBridge::Get().EnablePlayerRespawn(haveAddressLibrary && g_config.playerRespawn);
     if (haveAddressLibrary) plugin::selftest::Configure(g_config.selfTest);
     if (haveAddressLibrary) {
         plugin::dev::Options dev;

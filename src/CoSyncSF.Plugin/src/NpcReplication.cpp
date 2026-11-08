@@ -248,6 +248,51 @@ namespace cosync::plugin::npcsync
         log::Info("[status] keepalive: health was {:.0f}%, restored", *health);
     }
 
+    bool ActorInCombat(std::uint32_t actorId)
+    {
+        auto* actor = static_cast<RE::Actor*>(avatars::AsRef(RE::TESForm::LookupByID(actorId)));
+        return actor && actor->Is(RE::FormType::kACHR) && CallSlot<bool>(actor, kIsInCombatSlot);
+    }
+
+    float ActorHealthPercent(std::uint32_t actorId)
+    {
+        auto* actor = static_cast<RE::Actor*>(avatars::AsRef(RE::TESForm::LookupByID(actorId)));
+        if (!actor || !actor->Is(RE::FormType::kACHR)) return -1.0f;
+        return HealthPercent(actor).value_or(-1.0f);
+    }
+
+    void RestoreActorHealth(std::uint32_t actorId)
+    {
+        auto* actor = static_cast<RE::Actor*>(avatars::AsRef(RE::TESForm::LookupByID(actorId)));
+        if (!actor || !actor->Is(RE::FormType::kACHR)) return;
+        float max = 0.0f;
+        if (HealthPercent(actor, &max) && max > 0.0f) ModHealth(actor, max);
+    }
+
+    bool DamageActorPercent(std::uint32_t actorId, float percent)
+    {
+        auto* actor = static_cast<RE::Actor*>(avatars::AsRef(RE::TESForm::LookupByID(actorId)));
+        float max = 0.0f;
+        if (!actor || !actor->Is(RE::FormType::kACHR) || !HealthPercent(actor, &max) || max <= 0.0f) return false;
+        return avatars::DamageHealth(actorId, max * percent / 100.0f);
+    }
+
+    std::vector<std::uint32_t> ReadWornArmor(std::uint32_t actorId)
+    {
+        std::vector<std::uint32_t> worn;
+        auto* actor = static_cast<RE::Actor*>(avatars::AsRef(RE::TESForm::LookupByID(actorId)));
+        if (!actor || !actor->Is(RE::FormType::kACHR)) return worn;
+        actor->ForEachEquippedItem([&](const RE::BGSInventoryItem& item) {
+            const auto* object = item.object;
+            if (object && object->Is(RE::FormType::kARMO) && !proto::IsRuntimeFormId(object->GetFormID())) worn.push_back(object->GetFormID());
+            return RE::BSContainer::ForEachResult::kContinue;
+        });
+        std::ranges::sort(worn);
+        worn.erase(std::ranges::unique(worn).begin(), worn.end());
+        if (worn.size() > proto::kMaxPlayerOutfitItems) worn.resize(proto::kMaxPlayerOutfitItems);
+        return worn;
+    }
+
     void Replication::Install(std::string& detail)
     {
         animevents::InstallNpcCapture(detail);

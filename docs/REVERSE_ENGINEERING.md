@@ -328,8 +328,8 @@ From IDA 9.3 and from runs of `DevHarness.cpp` on 2026-11-07. VERIFIED-RT below 
 | 64161 | Quest stage done | u32 quest, stage | VERIFIED-RT payload, for example `002C9C96, 100`. Name INFERRED |
 | 64162 | Quest start or stop | u32 quest | INFERRED |
 | 64153 | `TESOpenCloseEvent` | ref, activator, byte | INFERRED: door `000B2B04` with the flag going 1 then 0 |
-| 64099 | Activation | ref, ref | INFERRED: caller is `0xB47920`, which `SetOpen` uses |
-| 64179, 64180 | Furniture enter, exit | ref, actor | INFERRED |
+| 64099 | `TESActorActivatedRefEvent` (12.12) | ref, ref | VERIFIED: RTTI |
+| 64179, 64180 | `TESTriggerEnterEvent`, `TESTriggerLeaveEvent` (12.12) | ref, actor | VERIFIED: RTTI. Earlier read as furniture, which was wrong: furniture is 64139 and 64101 |
 
 `RE::Activation::Event` (ID 63133, `source, target`) is VERIFIED-RT and is what WorldSync watches. `BSTGlobalEvent::EventSource<T>` has 525 RTTI entries, mostly UI, and the `TES*` events above are not among them.
 
@@ -360,6 +360,70 @@ A save with the home ship parked in space (cell `00018343`) gets round take-off:
 **Cells.** Cell `+0x88` points at the reference array, 1655 entries in `000125B6`, VERIFIED-RT. That is the data pointer of CommonLibSF's array at `+0x80`, so the header is right. Walking it through `ForEachReference` crashed reading address `0x22` from a value of 2 (dump `Starfield_11-07-17-39.dmp`), cause UNKNOWN. Base form type values and CommonLibSF's `FormType` agree, checked against RTTI names at runtime. Many references in an exterior cell are disabled, 444 of 1655 there.
 
 **Lists.** `TESDataHandler::formArrays[kQUST]` reads as empty on 1.16.244, so it cannot be used to list quests.
+
+### 12.12 Names of all global events
+
+The caution in 12.11 that position is not evidence is answered by a better method. Each getter from ID 64095 to 64237 returns a function-static `BSTEventSource<T>`. The object sits in `.data` with its vtable already written, and that vtable's RTTI names `T`. `tools/re/eventnames.py` prints the table. Controls: 64125 and 64118 come back as the names previously proven at runtime (`TESDestructionStageChangedEvent`, `TESContainerChangedEvent`). VERIFIED on 1.16.244. This supersedes 12.6.
+
+| IDs | Event |
+|---|---|
+| 64098, 64099 | `TESActivateEvent`, `TESActorActivatedRefEvent` |
+| 64100 | `BGSAffinityEventEvent` |
+| 64101, 64139 | `TESExitFurnitureEvent`, `TESFurnitureEvent` |
+| 64102 to 64104 | `TESActiveEffectApplyFinishEvent`, `TESActiveEffectRemovedEvent`, `TESPlayerActiveEffectEvent` |
+| 64105, 64106 | `TESActorLocationChangeEvent`, `ActorCellChangeEvent` |
+| 64109 to 64113 | Cell reference attach and detach, 3D attach, critical references, fully loaded, navmesh generated |
+| 64115 | `TESCellGravityChangeEvent` |
+| 64116, 64117 | `TESCombatEvent`, `TESCombatListEvent` |
+| 64119, 64120 | `CrewAssignedEvent`, `CrewDismissedEvent` |
+| 64121 | `BGSLocationLoadedEvent` |
+| 64122 to 64127 | `TESDeferredKillEvent`, `TESDeathEvent`, `DestroyedEvent`, `TESDestructionStageChangedEvent`, `TESEnterBleedoutEvent`, `TESExitBleedoutEvent` |
+| 64128 | `TESEnterSneakingEvent` |
+| 64135 | `TESEquipEvent` |
+| 64136 | `TESPlayerFollowerWarpEvent` |
+| 64140 | `TESGrabReleaseEvent` |
+| 64141 | `TESHitEvent` |
+| 64142, 64144 | `HomeShipSetEvent`, `PlayerModifiedShipEvent` |
+| 64147, 64148 | `TESLocationExploredEvent`, `TESLockChangedEvent` |
+| 64150 | `TESMagicEffectApplyEvent` |
+| 64154 | `TESPackageEvent` |
+| 64157 to 64163 | Quest init, mission accepted, quest rejected, stage, stage item done, start and stop, `AliasChangeEvent` |
+| 64164 | `TESResetEvent` |
+| 64166 to 64168 | Scene, scene action, scene phase |
+| 64169 | `TESSellEvent` |
+| 64170, 64171, 64182, 64183 | Sleep start and stop, wait start and stop |
+| 64174 | `TESTopicInfoEvent` |
+| 64177 to 64180 | Trap hit, trigger, trigger enter, trigger leave |
+| 64185, 64186, 64236 | `TESConsciousnessEvent`, `TESLimbCrippleEvent`, `TESUnconsciousEvent` |
+| 64189 | `BGSRadiationDamageEvent` |
+| 64190 to 64204 | Player events: heal teammate, loitering, companion dismiss, long falls, mod armor or weapon, research complete, craft, robots, **fire weapon (64200)**, workbench, speech challenge. 64201 and 64202 (swimming, vertibird) are left over from earlier games |
+| 64205, 64206 | `PlayerAddItemEvent`, `ActorValueChangedEvent` |
+| 64207, 64208 | `BGSCellGridLoadEvent`, `BGSHavokWorldCreatedEvent` |
+| 64209 | `ReferenceDestroyedEvent` |
+| 64212 to 64215 | Builder menu select, planet survey complete, survey progress, object scanned |
+| 64217 | `MapMarkerDiscoveredEvent` |
+| 64218 to 64224 | Crime: arrested, assault, murder, crime gold, jail, pay fine, trespass |
+| 64225, 64226 | Buy ship, sell ship |
+| 64228 to 64230 | Item swapped, lock picked, item consumed |
+| 64232 | `RefControlChangedEvent` |
+| 64237 | `CelestialLocationDiscoveredEvent` |
+
+**Runtime notes.** `TESHitEvent` 64141 fired during fights: its first three floats are the world position of the hit, matching the position of the actor struck. The rest of the layout is not decoded. `TESCombatEvent` carries actor, then target. `TESLimbCrippleEvent` carries actor, then source, then the limb's actor value (type 109, `AVIF`).
+
+### 12.13 Death and saving
+
+All on 1.16.244, decompiled with IDA 9.3, and exercised in two running copies on 2026-11-08 unless noted.
+
+| Item | Address | Finding | Confidence |
+|---|---|---|---|
+| Kill dispatcher | ID 100769, `0x1906010` | `Actor.Kill` reaches it, and it calls vtable slot 386 | VERIFIED-RT |
+| Death slot | vtable +3088, slot 386. `Actor` `0x1906250` (ID 100770), `PlayerCharacter` `0x1A3CC50` (ID 102723) | **Lethal damage from `DamageValue` reaches this without passing the dispatcher.** Hooking only the dispatcher left the player in life state `0x20000` and the save reloaded about 4 s later | VERIFIED-RT |
+| Life state setter | vtable slot 367. `Actor` `0x190BFF0` (ID 100787), `PlayerCharacter` thunk `0x1A1FF10` | Argument 2 is the state. 1 and 2 are the two death states, 7 is bleedout | VERIFIED (decompiled). Which of the two player slots stops a given death is not separated |
+| Death states | `Actor+0xF8 & 0x1E0000` | `0x20000`, `0x40000` | VERIFIED-RT |
+| Death reload tick | ID 102812, `0x1A59040` | Player per-frame function that tests those states. That it starts the reload countdown comes from PULSAR's notes | Partly verified |
+| `Game.SetInChargen(disableSaving, disableWaiting, showMessage)` | Native `0x20149C0` (ID 117497) | Sets bits 0, 1, 2 of the byte at `PlayerCharacter+0xF64` | VERIFIED (disassembly, pex signature) |
+| Save gate | ID 98657, `0x1846EF0`, `bool (manager, flag)` | Refuses if bit 0 of `+0xF64` is set, or the player is in a death state, among other tests. CommonLibSF calls this `IsLoadingAllowed`, which is misleading. More than 20 callers, including the function that uses the `Autosave` string (`0x183C590`) | VERIFIED-RT (answered "refused" with the bit set) |
+| Save manager | ID 883588, global `0x5E6D6E8` | First argument to the gate | VERIFIED-RT |
 
 ### 12.9 Not yet investigated
 

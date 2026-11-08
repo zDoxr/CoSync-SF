@@ -26,6 +26,9 @@ Every copy runs the full game from the same save, and CoSync keeps those copies 
 | Dropped connection resumes without duplicating items | Two copies | New |
 | A companion is the same NPC in the same place on every copy, following the host | Two copies | Sarah Morgan (`00005986`), a teammate on both copies of a level-11 save. The guest moved 30 m away; on the guest's copy she stayed with the host, at the same position as on the host's copy (-905.4, 1614.3). Guests have no companion of their own (issue #19) |
 | Name over a group member's head, group panel with health | Two copies | Seen on screen 2026-11-08: "Player2 4 m" over the stand-in. It never showed before the actor lookup fix |
+| Armor and apparel on stand-ins | Two copies | New, protocol 1.18. Copy 2 took off and put back an item, and copy 1's stand-in followed, read back from its engine |
+| A hit on a stand-in on the authority's copy reaches that player | Two copies, behind `PlayerHits=1` | New, protocol 1.18. See [the gap analysis](../COSYNC_SF_MULTIPLAYER_GAP_ANALYSIS.md) section 9 |
+| A death in a session returns the player to a checkpoint, with no reload; guests cannot save | Two copies | New. See [the gap analysis](../COSYNC_SF_MULTIPLAYER_GAP_ANALYSIS.md) section 9 |
 | Two players picking up one item: the first keeps it | Two copies | New, protocol 1.15 |
 | Two players emptying one container: what was already gone goes back | Two copies | New, protocol 1.17 |
 | Looting a runtime NPC reaches its pair on the other copies | Two copies | New, protocol 1.16 |

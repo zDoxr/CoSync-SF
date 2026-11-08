@@ -90,6 +90,8 @@ namespace cosync::plugin
         c.remoteAvatars = ReadString(iniPath, L"Experimental", L"RemoteAvatars", "0") == "1";
         c.npcSync = ReadString(iniPath, L"Experimental", L"NpcSync", "0") == "1";
         c.worldSync = ReadString(iniPath, L"Experimental", L"WorldSync", "0") == "1";
+        c.playerHits = ReadString(iniPath, L"Experimental", L"PlayerHits", "0") == "1";
+        c.playerRespawn = ReadString(iniPath, L"Experimental", L"PlayerRespawn", "1") == "1";
         {
             const auto freeze = ReadString(iniPath, L"Experimental", L"AvatarFreezeAI", "0");
             c.avatarFreezeMode = freeze == "1" ? 1 : freeze == "2" ? 2 : 0;

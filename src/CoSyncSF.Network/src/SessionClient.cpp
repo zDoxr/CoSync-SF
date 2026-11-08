@@ -262,6 +262,10 @@ namespace cosync::net
                     events.emplace_back(client_event::DialogueLine{ m });
                 } else if constexpr (std::is_same_v<T, proto::DroppedItem>) {
                     events.emplace_back(client_event::DroppedItem{ m });
+                } else if constexpr (std::is_same_v<T, proto::PlayerOutfit>) {
+                    events.emplace_back(client_event::PlayerOutfit{ m });
+                } else if constexpr (std::is_same_v<T, proto::PlayerHit>) {
+                    events.emplace_back(client_event::PlayerHit{ m });
                 } else if constexpr (std::is_same_v<T, proto::NpcOutfits>) {
                     if (m.playerId == _npcAuthority) events.emplace_back(client_event::NpcOutfits{ m });
                 } else if constexpr (std::is_same_v<T, proto::Disconnect>) {
@@ -354,6 +358,20 @@ namespace cosync::net
     {
         if (_state != ClientState::InSession) return false;
         Send(drop, Delivery::Reliable);
+        return true;
+    }
+
+    bool SessionClient::SendPlayerHit(const proto::PlayerHit& hit)
+    {
+        if (_state != ClientState::InSession) return false;
+        Send(hit, Delivery::Reliable);
+        return true;
+    }
+
+    bool SessionClient::SendPlayerOutfit(const proto::PlayerOutfit& outfit)
+    {
+        if (_state != ClientState::InSession) return false;
+        Send(outfit, Delivery::Reliable);
         return true;
     }
 

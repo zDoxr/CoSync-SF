@@ -1,6 +1,6 @@
 # World Sync
 
-Shared world state: what one player changes, the others see. Off unless `[Experimental] WorldSync=1` (`launch-instances.ps1 -WorldSync`). Protocol 1.11. Engine evidence is in [REVERSE_ENGINEERING.md](REVERSE_ENGINEERING.md) §12.11.
+Shared world state: what one player changes, the others see. Off unless `[Experimental] WorldSync=1` (`launch-instances.ps1 -WorldSync`). Protocol 1.18 at present. Engine evidence is in [REVERSE_ENGINEERING.md](REVERSE_ENGINEERING.md) §12.11.
 
 Status words, used strictly:
 

@@ -840,3 +840,84 @@ TEST_F(Session, SecondPlayerToEmptyAContainerGivesBackWhatWasGone)
     }
     EXPECT_EQ(relayed, -5000);  // the first player's take only
 }
+
+TEST(PlayerOutfitProtocol, RoundTripAndValidation)
+{
+    const proto::PlayerOutfit outfit{ 3, { 0x00012345, 0x000ABCDE } };
+    const auto decoded = proto::Decode(proto::Encode(outfit));
+    ASSERT_TRUE(decoded.Ok());
+    const auto& o = std::get<proto::PlayerOutfit>(*decoded.message);
+    EXPECT_EQ(o.playerId, 3u);
+    EXPECT_EQ(o.items, outfit.items);
+    EXPECT_TRUE(proto::IsValidPlayerOutfit({ 1, {} }));  // wearing nothing is a valid outfit
+    EXPECT_FALSE(proto::IsValidPlayerOutfit({ 1, { 0xFF012345 } }));  // numbered per copy
+    EXPECT_FALSE(proto::IsValidPlayerOutfit({ 1, { 0 } }));
+    EXPECT_FALSE(proto::IsValidPlayerOutfit({ 1, std::vector<std::uint32_t>(proto::kMaxPlayerOutfitItems + 1, 0x10) }));
+}
+
+TEST_F(Session, PlayerOutfitReachesOthersAndLateJoiners)
+{
+    auto& wearer = Add("Wearer");
+    auto& other = Add("Other");
+    Pump();
+    ASSERT_TRUE(wearer.session->SendPlayerOutfit({ 0, { 0x00000011 } }));
+    ASSERT_TRUE(wearer.session->SendPlayerOutfit({ 0, { 0x00000022, 0x00000033 } }));
+    Pump();
+    const auto got = other.Got<client_event::PlayerOutfit>();
+    ASSERT_EQ(got.size(), 2u);
+    EXPECT_EQ(got[1].outfit.playerId, wearer.session->LocalPlayerId());
+    EXPECT_TRUE(wearer.Got<client_event::PlayerOutfit>().empty());
+    // A player who joins later gets only the newest, and never their own.
+    auto& late = Add("Late");
+    Pump();
+    const auto replay = late.Got<client_event::PlayerOutfit>();
+    ASSERT_EQ(replay.size(), 1u);
+    EXPECT_EQ(replay[0].outfit.items, (std::vector<std::uint32_t>{ 0x00000022, 0x00000033 }));
+}
+
+TEST_F(Session, OutfitForAnotherPlayerIsRefused)
+{
+    auto& a = Add("A");
+    auto& b = Add("B");
+    Pump();
+    ASSERT_TRUE(a.session->SendPlayerOutfit({ b.session->LocalPlayerId(), { 0x00000011 } }));
+    Pump();
+    EXPECT_TRUE(b.Got<client_event::PlayerOutfit>().empty());
+    EXPECT_EQ(server->Stats().protocolViolations, 1u);
+}
+
+
+TEST(PlayerHitProtocol, RoundTripAndValidation)
+{
+    const proto::PlayerHit hit{ 1, 2, 12.5f };
+    const auto decoded = proto::Decode(proto::Encode(hit));
+    ASSERT_TRUE(decoded.Ok());
+    const auto& h = std::get<proto::PlayerHit>(*decoded.message);
+    EXPECT_EQ(h.target, 2u);
+    EXPECT_FLOAT_EQ(h.percent, 12.5f);
+    EXPECT_FALSE(proto::IsValidPlayerHit({ 0, 2, 0.0f }));
+    EXPECT_FALSE(proto::IsValidPlayerHit({ 0, 2, 100.5f }));
+    EXPECT_FALSE(proto::IsValidPlayerHit({ 0, kInvalidPlayerId, 5.0f }));
+    EXPECT_FALSE(proto::IsValidPlayerHit({ 0, 2, std::numeric_limits<float>::quiet_NaN() }));
+}
+
+TEST_F(Session, OnlyTheAuthoritysHitsReachThePlayer)
+{
+    auto& authority = Add("Authority");
+    auto& guest = Add("Guest");
+    auto& third = Add("Third");
+    Pump();
+    ASSERT_EQ(authority.session->LocalPlayerId(), 1u);  // the first game client is elected
+    // A hit from a copy that does not run the NPCs is dropped, not relayed.
+    ASSERT_TRUE(third.session->SendPlayerHit({ 0, guest.session->LocalPlayerId(), 10.0f }));
+    Pump();
+    EXPECT_TRUE(guest.Got<client_event::PlayerHit>().empty());
+    // The authority's hit reaches only its target, stamped with the reporter.
+    ASSERT_TRUE(authority.session->SendPlayerHit({ 0, guest.session->LocalPlayerId(), 10.0f }));
+    Pump();
+    const auto got = guest.Got<client_event::PlayerHit>();
+    ASSERT_EQ(got.size(), 1u);
+    EXPECT_EQ(got[0].hit.playerId, authority.session->LocalPlayerId());
+    EXPECT_TRUE(third.Got<client_event::PlayerHit>().empty());
+    EXPECT_EQ(server->Stats().protocolViolations, 0u);
+}

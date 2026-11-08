@@ -58,13 +58,15 @@ namespace cosync::net
         struct WorldClock { proto::WorldClock clock; };
         struct DialogueLine { proto::DialogueLine line; };
         struct DroppedItem { proto::DroppedItem drop; };
+        struct PlayerOutfit { proto::PlayerOutfit outfit; };
+        struct PlayerHit { proto::PlayerHit hit; };
     }
 
     using ClientEvent = std::variant<client_event::StateChanged, client_event::Welcomed, client_event::Rejected,
                                      client_event::PeerJoined, client_event::PeerLeft, client_event::RemoteTransform,
                                      client_event::RttSample, client_event::NpcCombat, client_event::Groups,
                                      client_event::NpcAuthority, client_event::NpcStates, client_event::NpcDeath,
-                                     client_event::NpcDamage, client_event::NpcEvents, client_event::NpcOutfits, client_event::WorldEvents, client_event::WorldClock, client_event::DialogueLine, client_event::DroppedItem>;
+                                     client_event::NpcDamage, client_event::NpcEvents, client_event::NpcOutfits, client_event::WorldEvents, client_event::WorldClock, client_event::DialogueLine, client_event::DroppedItem, client_event::PlayerOutfit, client_event::PlayerHit>;
 
     // Client side of the session protocol. Single-threaded; see ITransport.
     class SessionClient
@@ -96,6 +98,8 @@ namespace cosync::net
         bool SendWorldClock(const proto::WorldClock& clock);
         bool SendDialogueLine(const proto::DialogueLine& line);
         bool SendDroppedItem(const proto::DroppedItem& drop);
+        bool SendPlayerOutfit(const proto::PlayerOutfit& outfit);
+        bool SendPlayerHit(const proto::PlayerHit& hit);
         [[nodiscard]] PlayerId NpcAuthority() const noexcept { return _npcAuthority; }
         bool SendTransform(std::uint32_t locationId, const Vec3& position, const Vec3& rotation,
                            const std::optional<proto::PlayerControls>& controls = std::nullopt,

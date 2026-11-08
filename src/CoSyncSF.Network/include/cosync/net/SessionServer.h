@@ -136,6 +136,8 @@ namespace cosync::net
         void OnWorldMessage(Connection& conn, Player& player, proto::Message& msg);
         void OnDialogue(Connection& conn, Player& player, proto::DialogueLine line);
         void OnDroppedItem(Connection& conn, Player& player, proto::DroppedItem drop);
+        void OnPlayerOutfit(Connection& conn, Player& player, proto::PlayerOutfit outfit);
+        void OnPlayerHit(Connection& conn, Player& player, proto::PlayerHit hit);
         [[nodiscard]] Player* FindByToken(const ResumeToken& token);
         [[nodiscard]] bool NameTaken(std::string_view name) const;
         [[nodiscard]] ResumeToken NewToken();
@@ -156,6 +158,7 @@ namespace cosync::net
         world::Pickups _pickups;            // likewise
         world::ContainerStock _stock;       // likewise
         std::map<std::uint32_t, proto::DroppedItem> _drops;  // by shared ID, until picked up
+        std::map<PlayerId, proto::PlayerOutfit> _outfits;    // newest of each player in the session
         std::optional<proto::WorldClock> _worldClock;
         std::vector<TransportEvent> _events;
     };

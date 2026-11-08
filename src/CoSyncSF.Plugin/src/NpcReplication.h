@@ -34,6 +34,15 @@ namespace cosync::plugin::npcsync
     inline constexpr std::size_t kReplicationSlots = 256;
 
     void KeepPlayerAlive(float belowPercent);
+    // Every armor and piece of apparel the actor has equipped, sorted, without runtime forms. Main thread.
+    [[nodiscard]] std::vector<std::uint32_t> ReadWornArmor(std::uint32_t actorId);
+    // Health as the engine has it, 0..100, or -1 if that is not an actor with health. Main thread.
+    [[nodiscard]] float ActorHealthPercent(std::uint32_t actorId);
+    [[nodiscard]] bool ActorInCombat(std::uint32_t actorId);
+    // Back to full health at once, through the engine's own actor value path. Main thread.
+    void RestoreActorHealth(std::uint32_t actorId);
+    // That share of the actor's maximum health, through the engine's whole damage path. Main thread.
+    bool DamageActorPercent(std::uint32_t actorId, float percent);
 
     class Replication
     {

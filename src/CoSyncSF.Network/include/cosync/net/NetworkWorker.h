@@ -102,6 +102,8 @@ namespace cosync::net
         void SubmitWorldClock(const proto::WorldClock& clock);
         void SubmitDialogueLine(const proto::DialogueLine& line);  // bounded, oldest dropped
         void SubmitDroppedItem(const proto::DroppedItem& drop);    // bounded, oldest dropped
+        void SubmitPlayerOutfit(std::vector<std::uint32_t> items);  // a newer one replaces an unsent one
+        void SubmitPlayerHit(PlayerId target, float percent);       // queued, reliable, bounded
         // Dev test: the client drops its connection and stays offline that long before resuming.
         void SimulateConnectionLoss(std::uint32_t offlineMs) noexcept { _simulatedLossMs.store(offlineMs); }
         [[nodiscard]] std::vector<proto::NpcStates> TakeNpcStates();
@@ -142,6 +144,8 @@ namespace cosync::net
         std::optional<proto::WorldClock> _worldClockOut;                   // guarded by _localMutex
         std::deque<proto::DialogueLine> _dialogueOut;                      // guarded by _localMutex
         std::deque<proto::DroppedItem> _dropsOut;                          // guarded by _localMutex
+        std::optional<proto::PlayerOutfit> _outfitOut;                     // guarded by _localMutex
+        std::vector<proto::PlayerHit> _playerHitsOut;                      // guarded by _localMutex
         std::vector<proto::GroupRequest> _groupOut;                     // guarded by _localMutex
         void Run(std::promise<std::string>& ready);
 

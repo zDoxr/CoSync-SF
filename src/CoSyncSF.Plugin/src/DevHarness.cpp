@@ -32,7 +32,7 @@ namespace cosync::plugin::dev
         constexpr std::uint64_t kLastGetterId = 64237;
         constexpr std::uint64_t kNoAddressId = 64114;  // the address library has no entry
         constexpr std::array<std::uint8_t, 4> kGetterPrologue{ 0x48, 0x83, 0xEC, 0x28 };  // sub rsp, 28h
-        constexpr std::size_t kSampleBytes = 48;
+        constexpr std::size_t kSampleBytes = 192;
         constexpr std::uint32_t kSamplesPerSource = 4;
         constexpr auto kMenuSettle = 8s;
         constexpr auto kCommandGap = 12s;

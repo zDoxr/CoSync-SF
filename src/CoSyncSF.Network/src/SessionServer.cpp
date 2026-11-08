@@ -284,6 +284,12 @@ namespace cosync::net
         case proto::MessageType::DroppedItem:
             OnDroppedItem(conn, player, std::get<proto::DroppedItem>(std::move(msg)));
             break;
+        case proto::MessageType::PlayerHit:
+            OnPlayerHit(conn, player, std::get<proto::PlayerHit>(std::move(msg)));
+            break;
+        case proto::MessageType::PlayerOutfit:
+            OnPlayerOutfit(conn, player, std::get<proto::PlayerOutfit>(std::move(msg)));
+            break;
         case proto::MessageType::Disconnect:
             log::Info("player {} '{}' left", player.id, player.name);
             DropConnection(id, CloseCode::Normal, "client quit", proto::LeaveReason::Quit);
@@ -401,6 +407,10 @@ namespace cosync::net
             Send(conn.id, proto::WorldEvents{ kInvalidPlayerId, { history.begin() + static_cast<std::ptrdiff_t>(at), history.begin() + static_cast<std::ptrdiff_t>(end) } });
         }
         for (const auto& [id, drop] : _drops) Send(conn.id, drop);
+        std::erase_if(_outfits, [this](const auto& entry) { return !_players.contains(entry.first); });
+        for (const auto& [id, outfit] : _outfits) {
+            if (id != player.id) Send(conn.id, outfit);
+        }
         if (_worldClock) Send(conn.id, *_worldClock);
     }
 
@@ -484,6 +494,36 @@ namespace cosync::net
         if (_drops.size() < 4096 || _drops.contains(drop.sharedId)) _drops[drop.sharedId] = drop;
         Broadcast(drop, player.id);
         ++_stats.dropsRelayed;
+    }
+
+    void SessionServer::OnPlayerHit(Connection& conn, Player& player, proto::PlayerHit hit)
+    {
+        if (hit.playerId != kInvalidPlayerId && hit.playerId != player.id) {
+            ++_stats.protocolViolations;
+            DropConnection(conn.id, CloseCode::ProtocolViolation, "hit from another player", proto::LeaveReason::ProtocolViolation);
+            return;
+        }
+        // Only the authority's engine decides what its NPCs hit, or one shot could count on every copy.
+        // A player that just lost the role can still have messages in flight, so this is not a violation.
+        const auto target = _players.find(hit.target);
+        if (player.id != _npcAuthority || hit.target == player.id || target == _players.end() || target->second.connection == kInvalidConnection) {
+            ++_stats.npcMessagesRefused;
+            return;
+        }
+        hit.playerId = player.id;
+        Send(target->second.connection, hit);
+    }
+
+    void SessionServer::OnPlayerOutfit(Connection& conn, Player& player, proto::PlayerOutfit outfit)
+    {
+        if (outfit.playerId != kInvalidPlayerId && outfit.playerId != player.id) {
+            ++_stats.protocolViolations;
+            DropConnection(conn.id, CloseCode::ProtocolViolation, "outfit for another player", proto::LeaveReason::ProtocolViolation);
+            return;
+        }
+        outfit.playerId = player.id;
+        _outfits[player.id] = outfit;
+        Broadcast(outfit, player.id);
     }
 
     void SessionServer::OnDialogue(Connection& conn, Player& player, proto::DialogueLine line)

@@ -280,6 +280,20 @@ namespace cosync::proto
             WriteVec3(w, m.position);
         }
 
+        void Encode(ByteWriter& w, const PlayerHit& m)
+        {
+            w.U32(m.playerId);
+            w.U32(m.target);
+            w.F32(m.percent);
+        }
+
+        void Encode(ByteWriter& w, const PlayerOutfit& m)
+        {
+            w.U32(m.playerId);
+            w.U8(static_cast<std::uint8_t>(m.items.size()));
+            for (const auto item : m.items) w.U32(item);
+        }
+
         void Encode(ByteWriter& w, const DialogueLine& m)
         {
             w.U32(m.playerId);
@@ -598,6 +612,23 @@ namespace cosync::proto
                 if (r.Ok() && !IsValidDroppedItem(m)) r.Fail();
                 return m;
             }
+            case MessageType::PlayerHit: {
+                PlayerHit m;
+                m.playerId = r.U32();
+                m.target = r.U32();
+                m.percent = r.F32();
+                if (r.Ok() && !IsValidPlayerHit(m)) r.Fail();
+                return m;
+            }
+            case MessageType::PlayerOutfit: {
+                PlayerOutfit m;
+                m.playerId = r.U32();
+                const auto count = r.U8();
+                if (count > kMaxPlayerOutfitItems) r.Fail();
+                for (std::size_t i = 0; r.Ok() && i < count; ++i) m.items.push_back(r.U32());
+                if (r.Ok() && !IsValidPlayerOutfit(m)) r.Fail();
+                return m;
+            }
             case MessageType::DialogueLine: {
                 DialogueLine m;
                 m.playerId = r.U32();
@@ -660,7 +691,7 @@ namespace cosync::proto
         bool IsKnownType(std::uint16_t t)
         {
             return t >= static_cast<std::uint16_t>(MessageType::Hello) &&
-                   t <= static_cast<std::uint16_t>(MessageType::DroppedItem);
+                   t <= static_cast<std::uint16_t>(MessageType::PlayerHit);
         }
 
         bool IsFiniteBounded(const Vec3& v, float bound)
@@ -702,6 +733,8 @@ namespace cosync::proto
                 else if constexpr (std::is_same_v<T, WorldClock>) return MessageType::WorldClock;
                 else if constexpr (std::is_same_v<T, DialogueLine>) return MessageType::DialogueLine;
                 else if constexpr (std::is_same_v<T, DroppedItem>) return MessageType::DroppedItem;
+                else if constexpr (std::is_same_v<T, PlayerOutfit>) return MessageType::PlayerOutfit;
+                else if constexpr (std::is_same_v<T, PlayerHit>) return MessageType::PlayerHit;
                 else static_assert(kAlwaysFalse<T>, "unhandled message type");
             },
             message);
@@ -805,6 +838,20 @@ namespace cosync::proto
         return name.front() != ' ' && name.back() != ' ';
     }
 
+    bool IsValidPlayerHit(const PlayerHit& h) noexcept
+    {
+        return h.target != kInvalidPlayerId && std::isfinite(h.percent) && h.percent > 0.0f && h.percent <= 100.0f;
+    }
+
+    bool IsValidPlayerOutfit(const PlayerOutfit& o) noexcept
+    {
+        if (o.items.size() > kMaxPlayerOutfitItems) return false;
+        for (const auto item : o.items) {
+            if (item == 0 || IsRuntimeFormId(item)) return false;
+        }
+        return true;
+    }
+
     bool IsValidDroppedItem(const DroppedItem& d) noexcept
     {
         return d.baseId != 0 && !IsRuntimeFormId(d.baseId) && d.count > 0 && d.count <= 0xFFFF && (d.sharedId & 0xFFFFFFu) != 0 &&
@@ -883,6 +930,8 @@ namespace cosync::proto
         case MessageType::WorldClock: return "WorldClock";
         case MessageType::DialogueLine: return "DialogueLine";
         case MessageType::DroppedItem: return "DroppedItem";
+        case MessageType::PlayerOutfit: return "PlayerOutfit";
+        case MessageType::PlayerHit: return "PlayerHit";
         }
         return "Unknown";
     }

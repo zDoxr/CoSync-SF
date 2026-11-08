@@ -45,6 +45,8 @@ namespace cosync::plugin
         bool avatarMirror = false;    // [Experimental] AvatarMoveMode=mirror: proxies replay the local player's controls
         bool avatarControls = false;  // [Experimental] AvatarMoveMode=controls: proxies replay the remote player's controls
         bool npcSync = false;         // [Experimental] NpcSync: replicate NPCs (docs/NPC_SYNC_STATUS.md)
+        bool playerRespawn = true;    // [Experimental] PlayerRespawn: a death in a session returns the player to a checkpoint
+        bool playerHits = false;      // [Experimental] PlayerHits: hits on a stand-in reach that player (issue #15)
         bool worldSync = false;       // [Experimental] WorldSync: doors, pickups, clock, weather (docs/WORLD_SYNC.md)
         float avatarScale = 1.0f;     // [Experimental] AvatarScale (debug: >1 makes proxies easy to spot)
         // [Dev] FakeSteamId: 0 = real Steam; N (1..999) = test identity steam:N over local GNS (several

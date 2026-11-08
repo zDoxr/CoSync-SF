@@ -1192,7 +1192,7 @@ namespace cosync::plugin::worldsync
             return true;
         }
         const bool atProxy = step.starts_with("@hostileproxy ");
-        if (step == "@hostile" || step == "@kill" || step == "@killrt" || step == "@pickrt" || atProxy) {
+        if (step == "@hostile" || step == "@hostiledf" || step == "@kill" || step == "@killrt" || step == "@pickrt" || atProxy) {
             // The nearest living NPC that is not a stand-in for a player: attacks the local player,
             // or dies. The authority's engine decides what the others see.
             auto* player = RE::PlayerCharacter::GetSingleton();
@@ -1200,6 +1200,8 @@ namespace cosync::plugin::worldsync
             const auto playerBase = player->GetBaseObject();
             RE::TESObjectREFR* best = nullptr;
             float bestDistance = 2500.0f;
+            // In meters: the 150 this used to be left only NPCs too far away to notice anything.
+            constexpr float kMinTargetDistance = 4.0f;
             for (const auto [first, last] : { std::pair<std::uint32_t, std::uint32_t>{ 1, 0x400000 }, { 0xFF000000, 0xFF080000 } }) {
                 for (std::uint32_t id = first; id < last; ++id) {
                     auto* form = RE::TESForm::LookupByID(id);
@@ -1207,7 +1209,7 @@ namespace cosync::plugin::worldsync
                     auto* r = static_cast<RE::TESObjectREFR*>(form);
                     if (r == player || IsGone(r) || !r->parentCell->IsAttached() || static_cast<RE::Actor*>(r)->IsDead()) continue;
                     if (playerBase && r->GetBaseObject() == playerBase) continue;  // a remote player's stand-in
-                    if (atProxy && proto::IsRuntimeFormId(id)) continue;  // a data-file NPC, a guard say: citizens flee
+                    if ((atProxy || step == "@hostiledf") && proto::IsRuntimeFormId(id)) continue;  // a data-file NPC, a guard say: citizens flee
                     if (step == "@killrt" || step == "@pickrt") {
                         // A runtime NPC, numbered per copy, that carries something to loot.
                         if (!proto::IsRuntimeFormId(id)) continue;
@@ -1220,7 +1222,7 @@ namespace cosync::plugin::worldsync
                     }
                     const auto at = r->GetPosition();
                     const auto d = std::hypot(at.x - origin.x, at.y - origin.y, at.z - origin.z);
-                    if (d > 150.0f && d < bestDistance) {
+                    if (d > kMinTargetDistance && d < bestDistance) {
                         bestDistance = d;
                         best = r;
                     }
@@ -1242,7 +1244,7 @@ namespace cosync::plugin::worldsync
                 const auto proxy = static_cast<std::uint32_t>(std::stoul(step.substr(14), nullptr, 16));
                 log::Info("[combat] @hostileproxy: {:08X} attacks the stand-in {:08X}: {}", best->GetFormID(), proxy,
                           proxy && avatars::StartCombatWith(best->GetFormID(), proxy) ? "sent" : "refused");
-            } else if (step == "@hostile") {
+            } else if (step == "@hostile" || step == "@hostiledf") {
                 avatars::StartCombatWithPlayer(best->GetFormID());
             } else if (step == "@pickrt") {
                 // only picked, for '@givetarget'

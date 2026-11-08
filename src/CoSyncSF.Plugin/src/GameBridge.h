@@ -45,6 +45,10 @@ namespace cosync::plugin
         void EnableMenuPatch(bool enable) { _menuPatch = enable; }
     void EnableNpcSync(bool enable) noexcept { _npcSyncEnabled = enable; }
         void EnableWorldSync(bool enable);
+        // Experimental: hits on a stand-in on the NPC authority's copy reach that player (issue #15).
+        void EnablePlayerHits(bool enable) noexcept { _playerHits = enable; }
+        // No death in a session reloads a save: the player returns to a checkpoint instead.
+        void EnablePlayerRespawn(bool enable);
         void SetAvatarScale(float scale) noexcept { _avatarScale = scale; }
         struct AvatarOptions
         {
@@ -62,6 +66,7 @@ namespace cosync::plugin
         void SetAvatarOptions(const AvatarOptions& o) noexcept { _opt = o; }
         int _fakeHealth = -1;  // '@fakehealth': sent instead of the real health, -1 = off
         bool _keepAlive = false;  // '@keepalive': dev guard against dying in a test
+        bool _watchHealth = false;  // '@watchhealth': logs the engine's health of the player and proxies
         void Tick();
 
     private:
@@ -99,6 +104,12 @@ namespace cosync::plugin
             std::chrono::steady_clock::time_point bigErrorSince{};
             std::chrono::steady_clock::time_point nextMoveLog{};
             std::chrono::steady_clock::time_point smallErrorSince{};
+            std::chrono::steady_clock::time_point nextHitCheck{};
+            float proxyHealth = -1.0f;  // last read on the authority's copy, -1 = read it again first
+            std::uint32_t hitsForwarded = 0;
+            std::chrono::steady_clock::time_point nextOutfitFix{};
+            std::uint32_t outfitTries = 0;
+            bool outfitMatched = false;  // logged once per match
             std::uint32_t appliedWeapon = 0;   // weapon equipped on the proxy by us
             int appliedDrawn = -1;
             std::chrono::steady_clock::time_point nextWeaponApply{};
@@ -147,6 +158,7 @@ namespace cosync::plugin
             bool haveLatest = false;
             std::optional<proto::WeaponState> weapon;  // newest received weapon state
             std::optional<proto::PlayerStatus> status;  // newest received vitals / whereabouts
+            std::optional<std::vector<std::uint32_t>> outfit;  // newest received armor and apparel
             // Graph input events from this player not yet replayed on the proxy (controls mode).
             std::vector<std::string> pendingReplays;
             std::uint16_t lastEventSeq = 0;
@@ -205,6 +217,16 @@ namespace cosync::plugin
         std::optional<proto::WeaponState> _localWeapon;
         std::chrono::steady_clock::time_point _nextWeaponQuery{};
         void ApplyWeapon(PlayerId id, RemotePlayer& remote);
+        void ApplyOutfit(PlayerId id, RemotePlayer& remote);
+        void ForwardProxyHits(PlayerId id, RemotePlayer& remote, net::NetworkWorker& worker);
+        bool _playerHits = false;
+        bool _respawn = false;
+        PlayerId _npcAuthorityId = kInvalidPlayerId;
+        std::chrono::steady_clock::time_point _lastLocalAttack{};
+        void PublishLocalOutfit(net::NetworkWorker& worker);
+        std::optional<std::vector<std::uint32_t>> _sentOutfit;
+        std::chrono::steady_clock::time_point _nextOutfitRead{};
+        std::chrono::steady_clock::time_point _nextHealthWatch{};
         void DrainAnimEvents();
         void LogNpcEnumeration();
         // In-game UI (Overlay/MetroUi): feed the model, publish snapshots, execute commands.
