@@ -305,7 +305,7 @@ namespace cosync::plugin::worldsync
         {
             auto* form = RE::TESForm::LookupByID(formId);
             if (!form) return nullptr;
-            auto* ref = form->As<RE::TESObjectREFR>();
+            auto* ref = avatars::AsRef(form);
             if (!ref) return nullptr;
             if (proto::IsRuntimeFormId(formId) && base != 0 && BaseId(ref) != base) return nullptr;
             return ref;
@@ -419,7 +419,7 @@ namespace cosync::plugin::worldsync
         // Drops: a reference the load took away is placed again.
         for (auto& [sharedId, d] : _drops) {
             auto* form = d.local != 0 ? RE::TESForm::LookupByID(d.local) : nullptr;
-            auto* ref = form ? form->As<RE::TESObjectREFR>() : nullptr;
+            auto* ref = avatars::AsRef(form);
             if (d.local != 0 && (!ref || IsGone(ref) || BaseId(ref) != d.item.baseId)) {
                 _dropOfRef.erase(d.local);
                 d.local = 0;
@@ -427,7 +427,7 @@ namespace cosync::plugin::worldsync
             }
         }
         for (const auto& e : _seen.Snapshot()) {
-            if (e.kind == WorldEventKind::ContainerItem) continue;
+            if (e.kind == WorldEventKind::ContainerItem || e.kind == WorldEventKind::NpcContainerItem) continue;
             _pending.push_back({ e, true });  // it was applied here before, so it may start a quest again
             ++queued;
         }
@@ -445,7 +445,7 @@ namespace cosync::plugin::worldsync
             // History from the server has no sender and is treated as the authority's.
             const bool history = events.playerId == kInvalidPlayerId;
             const bool mayStart = events.playerId == _authority || history;
-            if (history && e.kind == WorldEventKind::ContainerItem) {
+            if (history && (e.kind == WorldEventKind::ContainerItem || e.kind == WorldEventKind::NpcContainerItem)) {
                 const auto missing = world::MissingContainerChange(_seen, e);
                 if (missing != e.value) {
                     log::Info("[world] history: container {:08X} item {:08X} total {:+}, {:+} already applied here, applying {:+}", e.formId, e.itemId, e.value,
@@ -491,7 +491,7 @@ namespace cosync::plugin::worldsync
         // FF0285E2). Its 3D can come a frame later, so a reference not yet there is tried again briefly.
         std::erase_if(_dropsSeen, [&](const DropSeen& seen) {
             auto* form = RE::TESForm::LookupByID(seen.ref);
-            auto* ref = form ? form->As<RE::TESObjectREFR>() : nullptr;
+            auto* ref = avatars::AsRef(form);
             if (!ref || BaseId(ref) != seen.base || IsGone(ref)) {
                 if (now - seen.at < 2s) return false;
                 log::Info("[world] drop of {:08X} as {:08X}: no such reference in the world", seen.base, seen.ref);
@@ -618,6 +618,18 @@ namespace cosync::plugin::worldsync
                 }
             }
             if (other == 0) continue;
+            // A runtime NPC (a corpse being looted, say) is named by the authority's number.
+            if (proto::IsRuntimeFormId(other) && _npcToShared) {
+                auto* form = RE::TESForm::LookupByID(other);
+                if (form && form->GetFormType() == RE::FormType::kACHR) {
+                    if (const auto shared = _npcToShared(other); shared != 0) {
+                        const auto count = static_cast<std::int32_t>(c.d);
+                        _outgoing.push_back({ WorldEventKind::NpcContainerItem, shared, c.c, c.b == kPlayerRef ? -count : count });
+                        if (++_npcLoot <= 30) log::Info("[world] NPC {:08X} (shared {:08X}) item {:08X} {:+}", other, shared, c.c, c.b == kPlayerRef ? -count : count);
+                        continue;
+                    }
+                }
+            }
             if (!world::CanShareContainer(other)) {
                 ++_localContainers;
                 continue;
@@ -652,7 +664,7 @@ namespace cosync::plugin::worldsync
     {
         std::erase_if(_watches, [&](const Watch& w) {
             auto* form = RE::TESForm::LookupByID(w.ref);
-            auto* ref = form ? form->As<RE::TESObjectREFR>() : nullptr;
+            auto* ref = avatars::AsRef(form);
             if (!ref || w.doorStateBefore == 0) {
                 if (!ref || IsGone(ref)) {
                     // The inventory event can come a frame after the item goes: wait briefly for it.
@@ -759,6 +771,23 @@ namespace cosync::plugin::worldsync
             ++_applied;
             return true;
         }
+        case WorldEventKind::NpcContainerItem: {
+            const auto local = _npcToLocal ? _npcToLocal(e.formId) : 0;
+            if (local == 0) {
+                ++_dropped;
+                log::Info("[world] NPC {:08X} item {:08X} {:+}: not paired here", e.formId, e.itemId, e.value);
+                return true;
+            }
+            if (e.value > 0) {
+                avatars::ContainerAdd(local, e.itemId, e.value);
+            } else {
+                avatars::ContainerRemove(local, e.itemId, -e.value);
+            }
+            _awaitedContainers.insert(local);
+            log::Info("[world] applied NPC {:08X} (here {:08X}) item {:08X} {:+}", e.formId, local, e.itemId, e.value);
+            ++_applied;
+            return true;
+        }
         case WorldEventKind::ItemReturned: {
             // Someone else picked this up first: what this player got goes back.
             avatars::ContainerRemove(kPlayerRef, e.itemId, e.value);
@@ -843,6 +872,7 @@ namespace cosync::plugin::worldsync
             case WorldEventKind::ContainerItem:
             case WorldEventKind::ItemReturned:
             case WorldEventKind::SharedRemoved:
+            case WorldEventKind::NpcContainerItem:
                 break;
             }
             return true;
@@ -916,7 +946,7 @@ namespace cosync::plugin::worldsync
             const auto id = _dropProbe->load();
             _dropProbe.reset();
             auto* form = id > 1 ? RE::TESForm::LookupByID(id) : nullptr;
-            auto* ref = form ? form->As<RE::TESObjectREFR>() : nullptr;
+            auto* ref = avatars::AsRef(form);
             auto* player = RE::PlayerCharacter::GetSingleton();
             if (ref) {
                 const auto p = ref->GetPosition();
@@ -1071,7 +1101,7 @@ namespace cosync::plugin::worldsync
                 // No anchor: every data-file reference in a loaded cell.
                 for (std::uint32_t id = 1; id < 0x400000; ++id) {
                     auto* form = RE::TESForm::LookupByID(id);
-                    auto* r = form ? form->As<RE::TESObjectREFR>() : nullptr;
+                    auto* r = avatars::AsRef(form);
                     if (r && r->parentCell && r->parentCell->IsAttached()) refs.push_back(r);
                 }
             }
@@ -1090,7 +1120,7 @@ namespace cosync::plugin::worldsync
             log::Info("[world] {} with locks:{}", locked, lockeds);
             return true;
         }
-        if (step == "@hostile" || step == "@kill") {
+        if (step == "@hostile" || step == "@kill" || step == "@killrt" || step == "@pickrt") {
             // The nearest living NPC that is not a stand-in for a player: attacks the local player,
             // or dies. The authority's engine decides what the others see.
             auto* player = RE::PlayerCharacter::GetSingleton();
@@ -1105,6 +1135,16 @@ namespace cosync::plugin::worldsync
                     auto* r = static_cast<RE::TESObjectREFR*>(form);
                     if (r == player || IsGone(r) || !r->parentCell->IsAttached() || static_cast<RE::Actor*>(r)->IsDead()) continue;
                     if (playerBase && r->GetBaseObject() == playerBase) continue;  // a remote player's stand-in
+                    if (step == "@killrt" || step == "@pickrt") {
+                        // A runtime NPC, numbered per copy, that carries something to loot.
+                        if (!proto::IsRuntimeFormId(id)) continue;
+                        std::size_t items = 0;
+                        r->ForEachInventoryItem([&](const RE::BGSInventoryItem&) {
+                            ++items;
+                            return RE::BSContainer::ForEachResult::kContinue;
+                        });
+                        if (items == 0) continue;
+                    }
                     const auto at = r->GetPosition();
                     const auto d = std::hypot(at.x - origin.x, at.y - origin.y, at.z - origin.z);
                     if (d > 150.0f && d < bestDistance) {
@@ -1120,10 +1160,42 @@ namespace cosync::plugin::worldsync
             log::Info("[combat] {}: {:08X} base {:08X} at {:.0f}", step, best->GetFormID(), BaseId(best), bestDistance);
             if (step == "@hostile") {
                 avatars::StartCombatWithPlayer(best->GetFormID());
+            } else if (step == "@pickrt") {
+                // only picked, for '@givetarget'
             } else {
                 avatars::KillActor(best->GetFormID());
             }
             g_lastTarget = best->GetFormID();
+            return true;
+        }
+        if (step.starts_with("@givetarget ")) {
+            // "@givetarget <item> <count>": the player gives that many to the NPC picked last.
+            const auto space = step.find(' ', 12);
+            const auto item = static_cast<std::uint32_t>(std::stoul(step.substr(12, space - 12), nullptr, 16));
+            const int count = space == std::string::npos ? 1 : std::stoi(step.substr(space + 1));
+            log::Info("[world] {} to {:08X}: {}", step, g_lastTarget, g_lastTarget && avatars::GiveFromPlayer(g_lastTarget, item, count) ? "sent" : "refused");
+            return true;
+        }
+        if (step == "@takefromtarget") {
+            // The player takes one of the first data-file item the NPC picked last carries.
+            std::uint32_t item = 0;
+            // Worn items: ForEachInventoryItem found only generated ones on a crowd NPC.
+            if (auto* form = g_lastTarget ? RE::TESForm::LookupByID(g_lastTarget) : nullptr; form && form->As<RE::Actor>()) {
+                form->As<RE::Actor>()->ForEachEquippedItem([&](const RE::BGSInventoryItem& i) {
+                    if (i.object && !proto::IsRuntimeFormId(i.object->GetFormID())) {
+                        item = i.object->GetFormID();
+                        return RE::BSContainer::ForEachResult::kStop;
+                    }
+                    return RE::BSContainer::ForEachResult::kContinue;
+                });
+            }
+            log::Info("[world] @takefromtarget {:08X} item {:08X}: {}", g_lastTarget, item, item && avatars::TakeIntoPlayer(g_lastTarget, item, 1) ? "sent" : "refused");
+            return true;
+        }
+        if (step == "@lootlast") {
+            // The player takes everything from the NPC the last @hostile/@kill picked.
+            log::Info("[world] @lootlast {:08X}", g_lastTarget);
+            if (g_lastTarget != 0) avatars::ContainerTakeAll(g_lastTarget);
             return true;
         }
         if (step == "@killtarget") {
@@ -1313,7 +1385,7 @@ namespace cosync::plugin::worldsync
                 // Other references of the same design: a stand-in the script call has not reported yet.
                 for (std::uint32_t id = 0xFF000000; id < 0xFF080000; ++id) {
                     auto* form = RE::TESForm::LookupByID(id);
-                    auto* r = form ? form->As<RE::TESObjectREFR>() : nullptr;
+                    auto* r = avatars::AsRef(form);
                     if (!r || r == ship || BaseId(r) != BaseId(ship)) continue;
                     const auto at = r->GetPosition();
                     log::Info("[ship] same design: {:08X} cell {:08X} pos {:.1f} {:.1f} {:.1f} in space {} disabled {} 3D {}", id, r->parentCell ? r->parentCell->GetFormID() : 0, at.x,

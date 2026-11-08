@@ -282,6 +282,22 @@ namespace cosync::plugin::npcsync
         }
     }
 
+    std::uint32_t Replication::SharedNpcId(std::uint32_t localId) const
+    {
+        if (_isAuthority) return localId;
+        for (const auto& [authorityId, local] : _idMap) {
+            if (local == localId) return authorityId;
+        }
+        return _sameRuntimeId.contains(localId) ? localId : 0;
+    }
+
+    std::uint32_t Replication::LocalNpcId(std::uint32_t sharedId) const
+    {
+        if (_isAuthority) return sharedId;
+        const auto id = LocalId(sharedId);
+        return proto::IsRuntimeFormId(sharedId) ? id : 0;
+    }
+
     std::uint32_t Replication::LocalId(std::uint32_t authorityId) const
     {
         if (const auto it = _idMap.find(authorityId); it != _idMap.end()) return it->second;

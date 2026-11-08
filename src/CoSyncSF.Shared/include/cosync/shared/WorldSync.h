@@ -27,7 +27,8 @@ namespace cosync::world
         [[nodiscard]] std::size_t Size() const noexcept { return _entries.size(); }
         void Clear() noexcept { _entries.clear(); }
         // The total change counted so far for that item in that container, 0 if none.
-        [[nodiscard]] std::int32_t ContainerTotal(std::uint32_t container, std::uint32_t item) const;
+        [[nodiscard]] std::int32_t ContainerTotal(std::uint32_t container, std::uint32_t item,
+                                                  proto::WorldEventKind kind = proto::WorldEventKind::ContainerItem) const;
 
     private:
         using Key = std::tuple<std::uint8_t, std::uint32_t, std::uint32_t>;

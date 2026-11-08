@@ -20,13 +20,12 @@ namespace cosync::world
         if (event.kind == WorldEventKind::ItemReturned) return true;
         const auto kind = static_cast<std::uint8_t>(event.kind);
         // A quest keeps every stage it reached; anything else has one current value per item.
-        const auto detail = event.kind == WorldEventKind::QuestStage ? static_cast<std::uint32_t>(event.value)
-                            : event.kind == WorldEventKind::ContainerItem ? event.itemId
-                                                                          : 0u;
+        const bool counts = event.kind == WorldEventKind::ContainerItem || event.kind == WorldEventKind::NpcContainerItem;
+        const auto detail = event.kind == WorldEventKind::QuestStage ? static_cast<std::uint32_t>(event.value) : counts ? event.itemId : 0u;
         const Key key{ kind, event.formId, detail };
         const auto it = _entries.find(key);
         if (it != _entries.end()) {
-            if (event.kind == WorldEventKind::ContainerItem) {
+            if (counts) {
                 it->second.event.value += event.value;
                 if (it->second.event.value == 0) _entries.erase(it);
             } else {
@@ -40,9 +39,9 @@ namespace cosync::world
         return true;
     }
 
-    std::int32_t Ledger::ContainerTotal(std::uint32_t container, std::uint32_t item) const
+    std::int32_t Ledger::ContainerTotal(std::uint32_t container, std::uint32_t item, WorldEventKind kind) const
     {
-        const auto it = _entries.find({ static_cast<std::uint8_t>(WorldEventKind::ContainerItem), container, item });
+        const auto it = _entries.find({ static_cast<std::uint8_t>(kind), container, item });
         return it == _entries.end() ? 0 : it->second.event.value;
     }
 
@@ -50,7 +49,7 @@ namespace cosync::world
     // missed after resuming a dropped connection.
     std::int32_t MissingContainerChange(const Ledger& known, const proto::WorldEvent& history)
     {
-        return history.value - known.ContainerTotal(history.formId, history.itemId);
+        return history.value - known.ContainerTotal(history.formId, history.itemId, history.kind);
     }
 
     std::vector<proto::WorldEvent> Ledger::Snapshot() const

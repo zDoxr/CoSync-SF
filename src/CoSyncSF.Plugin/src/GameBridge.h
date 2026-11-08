@@ -85,7 +85,8 @@ namespace cosync::plugin
             std::uint32_t snaps = 0;  // controls mode: drift corrections
             std::chrono::steady_clock::time_point nextStopCombat{};
             std::uint32_t combatStops = 0;
-            bool shownDead = false;  // the remote player is at 0 health, and the proxy was killed
+            bool shownDead = false;
+            std::chrono::steady_clock::time_point awaySince{};  // when the remote player stopped being here  // the remote player is at 0 health, and the proxy was killed
             std::chrono::steady_clock::time_point deathCheckAt{};
             std::chrono::steady_clock::time_point deathVerifyAt{};
             std::chrono::steady_clock::time_point nextLookLog{};

@@ -90,7 +90,7 @@ namespace cosync::plugin::avatars
         {
             if (refId == 0x14) return RE::PlayerCharacter::GetSingleton();
             auto* form = RE::TESForm::LookupByID(refId);
-            return form ? form->As<RE::TESObjectREFR>() : nullptr;
+            return avatars::AsRef(form);
         }
 
         RE::Actor* LookupActor(std::uint32_t refId)
@@ -399,9 +399,9 @@ namespace cosync::plugin::avatars
         // LookupByID<TESObjectREFR> refuses actors, the player among them.
         auto* refForm = RE::TESForm::LookupByID(refId);
         auto* targetForm = RE::TESForm::LookupByID(targetId);
-        RE::TESObjectREFR* ref = refForm ? refForm->As<RE::TESObjectREFR>() : nullptr;
+        RE::TESObjectREFR* ref = avatars::AsRef(refForm);
         if (refId == 0x14) ref = RE::PlayerCharacter::GetSingleton();  // LookupByID(0x14) finds no player here
-        auto* target = targetForm ? targetForm->As<RE::TESObjectREFR>() : nullptr;
+        auto* target = avatars::AsRef(targetForm);
         if (!ref || !target) {
             log::Warn("[ship] MoveTo: {:08X} found {}, {:08X} found {}", refId, ref != nullptr, targetId, target != nullptr);
             return false;
@@ -421,7 +421,7 @@ namespace cosync::plugin::avatars
     bool RequestPlaceShip(std::uint32_t anchorId, std::uint32_t shipBaseId, std::shared_ptr<std::atomic<std::uint32_t>> result)
     {
         auto* anchorForm = RE::TESForm::LookupByID(anchorId);
-        auto* anchor = anchorForm ? anchorForm->As<RE::TESObjectREFR>() : nullptr;
+        auto* anchor = avatars::AsRef(anchorForm);
         auto* base = RE::TESForm::LookupByID(shipBaseId);
         if (!anchor || !base) return false;
         return Dispatch(
@@ -454,7 +454,7 @@ namespace cosync::plugin::avatars
     bool PlaceRef(std::uint32_t refId, const Vec3& position, const Vec3& angle)
     {
         auto* form = RE::TESForm::LookupByID(refId);
-        auto* ref = form ? form->As<RE::TESObjectREFR>() : nullptr;
+        auto* ref = avatars::AsRef(form);
         if (!ref) return false;
         const auto self = ScriptObjectFor(ref);
         Dispatch(self, "SetAngle", [angle](RE::BSScrapArray<Variable>& a) {
@@ -480,11 +480,59 @@ namespace cosync::plugin::avatars
         });
     }
 
+    RE::TESObjectREFR* AsRef(RE::TESForm* form)
+    {
+        if (!form) return nullptr;
+        if (auto* ref = form->As<RE::TESObjectREFR>()) return ref;
+        return form->Is(RE::FormType::kACHR) ? static_cast<RE::TESObjectREFR*>(form) : nullptr;
+    }
+
     bool KillActor(std::uint32_t actorId)
     {
         auto* actor = LookupActor(actorId);
         if (!actor) return false;
         return Dispatch(ScriptObjectFor(actor), "Kill", [](RE::BSScrapArray<Variable>& a) { PushNone(a); });
+    }
+
+    bool GiveFromPlayer(std::uint32_t refId, std::uint32_t itemId, int count)
+    {
+        auto* target = LookupRefAny(refId);
+        auto* item = RE::TESForm::LookupByID(itemId);
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!target || !item || !player) return false;
+        // The target's own script object: packing a generated NPC from its pointer refused the call.
+        // Packed as what it is: an actor packed as an ObjectReference found no script object.
+        auto* actor = target->As<RE::Actor>();
+        const auto other = actor ? ScriptObjectFor(actor) : ScriptObjectFor(target);
+        if (!other) {
+            log::Info("[world] no script object for {:08X}", refId);
+            return false;
+        }
+        return Dispatch(ScriptObjectFor(static_cast<RE::TESObjectREFR*>(player)), "RemoveItem", [other, item, count](RE::BSScrapArray<Variable>& a) {
+            Push(a, item);
+            Push(a, count);
+            Push(a, true);  // abSilent
+            a.emplace_back();
+            a.back() = other;
+        });
+    }
+
+    bool TakeIntoPlayer(std::uint32_t refId, std::uint32_t itemId, int count)
+    {
+        auto* source = LookupRefAny(refId);
+        auto* item = RE::TESForm::LookupByID(itemId);
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        auto* actor = source ? source->As<RE::Actor>() : nullptr;
+        const auto self = actor ? ScriptObjectFor(actor) : source ? ScriptObjectFor(source) : nullptr;
+        log::Info("[world] take from {:08X}: reference {}, actor {}, item {}, script object {} [{}]", refId, source != nullptr, actor != nullptr, item != nullptr,
+                  self != nullptr, TypeChain(self));
+        if (!source || !item || !player || !self) return false;
+        return Dispatch(self, "RemoveItem", [item, count, player](RE::BSScrapArray<Variable>& a) {
+            Push(a, item);
+            Push(a, count);
+            Push(a, true);  // abSilent
+            Push(a, static_cast<RE::TESObjectREFR*>(player));
+        });
     }
 
     bool ResurrectActor(std::uint32_t actorId)
@@ -586,7 +634,7 @@ namespace cosync::plugin::avatars
     {
         // LookupByID<TESObjectREFR> refuses actors, so talking to an NPC was never sent.
         auto* form = RE::TESForm::LookupByID(refId);
-        auto* ref = form ? form->As<RE::TESObjectREFR>() : nullptr;
+        auto* ref = avatars::AsRef(form);
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!ref || !player) return false;
         return Dispatch(ScriptObjectFor(ref), "Activate", [player](RE::BSScrapArray<Variable>& a) {

@@ -377,6 +377,9 @@ namespace cosync::proto
         // A dropped item (1.16) was picked up: formId its shared ID (see DroppedItem), itemId its
         // base, value how many the player got.
         SharedRemoved = 8,
+        // A runtime NPC's inventory changed (1.16): formId the NPC under the NPC authority's number,
+        // which every copy maps to its own (issue #6). itemId the item, value the change in count.
+        NpcContainerItem = 9,
     };
     struct WorldEvent
     {

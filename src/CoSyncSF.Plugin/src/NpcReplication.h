@@ -36,6 +36,11 @@ namespace cosync::plugin::npcsync
     class Replication
     {
     public:
+        // A runtime NPC under the NPC authority's number, from this copy's, and back. 0 when the NPC
+        // is not paired. On the authority both are the same number.
+        [[nodiscard]] std::uint32_t SharedNpcId(std::uint32_t localId) const;
+        [[nodiscard]] std::uint32_t LocalNpcId(std::uint32_t sharedId) const;
+
         struct Context
         {
             bool inWorld = false;

@@ -822,7 +822,8 @@ namespace cosync::proto
         case WorldEventKind::ItemReturned: return e.itemId != 0 && e.value > 0 && e.value <= 0xFFFF;
         case WorldEventKind::SharedRemoved: return e.itemId != 0 && e.value >= 0 && e.value <= 0xFFFF;
         case WorldEventKind::QuestStage: return e.value >= 0 && e.value <= 0xFFFF;
-        case WorldEventKind::ContainerItem: return e.itemId != 0 && e.value != 0;
+        case WorldEventKind::ContainerItem:
+        case WorldEventKind::NpcContainerItem: return e.itemId != 0 && e.value != 0;
         }
         return false;
     }

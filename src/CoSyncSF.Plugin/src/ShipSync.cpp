@@ -47,7 +47,7 @@ namespace cosync::plugin::ships
                 if (!g_asked) g_asked = avatars::RequestHomeShip(g_home);
                 if (const auto id = g_home->load(); id > 1) {
                     auto* form = RE::TESForm::LookupByID(id);
-                    ship = form ? form->As<RE::TESObjectREFR>() : nullptr;
+                    ship = avatars::AsRef(form);
                 }
             }
             return ship && ship->parentCell && ship->GetBaseObject() ? ship : nullptr;

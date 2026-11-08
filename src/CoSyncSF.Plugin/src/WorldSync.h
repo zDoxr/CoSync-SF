@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -36,6 +37,9 @@ namespace cosync::plugin::worldsync
         // '@door' and '@item': the local player activates the nearest one (DevHarness).
         bool RunStep(const std::string& step);
         void SetWorker(net::NetworkWorker* worker) noexcept { _worker = worker; }
+        // How runtime NPCs are named across copies (NPC sync's pairing). Without it their loot stays local.
+        using IdMap = std::function<std::uint32_t(std::uint32_t)>;
+        void SetNpcIds(IdMap toShared, IdMap toLocal) { _npcToShared = std::move(toShared); _npcToLocal = std::move(toLocal); }
 
     private:
         using Clock = std::chrono::steady_clock;
@@ -76,7 +80,9 @@ namespace cosync::plugin::worldsync
         [[nodiscard]] bool Apply(const proto::WorldEvent& event, bool mayStart, Clock::time_point now);
 
         PlayerId _authority = kInvalidPlayerId;
-        net::NetworkWorker* _worker = nullptr;  // for '@netdrop'
+        net::NetworkWorker* _worker = nullptr;
+        IdMap _npcToShared, _npcToLocal;
+        std::uint64_t _npcLoot = 0;  // for '@netdrop'
         bool _sinkInstalled = false;
         world::EchoFilter _echo;
         std::vector<Watch> _watches;

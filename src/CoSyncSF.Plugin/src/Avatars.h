@@ -1,5 +1,11 @@
 #pragma once
 
+namespace RE
+{
+    class TESForm;
+    class TESObjectREFR;
+}
+
 #include "cosync/shared/Types.h"
 
 #include <atomic>
@@ -222,8 +228,15 @@ namespace cosync::plugin::avatars
     bool PlaceRef(std::uint32_t refId, const Vec3& position, const Vec3& angleRadians);
     // Actor.StartCombat against the local player, and Actor.Kill with no killer.
     bool StartCombatWithPlayer(std::uint32_t actorId);
+    // A form as a reference, actors included. TESForm::As<TESObjectREFR> returns null for an actor
+    // (form type ACHR) on this CommonLibSF, which silently skipped every NPC (found 2026-11-07).
+    [[nodiscard]] RE::TESObjectREFR* AsRef(RE::TESForm* form);
     bool KillActor(std::uint32_t actorId);
     bool ResurrectActor(std::uint32_t actorId);  // Papyrus Actor.Resurrect()
+    // The player gives `count` of the item to that reference (RemoveItem with akOtherContainer).
+    bool GiveFromPlayer(std::uint32_t refId, std::uint32_t itemId, int count);
+    // That reference gives `count` of the item to the player (its RemoveItem, akOtherContainer the player).
+    bool TakeIntoPlayer(std::uint32_t refId, std::uint32_t itemId, int count);
     // The engine's own IsDead (vtable slot 269, 0x1FC7FB0). Main thread. False if not an actor.
     [[nodiscard]] bool IsActorDead(std::uint32_t actorId);
     // Debug.Notification: a line at the top left of the HUD.

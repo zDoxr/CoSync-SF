@@ -335,7 +335,7 @@ namespace cosync::plugin
                 m.distance = DistanceTo(r);
                 const auto& av = r.avatar;
                 if (haveCamera && m.distance >= 0.0f && m.distance < kFadeEnd && av.refId != 0 && av.loaded3DAt != kNever) {
-                    if (auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(av.refId)) {
+                    if (auto* ref = avatars::AsRef(RE::TESForm::LookupByID(av.refId))) {  // the proxy is an actor
                         const auto p = ref->GetPosition();
                         float x = 0.0f, y = 0.0f;
                         if (gamecamera::Project(view, { p.x, p.y, p.z + kHeadClearance }, x, y)) {
@@ -363,6 +363,8 @@ namespace cosync::plugin
     void GameBridge::EnableWorldSync(bool enable)
     {
         _worldSyncEnabled = enable;
+        _world.SetNpcIds([this](std::uint32_t id) { return _npcSyncEnabled ? _npcs.SharedNpcId(id) : 0u; },
+                         [this](std::uint32_t id) { return _npcSyncEnabled ? _npcs.LocalNpcId(id) : 0u; });
         if (enable) {
             dev::SetCommandHandler([this](const std::string& step) {
                 if (step.starts_with("@fakehealth ")) {
@@ -767,9 +769,16 @@ namespace cosync::plugin
                 }
             }
         }
+        // A stall on the other copy (0.3 s on 2026-11-07) leaves its pose stale for a moment. Only a
+        // player who stays away is let go, or the proxy is thrown away and spawned again at once.
         if (!visibleHere) {
-            ReleaseAvatar(id, avatar, "not in your cell");
-            return;
+            if (avatar.awaySince == std::chrono::steady_clock::time_point{}) avatar.awaySince = now;
+            if (avatar.refId == 0 || now - avatar.awaySince >= std::chrono::seconds(2)) {
+                ReleaseAvatar(id, avatar, "not in your cell");
+                return;
+            }
+        } else {
+            avatar.awaySince = {};
         }
 
         if (avatar.refId == 0 && !avatar.pending && _vmSettled && TemplateDecided() && now >= avatar.nextAttempt) {
