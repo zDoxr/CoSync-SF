@@ -236,6 +236,18 @@ namespace cosync::plugin::npcsync
 
     static_assert(kReplicationSlots == movecontrols::kNpcReplaySlots);
 
+    // Dev guard for unattended combat tests: the player's health back to full whenever it falls under
+    // `belowPercent`, so a test never kills the player (death loads the newest save). Main thread.
+    void KeepPlayerAlive(float belowPercent)
+    {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        float max = 0.0f;
+        const auto health = player ? HealthPercent(player, &max) : std::nullopt;
+        if (!health || *health >= belowPercent || max <= 0.0f) return;
+        ModHealth(player, max);
+        log::Info("[status] keepalive: health was {:.0f}%, restored", *health);
+    }
+
     void Replication::Install(std::string& detail)
     {
         animevents::InstallNpcCapture(detail);

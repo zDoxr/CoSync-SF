@@ -480,6 +480,20 @@ namespace cosync::plugin::avatars
         });
     }
 
+    bool StartCombatWith(std::uint32_t actorId, std::uint32_t targetId)
+    {
+        auto* actor = LookupActor(actorId);
+        auto* target = LookupActor(targetId);
+        if (!actor || !target) return false;
+        const auto targetObject = ScriptObjectFor(target);
+        if (!targetObject) return false;
+        return Dispatch(ScriptObjectFor(actor), "StartCombat", [targetObject](RE::BSScrapArray<Variable>& a) {
+            a.emplace_back();
+            a.back() = targetObject;
+            Push(a, true);  // abPreferredTarget
+        });
+    }
+
     RE::TESObjectREFR* AsRef(RE::TESForm* form)
     {
         if (!form) return nullptr;

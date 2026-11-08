@@ -1140,7 +1140,8 @@ namespace cosync::plugin::worldsync
             log::Info("[world] {} with locks:{}", locked, lockeds);
             return true;
         }
-        if (step == "@hostile" || step == "@kill" || step == "@killrt" || step == "@pickrt") {
+        const bool atProxy = step.starts_with("@hostileproxy ");
+        if (step == "@hostile" || step == "@kill" || step == "@killrt" || step == "@pickrt" || atProxy) {
             // The nearest living NPC that is not a stand-in for a player: attacks the local player,
             // or dies. The authority's engine decides what the others see.
             auto* player = RE::PlayerCharacter::GetSingleton();
@@ -1155,6 +1156,7 @@ namespace cosync::plugin::worldsync
                     auto* r = static_cast<RE::TESObjectREFR*>(form);
                     if (r == player || IsGone(r) || !r->parentCell->IsAttached() || static_cast<RE::Actor*>(r)->IsDead()) continue;
                     if (playerBase && r->GetBaseObject() == playerBase) continue;  // a remote player's stand-in
+                    if (atProxy && proto::IsRuntimeFormId(id)) continue;  // a data-file NPC, a guard say: citizens flee
                     if (step == "@killrt" || step == "@pickrt") {
                         // A runtime NPC, numbered per copy, that carries something to loot.
                         if (!proto::IsRuntimeFormId(id)) continue;
@@ -1173,12 +1175,23 @@ namespace cosync::plugin::worldsync
                     }
                 }
             }
+            if (atProxy && step.size() > 23) {
+                // "@hostileproxy <stand-in> <attacker>": that attacker, wherever it is.
+                if (auto* chosen = avatars::AsRef(RE::TESForm::LookupByID(static_cast<std::uint32_t>(std::stoul(step.substr(23), nullptr, 16)))))
+                    best = chosen;
+            }
             if (!best) {
                 log::Warn("[combat] {}: nobody within 2500", step);
                 return true;
             }
             log::Info("[combat] {}: {:08X} base {:08X} at {:.0f}", step, best->GetFormID(), BaseId(best), bestDistance);
-            if (step == "@hostile") {
+            if (atProxy) {
+                // "@hostileproxy <stand-in>": attacks a remote player's stand-in, to see whether the
+                // guest takes the damage on their own copy. GameBridge fills in the stand-in.
+                const auto proxy = static_cast<std::uint32_t>(std::stoul(step.substr(14), nullptr, 16));
+                log::Info("[combat] @hostileproxy: {:08X} attacks the stand-in {:08X}: {}", best->GetFormID(), proxy,
+                          proxy && avatars::StartCombatWith(best->GetFormID(), proxy) ? "sent" : "refused");
+            } else if (step == "@hostile") {
                 avatars::StartCombatWithPlayer(best->GetFormID());
             } else if (step == "@pickrt") {
                 // only picked, for '@givetarget'

@@ -244,6 +244,10 @@ namespace cosync::plugin
             proto::PlayerStatus st = _localStatus.value_or(proto::PlayerStatus{});
             if (const int h = _statusQuery->healthPercent.load(); h >= 0) st.healthPercent = static_cast<std::uint8_t>(std::min(h, 100));
             if (_fakeHealth >= 0) st.healthPercent = static_cast<std::uint8_t>(_fakeHealth);
+            if (!_localStatus || _localStatus->healthPercent != st.healthPercent) {
+                static int logged = 0;
+                if (++logged <= 60) log::Info("[status] local health {}%", st.healthPercent);
+            }
             if (const int l = _statusQuery->level.load(); l > 0) st.level = static_cast<std::uint16_t>(std::min(l, 65535));
             const int space = _statusQuery->inSpace.load();
             std::string planet;
@@ -367,6 +371,18 @@ namespace cosync::plugin
                          [this](std::uint32_t id) { return _npcSyncEnabled ? _npcs.LocalNpcId(id) : 0u; });
         if (enable) {
             dev::SetCommandHandler([this](const std::string& step) {
+                if (step == "@hostileproxy" || step.starts_with("@hostileproxy ")) {
+                    std::uint32_t proxy = 0;
+                    for (const auto& [id, remote] : _remotes) {
+                        if (remote.avatar.refId != 0) proxy = remote.avatar.refId;
+                    }
+                    return _world.RunStep(std::format("@hostileproxy {:08X}{}", proxy, step.size() > 13 ? step.substr(13) : std::string()));
+                }
+                if (step == "@keepalive") {
+                    _keepAlive = true;
+                    log::Info("[status] @keepalive: health restored under 60%");
+                    return true;
+                }
                 if (step.starts_with("@fakehealth ")) {
                     // "@fakehealth <0..100|off>": the health this copy sends, for testing what others show.
                     const auto value = step.substr(12);
@@ -449,6 +465,7 @@ namespace cosync::plugin
         if (_readLocalPlayer) {
             SampleLocalPlayer(*worker);
         }
+        if (_keepAlive && _inWorld) npcsync::KeepPlayerAlive(60.0f);
         UpdateRemotePlayers(*worker);
         _ships.Tick();
         _dialogue.Tick(*worker, _inWorld && worker->Status().state == net::ClientState::InSession);

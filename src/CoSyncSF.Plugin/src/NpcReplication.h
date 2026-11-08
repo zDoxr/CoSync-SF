@@ -33,6 +33,8 @@ namespace cosync::plugin::npcsync
 {
     inline constexpr std::size_t kReplicationSlots = 256;
 
+    void KeepPlayerAlive(float belowPercent);
+
     class Replication
     {
     public:

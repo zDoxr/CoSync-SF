@@ -232,6 +232,7 @@ namespace cosync::plugin::avatars
     // (form type ACHR) on this CommonLibSF, which silently skipped every NPC (found 2026-11-07).
     [[nodiscard]] RE::TESObjectREFR* AsRef(RE::TESForm* form);
     bool KillActor(std::uint32_t actorId);
+    bool StartCombatWith(std::uint32_t actorId, std::uint32_t targetId);  // Papyrus Actor.StartCombat(target)
     bool ResurrectActor(std::uint32_t actorId);  // Papyrus Actor.Resurrect()
     // The player gives `count` of the item to that reference (RemoveItem with akOtherContainer).
     bool GiveFromPlayer(std::uint32_t refId, std::uint32_t itemId, int count);

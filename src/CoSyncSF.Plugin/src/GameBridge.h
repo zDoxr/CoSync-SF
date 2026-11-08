@@ -61,6 +61,7 @@ namespace cosync::plugin
         };
         void SetAvatarOptions(const AvatarOptions& o) noexcept { _opt = o; }
         int _fakeHealth = -1;  // '@fakehealth': sent instead of the real health, -1 = off
+        bool _keepAlive = false;  // '@keepalive': dev guard against dying in a test
         void Tick();
 
     private:
