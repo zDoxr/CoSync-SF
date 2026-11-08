@@ -149,6 +149,8 @@ namespace cosync::plugin::worldsync
         std::vector<std::pair<std::uint32_t, std::shared_ptr<std::atomic<std::int32_t>>>> _counts;
         std::set<std::uint32_t> _awaitedContainers;  // applied here: log what the engine reports
         std::map<std::uint32_t, std::int32_t> _knownLocks;  // the event also fires when nothing changed
+        std::map<std::uint32_t, std::int32_t> _knownDestroyed;
+        std::uint64_t _destructionEvents = 0;
         // Every change this copy made or applied. Loading a save puts the world back to how the save
         // has it, so these are applied again once the player is back in the world.
         world::Ledger _seen;

@@ -874,8 +874,16 @@ namespace cosync::plugin::npcsync
         }
 
         // Its conversation with this client's player needs the local actor, in any mode.
-        if (!InDialogueWithPlayer(actor) && FollowsCrowd(formId, t)) {
-            if (t.slot >= 0) Release(formId, t, "crowd: following the authority's targets");
+        // Handing an NPC over and back is a race with the engine's own actor update (issue #23: both
+        // freezes came right after one, about 40 a minute), so the two soft cases below keep an NPC
+        // as it is for at least kMinHold. Gone, unloaded or dead still let go at once.
+        constexpr auto kMinHold = 10s;
+        const bool mayLetGo = t.slot < 0 || now - t.heldSince >= kMinHold;
+        if (!InDialogueWithPlayer(actor) && FollowsCrowd(formId, t) && mayLetGo) {
+            if (t.slot >= 0) {
+                Release(formId, t, "crowd: following the authority's targets");
+                t.nextAttempt = now + kMinHold;
+            }
             _crowdOrders.push_back({ formId, t.crowdHandle });
             FollowWhileFree(formId, t, actor, now);
             return;
@@ -883,9 +891,11 @@ namespace cosync::plugin::npcsync
 
         // In furniture on the authority: a held NPC cannot sit, so its local AI gets it back here.
         // Stationary too: a moving NPC stays driven whatever its flags say.
-        if ((t.flags & proto::kNpcSitting) != 0 && std::hypot(t.velX, t.velY) < 0.2f) {
-            if (t.slot >= 0) Release(formId, t, "sitting on the authority");
-            t.nextAttempt = now + 1s;
+        if ((t.flags & proto::kNpcSitting) != 0 && std::hypot(t.velX, t.velY) < 0.2f && mayLetGo) {
+            if (t.slot >= 0) {
+                Release(formId, t, "sitting on the authority");
+                t.nextAttempt = now + kMinHold;
+            }
             FollowWhileFree(formId, t, actor, now);
             return;
         }
@@ -951,6 +961,7 @@ namespace cosync::plugin::npcsync
         }
         *free = true;
         t.slot = slot;
+        t.heldSince = Clock::now();
         if (!movecontrols::SetControllerHeld(formId, true)) log::Warn("[npc] {:08X}: controller not held", formId);
         animevents::SetGraphLocked(formId, true);
         return true;

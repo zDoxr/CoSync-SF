@@ -23,7 +23,7 @@ Status words, used strictly:
 | Weather | **Two copies** | Host changed `001034AB` to `0002B07E`, copy 2 followed within 3 s |
 | Loading a save mid-session | **Two copies** | Copy 1 unlocked `001661A7`, then loaded its save, which has it locked. 5 s later the change was applied again and the engine read back unlocked. The session stayed up |
 | Locks | **Two copies** | `001661A7` unlocked then locked on copy 1, copy 2 read back engine state 0 then 1 |
-| Destroyed objects | Implemented | Apply and read-back written. The engine event is not yet identified, and no breakable object was found in the test save |
+| Destroyed objects | Implemented | Apply and read-back written. The engine event is found (ID 64125, RE 12.11) and sinked, sending whether the reference is destroyed now. Not seen firing: no breakable object in the test save |
 | Runtime (FF) containers | Unit tested | Deliberately not shared, see below |
 | Runtime NPC inventories (#6) | **Two copies** | Copy 1 took `0031144F` from crowd NPC `FF01127D`. Copy 2 applied it to its own paired NPC `FF011200` 0.04 s later, and its engine reported that NPC losing the item. Protocol 1.16 `NpcContainerItem`, named by the NPC authority's number |
 | Dropped connection and resume (#14) | **Two copies** | Copy 2 dropped its connection for 20 s (`@netdrop 20`) and resumed as the same player. Copy 1 unlocked `001661A7` meanwhile, and copy 2 read it back as unlocked 3 s after resuming. The 111 container changes copy 2 already had came back with the history and were all skipped as applied: 111 applies, not 222 |

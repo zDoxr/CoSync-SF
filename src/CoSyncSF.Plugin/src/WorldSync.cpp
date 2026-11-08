@@ -37,6 +37,9 @@ namespace cosync::plugin::worldsync
         constexpr std::uint64_t kContainerChangedId = 64118;  // u32 from, to, item, count
         constexpr std::uint64_t kQuestStageId = 64161;        // u32 quest, stage
         constexpr std::uint64_t kLockChangedId = 64148;       // the reference, then other words
+        // TESDestructionStageChangedEvent: getter 0xB997E0, raised by 0xB97470 (ID 64056) as
+        // { reference, old stage, new stage }. Found 2026-11-07 from the source's type name.
+        constexpr std::uint64_t kDestructionChangedId = 64125;
         constexpr std::uint32_t kPlayerRef = 0x14;
         // quest+0x114, as Quest.IsRunning (0x20CDCA0) and Quest.IsActive (0x20CDC20) read them.
         constexpr std::size_t kQuestFlags = 0x114;
@@ -67,6 +70,7 @@ namespace cosync::plugin::worldsync
         std::vector<ContainerEvent> g_containerChanges;
         std::vector<RawEvent> g_questStages;
         std::vector<std::uint32_t> g_lockChanges;
+        std::vector<std::uint32_t> g_destructionChanges;
 
         // On whatever thread activated the reference, so it only notes the form ID.
         class ActivationSink final : public RE::BSTEventSink<RE::Activation::Event>
@@ -124,6 +128,24 @@ namespace cosync::plugin::worldsync
             }
         };
         LockSink g_lockSink;
+
+        struct DestructionEvent
+        {
+            RE::TESObjectREFR* ref;
+            std::int32_t oldStage;
+            std::int32_t newStage;
+        };
+        class DestructionSink final : public RE::BSTEventSink<DestructionEvent>
+        {
+        public:
+            RE::BSEventNotifyControl ProcessEvent(const DestructionEvent& event, RE::BSTEventSource<DestructionEvent>*) override
+            {
+                std::scoped_lock lock(g_activationLock);
+                if (event.ref && g_destructionChanges.size() < 256) g_destructionChanges.push_back(event.ref->GetFormID());
+                return RE::BSEventNotifyControl::kContinue;
+            }
+        };
+        DestructionSink g_destructionSink;
 
         const auto g_homeShip = std::make_shared<std::atomic<std::uint32_t>>(0);
         const auto g_standIn = std::make_shared<std::atomic<std::uint32_t>>(0);
@@ -566,7 +588,7 @@ namespace cosync::plugin::worldsync
 
     void Replication::DrainActivations(Clock::time_point now)
     {
-        std::vector<std::uint32_t> ids, locks;
+        std::vector<std::uint32_t> ids, locks, destructions;
         std::vector<ContainerEvent> changes;
         std::vector<RawEvent> stages;
         {
@@ -575,6 +597,20 @@ namespace cosync::plugin::worldsync
             changes.swap(g_containerChanges);
             stages.swap(g_questStages);
             locks.swap(g_lockChanges);
+            destructions.swap(g_destructionChanges);
+        }
+        for (const auto id : destructions) {
+            // Whether it is destroyed now, as with locks: a change applied from the network is
+            // already known, so it is not sent back.
+            if (proto::IsRuntimeFormId(id)) continue;
+            auto* ref = LookupRef(id, 0);
+            if (!ref) continue;
+            const std::int32_t state = IsDestroyed(ref) ? 1 : 0;
+            const auto known = _knownDestroyed.find(id);
+            const bool changed = known == _knownDestroyed.end() || known->second != state;
+            _knownDestroyed[id] = state;
+            if (++_destructionEvents <= 30) log::Info("[world] destruction stage changed on {:08X}: destroyed {}", id, state);
+            if (changed) _outgoing.push_back({ WorldEventKind::Destroyed, id, BaseId(ref), state });
         }
         for (const auto id : locks) {
             // Runtime references are numbered per copy (issue #6). A change a script makes on every
@@ -750,6 +786,7 @@ namespace cosync::plugin::worldsync
                 ++_dropped;
                 return true;
             }
+            _knownDestroyed[e.formId] = e.value;
             if (IsDestroyed(ref) == (e.value != 0)) return true;
             avatars::SetDestroyed(e.formId, e.value != 0);
             break;
@@ -942,6 +979,7 @@ namespace cosync::plugin::worldsync
             reinterpret_cast<RE::BSTEventSource<ContainerEvent>*>(RawSource(kContainerChangedId))->RegisterSink(&g_containerSink);
             RawSource(kQuestStageId)->RegisterSink(&g_questSink);
             reinterpret_cast<RE::BSTEventSource<RefEvent>*>(RawSource(kLockChangedId))->RegisterSink(&g_lockSink);
+            reinterpret_cast<RE::BSTEventSource<DestructionEvent>*>(RawSource(kDestructionChangedId))->RegisterSink(&g_destructionSink);
             log::Info("[world] watching what the local player activates");
         }
         if (!context.ready) {

@@ -72,6 +72,7 @@ namespace cosync::plugin::npcsync
         struct Tracked
         {
             int slot = -1;  // >= 0 while taken over
+            Clock::time_point heldSince{};  // when it was taken over
             Vec3 position{};
             float velX = 0.0f, velY = 0.0f, velZ = 0.0f;
             float yaw = 0.0f;
