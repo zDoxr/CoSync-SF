@@ -143,7 +143,8 @@ namespace cosync::plugin::worldsync
         std::vector<Placing> _placing;
         std::uint32_t _dropSequence = 0;
         std::uint32_t _lastPlacedDrop = 0;  // for '@takedrop'
-        std::shared_ptr<std::atomic<std::uint32_t>> _dropProbe;  // '@drop': what DropObject gave
+        std::shared_ptr<std::atomic<std::uint32_t>> _dropProbe;
+        std::vector<std::pair<std::uint32_t, std::shared_ptr<std::atomic<std::int32_t>>>> _teammateChecks;  // '@followers'  // '@drop': what DropObject gave
         std::uint64_t _dropsSent = 0;
         std::uint64_t _dropsPlaced = 0;
         std::vector<std::pair<std::uint32_t, std::shared_ptr<std::atomic<std::int32_t>>>> _counts;

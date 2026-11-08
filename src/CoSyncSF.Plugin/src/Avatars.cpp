@@ -501,6 +501,15 @@ namespace cosync::plugin::avatars
         return form->Is(RE::FormType::kACHR) ? static_cast<RE::TESObjectREFR*>(form) : nullptr;
     }
 
+    bool RequestIsTeammate(std::uint32_t actorId, std::shared_ptr<std::atomic<std::int32_t>> result)
+    {
+        auto* actor = LookupActor(actorId);
+        if (!actor) return false;
+        return Dispatch(
+            ScriptObjectFor(actor), "IsPlayerTeammate", [](RE::BSScrapArray<Variable>&) {},
+            [result](const Variable& v) { result->store(v.is<bool>() ? (RE::BSScript::get<bool>(v) ? 1 : 0) : -1); }, [result] { result->store(-1); });
+    }
+
     bool KillActor(std::uint32_t actorId)
     {
         auto* actor = LookupActor(actorId);

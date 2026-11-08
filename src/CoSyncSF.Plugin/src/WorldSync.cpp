@@ -1,6 +1,7 @@
 #include "WorldSync.h"
 
 #include "Avatars.h"
+#include "NpcSync.h"
 #include "DevHarness.h"
 
 #include "cosync/shared/Log.h"
@@ -1020,6 +1021,18 @@ namespace cosync::plugin::worldsync
                 log::Info("[world] DropObject gave {:08X}, not a reference", id);
             }
         }
+        std::erase_if(_teammateChecks, [](const auto& c) {
+            const auto n = c.second->load();
+            if (n == -2) return false;
+            if (n == 1) {
+                auto* form = RE::TESForm::LookupByID(c.first);
+                auto* actor = form ? form->As<RE::Actor>() : nullptr;
+                const auto base = actor ? actor->GetBaseObject() : nullptr;
+                auto* full = base ? starfield_cast<RE::TESFullName*>(base.get()) : nullptr;
+                log::Info("[world] teammate {:08X} '{}'", c.first, full && full->GetFullName() ? full->GetFullName() : "");
+            }
+            return true;
+        });
         std::erase_if(_counts, [](const auto& c) {
             const auto n = c.second->load();
             if (n == -2) return false;
@@ -1534,6 +1547,17 @@ namespace cosync::plugin::worldsync
             } else {
                 avatars::ActivateAsPlayer(found->GetFormID());
             }
+            return true;
+        }
+        if (step == "@followers") {
+            // Which NPCs near the player are its teammates (companion, crew following it).
+            const auto e = npcsync::EnumerateHighActors();
+            _teammateChecks.clear();
+            for (const auto& a : e.actors) {
+                auto result = std::make_shared<std::atomic<std::int32_t>>(-2);
+                if (avatars::RequestIsTeammate(a.formId, result)) _teammateChecks.push_back({ a.formId, result });
+            }
+            log::Info("[world] @followers: asking {} NPCs", _teammateChecks.size());
             return true;
         }
         if (step.starts_with("@nudge ")) {
